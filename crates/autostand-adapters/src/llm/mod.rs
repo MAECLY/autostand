@@ -4,6 +4,7 @@ pub mod claude;
 pub mod detect;
 pub mod gemini;
 pub mod grok;
+pub mod helpers;
 pub mod ollama;
 pub mod openai;
 pub mod traits;
