@@ -64,10 +64,9 @@ pub async fn set_config(_config: AppConfig) -> Result<(), String> {
 pub async fn compile_standup(_date: Option<String>) -> Result<CompileResult, String> {
     let today = chrono::Local::now().date_naive();
     let (f_today, _f_prev) = autostand_scheduler::selfheal::compute_targets(today);
-    autostand_core::pipeline::compile_file(f_today).map_err(|e| e.to_string())?;
     Ok(CompileResult {
-        ok: true,
-        message: format!("compiled {f_today}"),
+        ok: false,
+        message: format!("compile_file for {f_today} pending wiring of gather step"),
         files_touched: vec![],
     })
 }
