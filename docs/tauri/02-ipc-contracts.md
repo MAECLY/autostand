@@ -1,0 +1,461 @@
+# Tauri IPC Command Contracts
+
+This document specifies the contract between the React frontend and the Rust backend of the `autostand` Tauri v2 app. Every backend callable is a `#[tauri::command]` function; every frontend call goes through a typed wrapper in `apps/autostand-app/src/lib/tauri.ts`.
+
+---
+
+## Architecture
+
+```
+┌────────────────────────────┐    invoke(cmd, args)    ┌─────────────────────────────┐
+│  React (TypeScript)        │ ───────────────────────▶│  Rust (autostand-app)        │
+│  @tauri-apps/api/core      │ ◀───────────────────────│  #[tauri::command]           │
+│  invoke / listen           │   Result<T, AppError>    │  delegates to autostand-*     │
+└────────────────────────────┘                          └─────────────────────────────┘
+         │ listen("pipeline-progress", …)                          │ app_handle.emit(…)
+         └──────────────────── events ─────────────────────────────┘
+```
+
+- **Frontend** imports `invoke` from `@tauri-apps/api/core`. All calls are routed through `src/lib/tauri.ts` wrappers that apply the TypeScript types in `src/lib/types.ts` (mirrors of Rust serde types).
+- **Backend** exposes `#[tauri::command] async fn ...` functions grouped by domain under `src-tauri/src/commands/`. Async commands return `Result<T, AppError>` where `AppError` serializes to `{ code, message }` (see [Error handling](#error-handting)).
+- **Events** are emitted by the backend via `app_handle.emit("pipeline-progress", payload)` and consumed on the frontend with `listen("pipeline-progress", handler)` from `@tauri-apps/api/event`.
+
+### Type round-trip
+
+Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirrors each struct as a `type`/`interface` in `src/lib/types.ts`. A `specta`/`ts-rs` build step may be added later to auto-generate the TS side; until then both sides are kept in lockstep by the contract table below.
+
+---
+
+## Command inventory
+
+| Command | Args (TS) | Return | Description | Delegates to |
+| --- | --- | --- | --- | --- |
+| `get_config` | — | `AppConfig` | Load app config from Tauri Store | `autostand-core::config::load` |
+| `set_config` | `{ config: AppConfig }` | `void` | Persist config to store; re-validates paths | `autostand-core::config::save` |
+| `get_host_slug` | — | `string` | Return persisted host slug; if absent, detect + persist | `autostand-core::host::detect_or_load` |
+| `set_host_slug` | `{ slug: string }` | `void` | Manual override; rejects numeric/IP-like | `autostand-core::host::persist` |
+| `list_data_sources` | — | `DataSourceConfig[]` | List configured data sources + enabled state | `autostand-core::config::data_sources` |
+| `toggle_data_source` | `{ id: string, enabled: boolean }` | `void` | Flip a source flag, persist config | `autostand-core::config::set_source` |
+| `list_llm_providers` | — | `LlmProviderConfig[]` | List 5 providers with status: CLI detected? API key set? | `autostand-adapters::llm::registry` |
+| `test_llm_provider` | `{ provider: string, mode: "cli" \| "api" }` | `{ ok: boolean, message: string, latency_ms: number }` | Ping provider (echo prompt); never throws | `autostand-adapters::llm::test` |
+| `compile_standup` | `{ date?: string }` | `CompileResult` | Run full pipeline for one date (default: today) | `autostand-core::pipeline::trigger` |
+| `compile_all` | — | `CompileResult[]` | Recompile F_TODAY + F_PREV (business-day aware) | `autostand-core::pipeline::trigger_all` |
+| `read_standup_file` | `{ date: string }` | `StandupFileContent` | Parse `dailies/<date>.md` → AUTO blocks per host, MANUAL region, title, subtitle | `autostand-core::format::parse_file` |
+| `add_manual_item` | `{ date: string, item: string }` | `void` | Append line to MANUAL region of `<date>.md` (atomic) | `autostand-core::format::append_manual` |
+| `list_audit_sidecars` | `{ date: string }` | `AuditSidecar[]` | List `state/audit/<date>-*.json` files | `autostand-core::audit::list_for_date` |
+| `read_audit_sidecar` | `{ path: string }` | `AuditData` | Parse one sidecar JSON | `autostand-core::audit::read` |
+| `get_pipeline_status` | — | `PipelineStatus` | Current run state (idle/gathering/rendering/done/error) + last run info | `autostand-app::state::status` |
+| `preview_gather` | `{ date: string }` | `GatherPreview` | Show raw gathered FACTS/NOTES/ENRICHMENT without rendering (debug UI) | `autostand-core::pipeline::gather_only` |
+| `get_scheduler_status` | — | `SchedulerStatus` | Next run time, last run time, trigger source, schedule source (system/in-process) | `autostand-scheduler::status` |
+| `set_scheduler_schedule` | `{ cron: string }` | `void` | Persist cron + reinstall system unit | `autostand-scheduler::set_schedule` |
+| `trigger_run_now` | — | `CompileResult` | Manually trigger a compile outside the cron schedule | `autostand-core::pipeline::trigger(Manual)` |
+| `discover_repos` | — | `RepoInfo[]` | Scan `GITHUB_DIR` for git repos (depth-1) | `autostand-adapters::git::discover` |
+| `get_settings_paths` | — | `SettingsPaths` | Return all configured paths (GITHUB_DIR, dailies dir, claude dir, etc.) | `autostand-core::config::paths` |
+| `validate_paths` | — | `PathValidation[]` | Check each path exists + readable; returns per-path ok/missing | `autostand-core::config::validate` |
+| `store_api_key` | `{ provider: string, key: string }` | `void` | Store key in OS keychain (`keyring` crate) under `autostand.<provider>` | `autostand-app::secrets::store` |
+| `get_api_key_status` | `{ provider: string }` | `{ set: boolean, mode: "keychain" \| "env" \| "none" }` | Whether a key is set and where it came from | `autostand-app::secrets::status` |
+| `detect_cli` | `{ provider: string }` | `{ found: boolean, path: string, version: string }` | Locate CLI binary on PATH + `--version` probe | `autostand-adapters::cli::detect` |
+
+---
+
+## TypeScript type definitions
+
+These interfaces live in `apps/autostand-app/src/lib/types.ts` and are the canonical contract the UI imports.
+
+```ts
+// src/lib/types.ts
+
+export interface AppConfig {
+  github_dir: string;
+  dailies_dir: string;
+  standup_authors: string[];
+  git_refs: string;
+  jira_base: string;
+  host_slug_override: string | null;
+  render_mode: "Auto" | "Llm" | "Det";
+  llm: LlmConfig;
+  data_sources: DataSourceConfigs;
+  scheduler: SchedulerConfig;
+  review: ReviewConfig;
+  scrub: ScrubConfig;
+}
+
+export interface LlmConfig {
+  preferred_provider: string;
+  providers: ProviderConfig[];
+}
+
+export interface ProviderConfig {
+  id: string;          // "claude" | "ollama" | "openai" | "gemini" | "grok"
+  enabled: boolean;
+  mode: "CliFirst" | "ApiFallback" | "CliOnly" | "ApiOnly";
+  model: string;
+  cli_path: string | null;
+  api_key_ref: string | null;   // keychain reference; never the key itself
+  api_base_url: string | null;
+  timeout_secs: number;
+}
+
+export interface DataSourceConfigs {
+  local_git: boolean;
+  github: boolean;
+  claude_code: boolean;
+  remember: boolean;
+  opencode: boolean;
+  codex: boolean;
+  gemini_cli: boolean;
+  grok_cli: boolean;
+}
+
+export interface SchedulerConfig {
+  enabled: boolean;
+  cron: string;
+  self_heal: boolean;
+}
+
+export interface ReviewConfig {
+  reviewer: string;
+  pr_org: string;
+  max_prs: number;
+  comment_len: number;
+  include_self_reviews: boolean;
+}
+
+export interface ScrubConfig {
+  alias_scrub: boolean;
+  alias_scrub_min: number;
+  meta_extra: string | null;
+}
+
+export interface DataSourceConfig {
+  id: string;
+  label: string;
+  enabled: boolean;
+  description: string;
+}
+
+export interface LlmProviderConfig {
+  id: string;
+  label: string;
+  enabled: boolean;
+  mode: "CliFirst" | "ApiFallback" | "CliOnly" | "ApiOnly";
+  model: string;
+  cli: { found: boolean; path: string; version: string };
+  api_key: { set: boolean; mode: "keychain" | "env" | "none" };
+}
+
+export interface CompileResult {
+  date: string;                 // "2026-08-03"
+  host: string;
+  status: "ok" | "skip" | "error";
+  render_used: "llm" | "det" | "llm_fallback";
+  fellback: boolean;
+  audit_path: string | null;
+  file_path: string;
+  accumulated_count: number;    // bullets re-injected from PREV
+  message: string;
+}
+
+export interface StandupFileContent {
+  date: string;
+  title: string;                // "Daily Standup — August 03, 2026"
+  subtitle: string;             // "_Work completed August 01–02, 2026._"
+  auto_blocks: AutoBlock[];     // one per host slug
+  manual_region: string;        // verbatim inner content of MANUAL block
+}
+
+export interface AutoBlock {
+  host: string;
+  body: string;                 // verbatim inner content of AUTO block
+}
+
+export interface AuditSidecar {
+  path: string;
+  date: string;
+  host: string;
+  rendered_at: string;          // ISO-8601 UTC
+  render_used: "llm" | "det" | "llm_fallback";
+}
+
+export interface AuditData {
+  file: string;
+  host: string;
+  rendered_at: string;           // ISO-8601 UTC
+  window: { range_start: string; range_end: string };
+  facts: RepoFacts[];
+  notes: NoteRef[];
+  github: string | null;
+  conv: string | null;
+  prrev: string | null;
+  claude_files: string[];
+  opencode_sessions: string[];
+  codex_sessions: string[];
+  gemini_sessions: string[];
+  grok_sessions: string[];
+  forbidden_tickets: string[];
+  covered_tickets: string[];
+  skew: SkewRecord[];
+  ticket_days: Record<string, string[]>;
+  render_mode: "auto" | "llm" | "det";
+  render_used: "llm" | "det" | "llm_fallback";
+  provider: string | null;
+  model: string | null;
+  fellback: boolean;
+  hash: string;
+  accumulated_count: number;
+}
+
+export interface RepoFacts {
+  repo: string;
+  ticket: string | null;
+  title: string;
+  commits: { sha: string; subject: string; date: string; files: string[] }[];
+}
+
+export interface NoteRef {
+  source: string;               // path to note file
+  date: string;
+  clauses: string[];
+}
+
+export interface SkewRecord {
+  ticket: string;
+  note_date: string;
+  commit_days: string[];
+}
+
+export interface PipelineStatus {
+  state: "idle" | "gathering" | "rendering" | "done" | "error";
+  current_date: string | null;
+  current_host: string | null;
+  step: string | null;          // human-readable step name
+  percent: number;               // 0..100
+  last_run_at: string | null;    // ISO-8601
+  last_result: CompileResult | null;
+  error: string | null;
+}
+
+export interface GatherPreview {
+  date: string;
+  host: string;
+  window: { range_start: string; range_end: string };
+  facts: RepoFacts[];
+  notes: NoteRef[];
+  github: string | null;
+  conv: string | null;
+  prrev: string | null;
+  claude_files: string[];
+  opencode_sessions: string[];
+  codex_sessions: string[];
+  gemini_sessions: string[];
+  grok_sessions: string[];
+  forbidden_tickets: string[];
+  covered_tickets: string[];
+  skew: SkewRecord[];
+}
+
+export interface SchedulerStatus {
+  enabled: boolean;
+  source: "launchd" | "systemd" | "task-scheduler" | "in-process" | "none";
+  cron: string;
+  next_run_at: string | null;    // ISO-8601
+  last_run_at: string | null;    // ISO-8601
+  last_trigger: "scheduled" | "manual" | "self-heal" | null;
+}
+
+export interface RepoInfo {
+  path: string;
+  name: string;
+  remote: string | null;
+  last_commit_at: string | null; // ISO-8601
+}
+
+export interface SettingsPaths {
+  github_dir: string;
+  dailies_dir: string;
+  claude_dir: string;
+  codex_dir: string;
+  gemini_dir: string;
+  opencode_dir: string;
+  state_dir: string;
+  config_dir: string;
+  audit_dir: string;
+}
+
+export interface PathValidation {
+  path: string;
+  label: string;
+  exists: boolean;
+  readable: boolean;
+  message: string | null;
+}
+```
+
+---
+
+## Frontend wrappers (`lib/tauri.ts`)
+
+Each command is wrapped so the UI never calls `invoke` directly — this is where retries, error mapping, and event bridging live.
+
+```ts
+// src/lib/tauri.ts
+import { invoke } from "@tauri-apps/api/core";
+import type {
+  AppConfig, CompileResult, LlmProviderConfig, DataSourceConfig,
+  StandupFileContent, AuditSidecar, AuditData, PipelineStatus,
+  GatherPreview, SchedulerStatus, RepoInfo, SettingsPaths, PathValidation,
+} from "@/lib/types";
+
+export const tauriApi = {
+  getConfig:            ()                          => invoke<AppConfig>("get_config"),
+  setConfig:            (config: AppConfig)         => invoke<void>("set_config", { config }),
+  getHostSlug:         ()                          => invoke<string>("get_host_slug"),
+  setHostSlug:         (slug: string)              => invoke<void>("set_host_slug", { slug }),
+  listDataSources:     ()                          => invoke<DataSourceConfig[]>("list_data_sources"),
+  toggleDataSource:    (id: string, enabled: boolean) =>
+                          invoke<void>("toggle_data_source", { id, enabled }),
+  listLlmProviders:    ()                          => invoke<LlmProviderConfig[]>("list_llm_providers"),
+  testLlmProvider:     (provider: string, mode: "cli" | "api") =>
+                          invoke<{ ok: boolean; message: string; latency_ms: number }>(
+                            "test_llm_provider", { provider, mode }),
+  compileStandup:       (date?: string)             => invoke<CompileResult>("compile_standup", { date }),
+  compileAll:          ()                          => invoke<CompileResult[]>("compile_all"),
+  readStandupFile:      (date: string)              => invoke<StandupFileContent>("read_standup_file", { date }),
+  addManualItem:       (date: string, item: string) => invoke<void>("add_manual_item", { date, item }),
+  listAuditSidecars:   (date: string)               => invoke<AuditSidecar[]>("list_audit_sidecars", { date }),
+  readAuditSidecar:    (path: string)               => invoke<AuditData>("read_audit_sidecar", { path }),
+  getPipelineStatus:   ()                          => invoke<PipelineStatus>("get_pipeline_status"),
+  previewGather:       (date: string)               => invoke<GatherPreview>("preview_gather", { date }),
+  getSchedulerStatus:  ()                          => invoke<SchedulerStatus>("get_scheduler_status"),
+  setSchedulerSchedule:(cron: string)              => invoke<void>("set_scheduler_schedule", { cron }),
+  triggerRunNow:       ()                          => invoke<CompileResult>("trigger_run_now"),
+  discoverRepos:       ()                          => invoke<RepoInfo[]>("discover_repos"),
+  getSettingsPaths:    ()                          => invoke<SettingsPaths>("get_settings_paths"),
+  validatePaths:       ()                          => invoke<PathValidation[]>("validate_paths"),
+  storeApiKey:         (provider: string, key: string) =>
+                          invoke<void>("store_api_key", { provider, key }),
+  getApiKeyStatus:     (provider: string) =>
+                          invoke<{ set: boolean; mode: "keychain" | "env" | "none" }>(
+                            "get_api_key_status", { provider }),
+  detectCli:           (provider: string) =>
+                          invoke<{ found: boolean; path: string; version: string }>(
+                            "detect_cli", { provider }),
+} as const;
+```
+
+---
+
+## Event system
+
+The backend emits events using the Tauri app handle. The frontend subscribes with `listen` from `@tauri-apps/api/event`.
+
+### Events
+
+| Event | Payload | Emitted by | When |
+| --- | --- | --- | --- |
+| `pipeline-started` | `{ date: string, host: string, trigger: "scheduled" \| "manual" \| "self-heal" }` | `pipeline::trigger` | After lock acquired, before compute_targets |
+| `pipeline-progress` | `{ date: string, host: string, step: string, percent: number }` | each step | Before each pipeline step in `compile_file` |
+| `pipeline-done` | `CompileResult` | `pipeline::trigger` | After commit_push (or skip) |
+| `pipeline-error` | `{ code: string, message: string, step: string, date: string }` | `pipeline::trigger` catch | On any step failure that aborts the run |
+| `scheduler-tick` | `{ next_run_at: string, source: string }` | `autostand-scheduler` | On each scheduler poll (every 60s in-process, or on unit activation) |
+
+### Backend emit (Rust)
+
+```rust
+use tauri::{AppHandle, Emitter};
+
+app_handle.emit("pipeline-progress", PipelineProgress {
+    date: f.clone(),
+    host: host.clone(),
+    step: "render_llm".into(),
+    percent: 72,
+})?;
+```
+
+### Frontend listener
+
+```ts
+// src/hooks/use-pipeline-status.ts
+import { listen } from "@tauri-apps/api/event";
+import { useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+
+export function usePipelineEvents() {
+  const qc = useQueryClient();
+  useEffect(() => {
+    const unsubs = [
+      listen("pipeline-progress", (e) => {
+        qc.setQueryData(["pipeline-status"], e.payload);
+      }),
+      listen("pipeline-done", (e) => {
+        qc.invalidateQueries({ queryKey: ["standup", e.payload.date] });
+        qc.invalidateQueries({ queryKey: ["audit", e.payload.date] });
+      }),
+      listen("pipeline-error", (e) => {
+        toast.error(`${e.payload.step}: ${e.payload.message}`);
+      }),
+    ];
+    return () => unsubs.forEach((u) => u.then((fn) => fn()));
+  }, [qc]);
+}
+```
+
+---
+
+## Error handling
+
+### Rust side
+
+All commands return `Result<T, AppError>`. `AppError` is a single error enum that serializes to a stable JSON shape so the frontend can branch on `code`.
+
+```rust
+// crates/autostand-core/src/error.rs
+use serde::Serialize;
+use thiserror::Error;
+
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "code", content = "message")]
+pub enum AppError {
+    #[error("config: {0}")]
+    Config(String),
+    #[error("io: {0}")]
+    Io(String),
+    #[error("git: {0}")]
+    Git(String),
+    #[error("llm: {0}")]
+    Llm(String),
+    #[error("lock: {0}")]
+    Lock(String),
+    #[error("not_found: {0}")]
+    NotFound(String),
+    #[error("invalid: {0}")]
+    Invalid(String),
+}
+
+// Tauri serializes the Err variant via serde → frontend receives { code, message }.
+```
+
+### Frontend side
+
+`invoke` rejects with the serialized `AppError`. A single `lib/error.ts` maps it to a `Sonner` toast:
+
+```ts
+import { toast } from "sonner";
+
+export function handleInvokeError(err: unknown, ctx = "") {
+  const e = err as { code?: string; message?: string };
+  const code = e?.code ?? "unknown";
+  const msg  = e?.message ?? String(err);
+  toast.error(`${ctx ? ctx + " — " : ""}${code}: ${msg}`);
+}
+```
+
+### Step-granular errors
+
+Inside `compile_file`, a step failure does **not** abort the whole pipeline:
+
+- A failed LLM render → `render_llm` returns `None` → `validate_render` errors → fall back to `det_body`. A `pipeline-error` event is still emitted with `step: "render_llm"` and `code: "llm"`, but `CompileResult.status` stays `ok` with `render_used: "llm_fallback"`.
+- A failed gather step (e.g. `gh` not on PATH) → enrichment for that source is skipped and recorded in the audit sidecar; the run continues with available sources.
+- A `Lock` error aborts the run with `status: "error"` because another compile is already in progress.
+
+This guarantees a standup is always produced if any facts/notes exist — see `docs/specs/pipeline.md` for the full step ordering.
