@@ -5,6 +5,7 @@ pub mod codex;
 pub mod gemini_cli;
 pub mod github;
 pub mod grok_cli;
+pub mod helpers;
 pub mod local_git;
 pub mod opencode;
 pub mod remember;
