@@ -22,6 +22,7 @@ pub mod accumulate;
 pub mod audit;
 pub mod dates;
 pub mod deterministic;
+pub mod fileops;
 pub mod format;
 pub mod host;
 pub mod meta;
