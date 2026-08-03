@@ -1,0 +1,47 @@
+{
+  "name": "autostand-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-fs": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "@tauri-apps/plugin-store": "^2.1.0",
+    "@tauri-apps/plugin-opener": "^2.2.5",
+    "lucide-react": "^0.460.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sonner": "^1.7.0",
+    "tailwindcss": "^4.0.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "zustand": "^5.0.1",
+    "@tanstack/react-query": "^5.59.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^9.16.0",
+    "@eslint/js": "^9.16.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.7",
+    "@playwright/test": "^1.49.0",
+    "typescript-eslint": "^8.18.0",
+    "globals": "^15.14.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "eslint-plugin-react-refresh": "^0.4.16"
+  }
+}

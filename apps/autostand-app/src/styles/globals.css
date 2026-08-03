@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: var(--bg-base);
+  --color-foreground: var(--fg-base);
+  --color-card: var(--bg-surface);
+  --color-card-foreground: var(--fg-base);
+  --color-muted: var(--bg-muted);
+  --color-muted-foreground: var(--fg-muted);
+  --color-border: var(--border-default);
+  --color-input: var(--border-default);
+  --color-ring: var(--border-focus);
+  --color-primary: var(--brand-primary);
+  --color-primary-foreground: var(--fg-inverse);
+  --color-secondary: var(--bg-elevated);
+  --color-secondary-foreground: var(--fg-base);
+  --color-accent: var(--brand-accent);
+  --color-destructive: var(--status-error);
+  --color-success: var(--status-success);
+  --color-warning: var(--status-warning);
+}
+
+:root {
+  color-scheme: light dark;
+  font-family: var(--font-sans, "Inter", system-ui, sans-serif);
+  color: var(--fg-base);
+  background: var(--bg-base);
+}
