@@ -1,0 +1,24 @@
+{
+  "name": "autostand",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cross-platform daily standup automation (Tauri v2).",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.18.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --filter autostand-app tauri dev",
+    "build": "pnpm --filter autostand-app tauri build",
+    "build:frontend": "pnpm --filter autostand-app build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter autostand-app test:e2e",
+    "storybook": "pnpm --filter design-system storybook",
+    "build-storybook": "pnpm --filter design-system build-storybook",
+    "tauri": "pnpm --filter autostand-app tauri"
+  }
+}

@@ -1,0 +1,3 @@
+packages:
+  - "apps/autostand-app"
+  - "design-system"

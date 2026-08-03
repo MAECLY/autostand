@@ -1,0 +1,54 @@
+# Rust
+/target
+**/target/
+Cargo.lock.bak
+
+# Node / pnpm
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Tauri
+apps/autostand-app/src-tauri/target/
+apps/autostand-app/src-tauri/gen/
+apps/autostand-app/dist/
+apps/autostand-app/.tauri/
+
+# Vite
+*.log
+.vite/
+
+# Storybook
+design-system/storybook-static/
+
+# opencode tooling (self-managed)
+.opencode/node_modules/
+.opencode/package.json
+.opencode/package-lock.json
+.opencode/bun.lock
+
+# Remember plugin scratch
+.remember/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Generated standup output (configurable; ignored by default)
+dailies/
+
+# State / cache (runtime)
+state/
+**/state/

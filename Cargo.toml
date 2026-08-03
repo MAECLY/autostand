@@ -1,0 +1,86 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/autostand-core",
+    "crates/autostand-adapters",
+    "crates/autostand-scheduler",
+    "apps/autostand-app/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Miguel Angel Esparza"]
+license = "MIT"
+repository = "https://github.com/MAECLY/autostand"
+rust-version = "1.80"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+missing_docs_in_private_items = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+module_name_repetitions = "allow"
+# Tauri's dependency tree pulls thiserror v1 transitively (via json-patch/tauri-build)
+# while our crates use thiserror v2; we can't unify them, so silence the duplicate-deps lint.
+multiple_crate_versions = "allow"
+
+[workspace.dependencies]
+# Core serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Async runtime + utilities
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Dates / time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Regex
+regex = "1"
+
+# SQLite (bundled, for OpenCode data source)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# OS keychain (API key storage)
+keyring = "3"
+
+# Platform dirs
+dirs = "5"
+
+# Hostname (cross-platform host slug fallback)
+hostname = "0.4"
+
+# HTTP client (LLM API calls)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Internal crates
+autostand-core = { path = "crates/autostand-core" }
+autostand-adapters = { path = "crates/autostand-adapters" }
+autostand-scheduler = { path = "crates/autostand-scheduler" }
+
+[profile.dev]
+opt-level = 1  # faster Tauri dev builds
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
