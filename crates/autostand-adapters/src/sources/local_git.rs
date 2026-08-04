@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use async_trait::async_trait;
-use chrono::Duration;
 
 use super::helpers::{extract_ticket_keys, run_cmd, scan_repos};
 use super::{DataSource, DataSourceConfig, DataSourceError, DateWindow, SourceData};
@@ -39,21 +38,32 @@ impl DataSource for LocalGitDataSource {
             return Ok(SourceData::default());
         }
 
-        let author_re = if config.authors.is_empty() {
-            String::new()
-        } else {
-            config.authors.join("|")
-        };
+        // WHY one `--author` flag per entry instead of a `|`-joined regex: git ORs
+        // repeated `--author` options, but a single value is a *basic* regular
+        // expression in which `|` is a literal character — so a joined pattern
+        // matches nothing and every multi-author config silently gathers zero
+        // commits. This mirrors the App Script's
+        // `for a in "${AUTHORS[@]}"; do author_args+=(--author="$a"); done`.
+        let author_args: Vec<String> = config
+            .authors
+            .iter()
+            .map(|author| format!("--author={author}"))
+            .collect();
         let refs = if config.git_refs.is_empty() {
             "--all"
         } else {
             config.git_refs.as_str()
         };
 
-        let since = window.start.format("%Y-%m-%d").to_string();
-        let until = (window.end + Duration::days(1))
-            .format("%Y-%m-%d")
-            .to_string();
+        // WHY explicit times: `--since=2026-07-31` is parsed by git's approxidate,
+        // which fills every unspecified field from the *current clock*. A bare date
+        // therefore means "range_start at whatever o'clock it is now" and drops every
+        // commit made earlier that day, while `--until=<end + 1 day>` leaks the first
+        // hours of the day after the window. Pinning midnight..23:59:59 makes the
+        // window the closed day range `docs/specs/pipeline.md` step (a) describes,
+        // independent of when the scheduler fired.
+        let since = format!("{} 00:00:00", window.start.format("%Y-%m-%d"));
+        let until = format!("{} 23:59:59", window.end.format("%Y-%m-%d"));
 
         let mut sections: Vec<String> = Vec::new();
         let mut ticket_days: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -65,11 +75,10 @@ impl DataSource for LocalGitDataSource {
                 .unwrap_or("?")
                 .to_string();
 
-            if !author_re.is_empty() {
+            if !author_args.is_empty() {
                 let since_arg = format!("--since={since}");
                 let until_arg = format!("--until={until}");
-                let author_arg = format!("--author={author_re}");
-                let subject_args: Vec<&str> = vec![
+                let mut subject_args: Vec<&str> = vec![
                     "-C",
                     repo.to_str().unwrap_or("."),
                     "log",
@@ -77,10 +86,10 @@ impl DataSource for LocalGitDataSource {
                     "--no-merges",
                     &since_arg,
                     &until_arg,
-                    &author_arg,
-                    "--format=%H|%cd|%s",
-                    "--date=short",
                 ];
+                subject_args.extend(author_args.iter().map(String::as_str));
+                subject_args.push("--format=%H|%cd|%s");
+                subject_args.push("--date=short");
                 match run_cmd("git", &subject_args, 30).await {
                     Ok(out) if !out.is_empty() => {
                         let commits = parse_subjects(&out);
