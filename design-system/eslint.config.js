@@ -5,7 +5,10 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist", "node_modules", ".storybook"] },
+  // `storybook-static` is the Storybook 8 build output (already in .gitignore).
+  // Linting those minified vendor bundles only reports rules this config never
+  // loads, so `pnpm lint` fails on any machine that ran `build-storybook`.
+  { ignores: ["dist", "node_modules", ".storybook", "storybook-static"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
