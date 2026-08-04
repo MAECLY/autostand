@@ -4,24 +4,23 @@
 //! `trigger_run_now`, `get_pipeline_status`, `preview_gather`,
 //! `get_scheduler_status`, `set_scheduler_schedule`.
 //!
-//! The gather pipeline is not yet wired, so `compile_*` emit the right events
-//! and return an error `CompileResult` with `message: "gather pipeline not yet wired"`.
+//! These are thin adapters: every compile goes through
+//! [`crate::pipeline_runner::trigger`], which owns the lock, the ordered steps
+//! and the `pipeline-started` / `-progress` / `-done` / `-error` events. The
+//! scheduler pair delegates to [`crate::scheduler_runtime`].
 
 use chrono::{Local, NaiveDate};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
-use crate::commands::types::{
-    CompileResult, CompileStatus, GatherPreview, LastTrigger, PipelineProgress, RenderUsed,
-    SchedulerSource, SchedulerStatus,
-};
+use autostand_scheduler::triggers::TriggerSource;
+
+use crate::commands::types::{CompileResult, GatherPreview, LastTrigger, SchedulerStatus};
 use crate::error::AppError;
+use crate::pipeline_runner;
 use crate::state::AppState;
 
 /// Date format used by every `date` argument and DTO field in the contract.
 const DATE_FORMAT: &str = "%Y-%m-%d";
-
-/// Progress percent reported once the run has a date + host but no facts yet.
-const INIT_PERCENT: u8 = 5;
 
 /// Resolve an optional `YYYY-MM-DD` date argument, defaulting to today.
 ///
@@ -35,11 +34,33 @@ fn resolve_date(date: Option<&str>) -> Result<NaiveDate, AppError> {
     }
 }
 
+/// Reduce a multi-target run to the single `CompileResult` the contract returns.
+///
+/// The first element is `F_TODAY` (or the explicitly requested date), which is
+/// the one the caller asked about; a run that produced nothing at all is
+/// reported as an error rather than as a silent success. `host` is lazy because
+/// resolving the slug hits the state dir and the empty case never happens in
+/// practice.
+fn first_result(
+    results: Vec<CompileResult>,
+    date: NaiveDate,
+    host: impl FnOnce() -> String,
+) -> CompileResult {
+    results.into_iter().next().unwrap_or_else(|| {
+        pipeline_runner::error_result(date, &host(), "pipeline produced no result")
+    })
+}
+
+/// Host slug for a result the pipeline never got far enough to produce one for.
+fn fallback_host() -> String {
+    autostand_core::host::load_or_detect(&super::state_dir())
+        .unwrap_or_else(|_| "unknown-host".to_string())
+}
+
 /// Run the full pipeline for a single date (default: today).
 ///
-/// Emits `pipeline-started`, a `pipeline-progress` (step `init`), then — since
-/// gather is not wired — `pipeline-error` (step `gather`, code `io`) and returns
-/// a `CompileResult { status: error, message: "gather pipeline not yet wired" }`.
+/// Emits `pipeline-started`, one `pipeline-progress` per step, and
+/// `pipeline-done` with the returned `CompileResult`.
 #[tauri::command]
 pub async fn compile_standup(
     app_handle: AppHandle,
@@ -47,88 +68,38 @@ pub async fn compile_standup(
     date: Option<String>,
 ) -> Result<CompileResult, AppError> {
     let resolved = resolve_date(date.as_deref())?;
-    let date_str = resolved.format(DATE_FORMAT).to_string();
-
-    let host = autostand_core::host::load_or_detect(&super::state_dir())
-        .unwrap_or_else(|_| "unknown-host".to_string());
-
-    state.set_state(
-        date_str.clone(),
-        host.clone(),
-        crate::state::PipelineStateKind::Gathering,
-        "gather".to_string(),
-    );
-    let _ = app_handle.emit(
-        "pipeline-started",
-        PipelineStarted {
-            date: date_str.clone(),
-            host: host.clone(),
-            trigger: LastTrigger::Manual,
-        },
-    );
-    state.set_percent(INIT_PERCENT, "init".to_string());
-    let _ = app_handle.emit(
-        "pipeline-progress",
-        PipelineProgress {
-            date: date_str.clone(),
-            host: host.clone(),
-            step: "init".into(),
-            percent: INIT_PERCENT,
-        },
-    );
-
-    let message = "gather pipeline not yet wired".to_string();
-    state.set_error(message.clone());
-    let _ = app_handle.emit(
-        "pipeline-error",
-        PipelineError {
-            code: "io".into(),
-            message: message.clone(),
-            step: "gather".into(),
-            date: date_str.clone(),
-        },
-    );
-
-    let result = CompileResult {
-        date: date_str,
-        host,
-        status: CompileStatus::Error,
-        render_used: RenderUsed::Det,
-        fellback: false,
-        audit_path: None,
-        file_path: String::new(),
-        accumulated_count: 0,
-        message,
-    };
-    Ok(result)
+    let results = pipeline_runner::trigger(
+        &app_handle,
+        state.inner(),
+        TriggerSource::Manual,
+        Some(resolved),
+    )
+    .await?;
+    Ok(first_result(results, resolved, fallback_host))
 }
 
-/// Recompile F_TODAY + F_PREV (business-day aware).
+/// Recompile `F_TODAY` + `F_PREV` (business-day aware).
 #[tauri::command]
 pub async fn compile_all(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<CompileResult>, AppError> {
-    let today = Local::now().date_naive();
-    let (f_today, f_prev) = autostand_scheduler::selfheal::compute_targets(today);
-    let mut results = Vec::with_capacity(2);
-    for d in [f_today, f_prev] {
-        let s = d.format(DATE_FORMAT).to_string();
-        let r = compile_standup(app_handle.clone(), state.clone(), Some(s))
-            .await
-            .unwrap_or_default();
-        results.push(r);
-    }
-    Ok(results)
+    pipeline_runner::trigger(&app_handle, state.inner(), TriggerSource::Manual, None).await
 }
 
-/// Trigger a run immediately.
+/// Trigger a run immediately (the UI's "Run now" button).
+///
+/// Same targets as [`compile_all`] — `F_TODAY` plus the self-heal slot — but the
+/// contract returns only the primary result.
 #[tauri::command]
 pub async fn trigger_run_now(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<CompileResult, AppError> {
-    compile_standup(app_handle, state, None).await
+    let results =
+        pipeline_runner::trigger(&app_handle, state.inner(), TriggerSource::Manual, None).await?;
+    let today = Local::now().date_naive();
+    Ok(first_result(results, today, fallback_host))
 }
 
 /// Get the current pipeline status snapshot.
@@ -141,47 +112,27 @@ pub async fn get_pipeline_status(
 
 /// Preview the gathered FACTS/NOTES/ENRICHMENT for a date (debug UI).
 ///
-/// Gather is not wired yet — returns the right shape with empty fields.
+/// Read-only: takes no run lock and writes no file, so it is safe to call while
+/// a compile is in progress.
 #[tauri::command]
 pub async fn preview_gather(
-    _app_handle: AppHandle,
+    app_handle: AppHandle,
     date: String,
 ) -> Result<GatherPreview, AppError> {
     let resolved = resolve_date(Some(&date))?;
-    let date_str = resolved.format(DATE_FORMAT).to_string();
-    let host = autostand_core::host::load_or_detect(&super::state_dir())
-        .unwrap_or_else(|_| "unknown-host".to_string());
-    Ok(GatherPreview {
-        date: date_str,
-        host,
-        ..Default::default()
-    })
+    pipeline_runner::preview(&app_handle, resolved).await
 }
 
-/// Get the scheduler status.
-///
-/// Stub: returns `enabled: false, source: "in-process"` until the
-/// scheduler is wired.
+/// Get the scheduler status (next/last run, source, cron).
 #[tauri::command]
-pub async fn get_scheduler_status() -> Result<SchedulerStatus, AppError> {
-    Ok(SchedulerStatus {
-        enabled: false,
-        source: SchedulerSource::InProcess,
-        cron: "0 7-19 * * 1-5".to_string(),
-        next_run_at: None,
-        last_run_at: None,
-        last_trigger: None,
-    })
+pub async fn get_scheduler_status(app_handle: AppHandle) -> Result<SchedulerStatus, AppError> {
+    crate::scheduler_runtime::status(&app_handle)
 }
 
-/// Persist a cron schedule to config (does not yet install system units).
+/// Persist a cron schedule and reschedule the runtime.
 #[tauri::command]
 pub async fn set_scheduler_schedule(app_handle: AppHandle, cron: String) -> Result<(), AppError> {
-    let _ = autostand_scheduler::cron::next_run(&cron, chrono::Utc::now())
-        .map_err(|e| AppError::Invalid(format!("invalid cron '{cron}': {e}")))?;
-    let mut config = super::load_config(&app_handle)?;
-    config.scheduler.cron = cron;
-    super::save_config(&app_handle, &config)
+    crate::scheduler_runtime::set_cron(&app_handle, &cron)
 }
 
 /// Payload for `pipeline-started`.
@@ -211,10 +162,18 @@ pub struct PipelineError {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_date, PipelineError, PipelineStarted, DATE_FORMAT, INIT_PERCENT};
-    use crate::commands::types::{LastTrigger, PipelineProgress};
+    use super::{first_result, resolve_date, PipelineError, PipelineStarted, DATE_FORMAT};
+    use crate::commands::types::{CompileStatus, LastTrigger, PipelineProgress};
     use crate::error::AppError;
+    use crate::pipeline_runner::{base_result, Step};
     use chrono::{Local, NaiveDate};
+    use std::path::Path;
+
+    /// Progress percent of the first `pipeline-progress` tick a run emits.
+    ///
+    /// Pinned by the frontend's event fixtures; the test below ties it to
+    /// `pipeline_runner::Step::Window` so the two cannot drift.
+    const INIT_PERCENT: u8 = 5;
 
     #[test]
     fn parses_an_explicit_iso_date() {
@@ -313,10 +272,16 @@ mod tests {
     }
 
     #[test]
+    fn the_first_progress_tick_matches_the_runners_first_step() {
+        // Regression guard: the two are documented as the same number.
+        assert_eq!(INIT_PERCENT, Step::Window.percent());
+    }
+
+    #[test]
     fn error_payload_matches_the_event_contract() {
         let value = serde_json::to_value(PipelineError {
             code: "io".to_string(),
-            message: "gather pipeline not yet wired".to_string(),
+            message: "render_llm: provider timed out".to_string(),
             step: "gather".to_string(),
             date: "2026-08-03".to_string(),
         })
@@ -329,5 +294,28 @@ mod tests {
             .collect();
         keys.sort_unstable();
         assert_eq!(keys, ["code", "date", "message", "step"]);
+    }
+
+    #[test]
+    fn the_single_date_commands_return_the_primary_target() {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 4).unwrap();
+        let primary = base_result(date, "host", Path::new("/dailies/2026-08-04.md"));
+        let secondary = base_result(
+            NaiveDate::from_ymd_opt(2026, 8, 3).unwrap(),
+            "host",
+            Path::new("/dailies/2026-08-03.md"),
+        );
+        let picked = first_result(vec![primary, secondary], date, || "host".to_string());
+        assert_eq!(picked.date, "2026-08-04");
+    }
+
+    #[test]
+    fn an_empty_run_still_returns_an_error_result() {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 4).unwrap();
+        let picked = first_result(Vec::new(), date, || "host".to_string());
+        assert_eq!(picked.status, CompileStatus::Error);
+        assert_eq!(picked.date, "2026-08-04");
+        assert_eq!(picked.host, "host");
+        assert!(!picked.message.is_empty());
     }
 }

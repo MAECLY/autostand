@@ -226,12 +226,12 @@ mod tests {
     fn set_error_flips_state_and_keeps_the_last_result() {
         let state = AppState::new();
         state.set_done(sample_result());
-        state.set_error("gather pipeline not yet wired");
+        state.set_error("git: dailies dir is not a repository");
         let status = state.status();
         assert_eq!(status.state, PipelineStateKind::Error);
         assert_eq!(
             status.error.as_deref(),
-            Some("gather pipeline not yet wired")
+            Some("git: dailies dir is not a repository")
         );
         assert!(
             status.last_result.is_some(),
