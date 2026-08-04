@@ -4,11 +4,20 @@
 //! See `docs/architecture/04-state-machine.md` (per-run states) and the events
 //! table in `docs/tauri/02-ipc-contracts.md`.
 //!
-//! Only the **in-process** source is implemented here: the runtime is a tokio
-//! task owned by the running app, so it fires only while the app is open.
-//! Installing a platform unit (`launchd` / `systemd` / Task Scheduler) is a
-//! separate concern — [`status`] therefore always reports
-//! [`SchedulerSource::InProcess`].
+//! Two sources coexist. The **in-process** runtime is a tokio task owned by the
+//! running app, so it fires only while the app is open; the **system unit**
+//! (`launchd` / `systemd --user` / Task Scheduler) is installed by
+//! [`autostand_scheduler::install`] and runs `autostand-app --compile` whether
+//! or not anything is open. [`status`] reports whichever one
+//! [`autostand_scheduler::install::detect`] actually finds, and the two cannot
+//! double-compile: they share the run lock and the same durable last-run
+//! record, so whichever fires first makes the other's next boundary not due.
+//!
+//! Installation is deliberately narrow. It happens **only** inside [`set_cron`]
+//! — the IPC command `set_scheduler_schedule`, which the contract already
+//! defines as "persist cron + reinstall system unit". Never on app start, never
+//! from [`status`], never from a test: touching the user's login items is not
+//! something a status read is allowed to do.
 //!
 //! Three rules shape this module:
 //!
@@ -30,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{info, warn};
 
+use autostand_scheduler::install::{self, SchedulerKind};
 use autostand_scheduler::{cron, triggers, triggers::TriggerSource};
 
 use crate::commands::types::{LastTrigger, SchedulerConfig, SchedulerSource, SchedulerStatus};
@@ -125,20 +135,82 @@ pub fn spawn(app: AppHandle) {
 pub fn status(app: &AppHandle) -> Result<SchedulerStatus, AppError> {
     let config = crate::commands::load_config(app)?;
     let last = read_last_run(&crate::commands::state_dir());
-    Ok(build_status(&config.scheduler, last, Utc::now()))
+    let source = resolve_source(install::detect(), config.scheduler.enabled);
+    Ok(build_status(&config.scheduler, last, Utc::now(), source))
 }
 
-/// Validate `cron` and persist it to the config store.
+/// Validate `cron`, persist it, and bring the system unit in line with it.
+///
+/// The contract (`docs/tauri/02-ipc-contracts.md`, `set_scheduler_schedule`)
+/// defines this command as "persist cron + reinstall system unit", and this is
+/// the *only* place autostand installs one — an explicit user action on the
+/// Settings page, never a background side effect.
 ///
 /// # Errors
 ///
 /// [`AppError::Invalid`] when the expression does not parse or can never fire;
-/// [`AppError::Config`] when the store cannot be read or written.
+/// [`AppError::Config`] when the store cannot be read or written. A failed
+/// *install* is not an error: the cron is persisted either way and the
+/// in-process runtime still honours it, so refusing to save the user's schedule
+/// because `launchctl` was unhappy would be the worse outcome.
 pub fn set_cron(app: &AppHandle, cron: &str) -> Result<(), AppError> {
     let normalized = validate_cron(cron)?;
     let mut config = crate::commands::load_config(app)?;
-    config.scheduler.cron = normalized;
-    crate::commands::save_config(app, &config)
+    config.scheduler.cron.clone_from(&normalized);
+    let enabled = config.scheduler.enabled;
+    crate::commands::save_config(app, &config)?;
+    sync_system_unit(&normalized, enabled);
+    Ok(())
+}
+
+/// Install (or remove) the platform unit so it matches the persisted schedule.
+///
+/// Best effort by design — see [`set_cron`]. An expression the unit formats
+/// cannot express is logged loudly rather than swallowed: the user needs to
+/// know their schedule only applies while the app is open.
+fn sync_system_unit(cron: &str, enabled: bool) {
+    if !enabled {
+        if let Err(err) = install::uninstall() {
+            info!(error = %err, "scheduler: no system unit to remove");
+        }
+        return;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            warn!(error = %err, "scheduler: cannot locate this executable; system unit not installed");
+            return;
+        }
+    };
+    match install::install(cron, &exe) {
+        Ok(kind) => info!(source = kind.wire_label(), %cron, "scheduler: system unit installed"),
+        Err(err) => warn!(
+            error = %err,
+            "scheduler: could not install the system unit; the in-process runtime still applies while the app is open"
+        ),
+    }
+}
+
+/// Which source `SchedulerStatus` reports.
+///
+/// A detected unit always wins: it is the thing that will actually fire at
+/// 07:00 tomorrow. With nothing installed the answer depends on whether the
+/// user turned the scheduler on at all — an enabled schedule is being served by
+/// the in-process tick, a disabled one by nothing.
+fn resolve_source(installed: SchedulerKind, enabled: bool) -> SchedulerSource {
+    match installed {
+        SchedulerKind::Launchd => SchedulerSource::Launchd,
+        SchedulerKind::Systemd => SchedulerSource::Systemd,
+        SchedulerKind::TaskScheduler => SchedulerSource::TaskScheduler,
+        SchedulerKind::InProcess => SchedulerSource::InProcess,
+        SchedulerKind::None => {
+            if enabled {
+                SchedulerSource::InProcess
+            } else {
+                SchedulerSource::None
+            }
+        }
+    }
 }
 
 /// Record a run in the durable last-run file (best effort; logs on failure).
@@ -199,7 +271,7 @@ async fn tick(app: &AppHandle) -> Result<(), AppError> {
         Ok(next) => {
             let payload = SchedulerTick {
                 next_run_at: iso(next),
-                source: SchedulerSource::InProcess,
+                source: resolve_source(install::detect(), schedule.enabled),
             };
             if let Err(err) = app.emit("scheduler-tick", payload) {
                 warn!(error = %err, "scheduler: could not emit scheduler-tick");
@@ -263,11 +335,15 @@ async fn run_due(app: &AppHandle, state_dir: &Path, now: DateTime<Utc>) {
 /// Assemble a [`SchedulerStatus`] from config + the persisted last run.
 ///
 /// Split out of [`status`] so the reporting rules are testable without a Tauri
-/// app instance.
+/// app instance. `source` is passed in rather than detected here for the same
+/// reason: detection reads the developer's real `~/Library/LaunchAgents`, and a
+/// unit test must not depend on what happens to be installed on the machine
+/// running it.
 fn build_status(
     schedule: &SchedulerConfig,
     last: Option<LastRun>,
     now: DateTime<Utc>,
+    source: SchedulerSource,
 ) -> SchedulerStatus {
     let (last_run_at, last_trigger) = match last {
         Some(run) => (Some(run.at), Some(run.trigger)),
@@ -275,7 +351,7 @@ fn build_status(
     };
     SchedulerStatus {
         enabled: schedule.enabled,
-        source: SchedulerSource::InProcess,
+        source,
         cron: schedule.cron.clone(),
         next_run_at: cron::next_run(&schedule.cron, now).ok().map(iso),
         last_run_at,
@@ -332,11 +408,12 @@ fn parse_iso(raw: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_status, is_due, iso, last_run_path, parse_iso, read_last_run, validate_cron,
-        write_last_run, write_run_record, LastRun, SchedulerTick,
+        build_status, is_due, iso, last_run_path, parse_iso, read_last_run, resolve_source,
+        validate_cron, write_last_run, write_run_record, LastRun, SchedulerTick,
     };
     use crate::commands::types::{LastTrigger, SchedulerConfig, SchedulerSource};
     use crate::error::AppError;
+    use autostand_scheduler::install::SchedulerKind;
     use chrono::{DateTime, TimeZone, Utc};
 
     /// Default schedule from `SchedulerConfig::default()`: hourly, 07-19, Mon-Fri.
@@ -583,7 +660,12 @@ mod tests {
             cron: HOURLY_WEEKDAYS.to_string(),
             self_heal: true,
         };
-        let status = build_status(&schedule, None, at(2026, 8, 3, 6, 30, 0));
+        let status = build_status(
+            &schedule,
+            None,
+            at(2026, 8, 3, 6, 30, 0),
+            SchedulerSource::InProcess,
+        );
         assert!(status.enabled);
         assert_eq!(status.source, SchedulerSource::InProcess);
         assert_eq!(status.cron, HOURLY_WEEKDAYS);
@@ -593,13 +675,34 @@ mod tests {
     }
 
     #[test]
+    fn status_reports_an_installed_system_unit_verbatim() {
+        // The whole point of installing one: a machine with autostand closed
+        // must not still claim `in-process`.
+        let schedule = SchedulerConfig::default();
+        for source in [
+            SchedulerSource::Launchd,
+            SchedulerSource::Systemd,
+            SchedulerSource::TaskScheduler,
+            SchedulerSource::None,
+        ] {
+            let status = build_status(&schedule, None, at(2026, 8, 3, 6, 30, 0), source);
+            assert_eq!(status.source, source);
+        }
+    }
+
+    #[test]
     fn status_surfaces_the_persisted_last_run() {
         let schedule = SchedulerConfig::default();
         let last = LastRun {
             at: "2026-08-03T09:00:00Z".to_string(),
             trigger: LastTrigger::Scheduled,
         };
-        let status = build_status(&schedule, Some(last), at(2026, 8, 3, 9, 30, 0));
+        let status = build_status(
+            &schedule,
+            Some(last),
+            at(2026, 8, 3, 9, 30, 0),
+            SchedulerSource::InProcess,
+        );
         assert_eq!(status.last_run_at.as_deref(), Some("2026-08-03T09:00:00Z"));
         assert_eq!(status.last_trigger, Some(LastTrigger::Scheduled));
         assert_eq!(status.next_run_at.as_deref(), Some("2026-08-03T10:00:00Z"));
@@ -613,14 +716,24 @@ mod tests {
             cron: "0 0 30 2 *".to_string(),
             self_heal: true,
         };
-        let status = build_status(&schedule, None, at(2026, 8, 3, 6, 30, 0));
+        let status = build_status(
+            &schedule,
+            None,
+            at(2026, 8, 3, 6, 30, 0),
+            SchedulerSource::InProcess,
+        );
         assert!(status.next_run_at.is_none());
         assert_eq!(status.cron, "0 0 30 2 *", "the bad value is still reported");
     }
 
     #[test]
     fn status_serializes_with_the_contract_wire_values() {
-        let status = build_status(&SchedulerConfig::default(), None, at(2026, 8, 3, 6, 30, 0));
+        let status = build_status(
+            &SchedulerConfig::default(),
+            None,
+            at(2026, 8, 3, 6, 30, 0),
+            SchedulerSource::InProcess,
+        );
         let value = serde_json::to_value(&status).expect("SchedulerStatus serializes");
         assert_eq!(value["source"], serde_json::json!("in-process"));
         let mut keys: Vec<&str> = value
@@ -641,6 +754,64 @@ mod tests {
                 "source",
             ]
         );
+    }
+
+    // ---- scheduler source resolution -------------------------------------
+
+    #[test]
+    fn an_installed_unit_is_reported_however_the_schedule_is_configured() {
+        // The unit fires whether or not the app is open, so it is the truth
+        // about "what will run at 07:00 tomorrow".
+        for (kind, expected) in [
+            (SchedulerKind::Launchd, SchedulerSource::Launchd),
+            (SchedulerKind::Systemd, SchedulerSource::Systemd),
+            (SchedulerKind::TaskScheduler, SchedulerSource::TaskScheduler),
+        ] {
+            for enabled in [true, false] {
+                assert_eq!(
+                    resolve_source(kind, enabled),
+                    expected,
+                    "{kind:?}/{enabled}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn with_nothing_installed_an_enabled_schedule_is_served_in_process() {
+        assert_eq!(
+            resolve_source(SchedulerKind::None, true),
+            SchedulerSource::InProcess
+        );
+    }
+
+    #[test]
+    fn with_nothing_installed_and_nothing_enabled_the_source_is_none() {
+        // Reporting `in-process` here would claim a scheduler that is not going
+        // to run anything.
+        assert_eq!(
+            resolve_source(SchedulerKind::None, false),
+            SchedulerSource::None
+        );
+    }
+
+    #[test]
+    fn every_kind_maps_onto_the_wire_value_the_contract_uses() {
+        // Two enums, one vocabulary: a rename on either side must break here
+        // rather than on the frontend.
+        for kind in [
+            SchedulerKind::Launchd,
+            SchedulerKind::Systemd,
+            SchedulerKind::TaskScheduler,
+            SchedulerKind::InProcess,
+        ] {
+            let wire = serde_json::to_value(resolve_source(kind, true))
+                .expect("SchedulerSource serializes");
+            assert_eq!(wire, serde_json::json!(kind.wire_label()), "{kind:?}");
+        }
+        let none = serde_json::to_value(resolve_source(SchedulerKind::None, false))
+            .expect("SchedulerSource serializes");
+        assert_eq!(none, serde_json::json!(SchedulerKind::None.wire_label()));
     }
 
     // ---- event payload ---------------------------------------------------

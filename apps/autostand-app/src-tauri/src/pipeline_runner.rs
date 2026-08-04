@@ -14,6 +14,16 @@
 //! anti-regression guard fires, whether the LLM body is used or dropped, how the
 //! title and subtitle read — is a free function so it can be unit-tested without
 //! an `AppHandle`. The `async fn`s are plumbing around those decisions.
+//!
+//! # Two front ends, one pipeline
+//!
+//! The `AppHandle` is *optional* throughout. With one ([`trigger`], the IPC
+//! path) every step emits its `pipeline-*` event and the config comes out of the
+//! Tauri store; without one ([`trigger_headless`], the
+//! `autostand-app --compile` path a `launchd`/`systemd`/Task Scheduler unit
+//! runs) the events are dropped and the same config is read straight off disk.
+//! Nothing else differs — there is one `compile_one`, and a scheduled run with
+//! no window open executes exactly the steps the UI would have shown.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -59,6 +69,20 @@ const TICKET_DAYS_PREFIX: &str = "<!-- TICKET_DAYS:";
 
 /// Section heading the `local-git` source writes per repo.
 const REPO_HEADING: &str = "### repo: ";
+
+/// Bundle identifier from `apps/autostand-app/src-tauri/tauri.conf.json`.
+///
+/// `tauri-plugin-store` resolves a relative store path against
+/// `app_data_dir()`, which is `dirs::data_dir()/<identifier>`. The headless
+/// entry point has no `AppHandle` to ask, so it reproduces that path.
+const APP_IDENTIFIER: &str = "com.miguel50flowers.autostand";
+
+/// Store filename; must stay identical to `commands::CONFIG_STORE_PATH`.
+const CONFIG_STORE_FILE: &str = "config.json";
+
+/// Key the `AppConfig` lives under; must stay identical to
+/// `commands::CONFIG_STORE_KEY`.
+const CONFIG_STORE_KEY: &str = "config";
 
 /// Placeholder the `local-git` source writes when a repo section has no tickets.
 const NO_TICKETS: &str = "(none)";
@@ -193,8 +217,15 @@ pub struct RunEnv {
 
 impl RunEnv {
     /// Resolve the run environment from the persisted config.
-    pub fn load(app: &AppHandle) -> Result<Self, AppError> {
-        let config = crate::commands::load_config(app)?;
+    ///
+    /// `app` is `None` on the headless path, where the config is read from the
+    /// store file directly instead of through the plugin — see
+    /// [`load_config_from_disk`].
+    pub fn load(app: Option<&AppHandle>) -> Result<Self, AppError> {
+        let config = match app {
+            Some(handle) => crate::commands::load_config(handle)?,
+            None => load_config_from_disk(dirs::data_dir().as_deref())?,
+        };
         let state_dir = crate::commands::state_dir();
         let host = resolve_host(&config, &state_dir);
         let dailies_dir = crate::commands::standup::resolve_dailies_dir(
@@ -214,6 +245,43 @@ impl RunEnv {
     /// Path of the standup file for `date`.
     pub fn file_path(&self, date: NaiveDate) -> PathBuf {
         self.dailies_dir.join(format!("{date}.md"))
+    }
+}
+
+/// Path of the `tauri-plugin-store` file that holds the `AppConfig`.
+///
+/// `data_dir` is `dirs::data_dir()` — passed in rather than read here so the
+/// path rule is testable without depending on the developer's `HOME`.
+pub fn config_store_path(data_dir: Option<&Path>) -> Option<PathBuf> {
+    data_dir.map(|dir| dir.join(APP_IDENTIFIER).join(CONFIG_STORE_FILE))
+}
+
+/// Parse an `AppConfig` out of the raw store file.
+///
+/// The store serializes a flat `{ key: value }` map, so the config is one entry
+/// inside it. A store that exists but has never been written by the Settings
+/// page has no `config` key at all, which is not an error — it means defaults.
+pub fn config_from_store_bytes(bytes: &[u8]) -> Result<AppConfig, AppError> {
+    let store: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(bytes)?;
+    match store.get(CONFIG_STORE_KEY) {
+        Some(value) => serde_json::from_value(value.clone()).map_err(AppError::from),
+        None => Ok(AppConfig::default()),
+    }
+}
+
+/// Read the persisted `AppConfig` without a Tauri app.
+///
+/// A missing store file means the app has never saved settings, so defaults are
+/// correct. A *corrupt* one is an error: silently compiling with default paths
+/// would file standups somewhere the user never configured.
+fn load_config_from_disk(data_dir: Option<&Path>) -> Result<AppConfig, AppError> {
+    let Some(path) = config_store_path(data_dir) else {
+        return Ok(AppConfig::default());
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => config_from_store_bytes(&bytes),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(AppConfig::default()),
+        Err(err) => Err(AppError::Io(format!("read {}: {err}", path.display()))),
     }
 }
 
@@ -908,7 +976,12 @@ pub fn last_trigger(source: TriggerSource) -> LastTrigger {
 ///
 /// A window that has gone away must never abort a compile that is otherwise
 /// succeeding: the file on disk is the deliverable, the event is a courtesy.
-fn emit<P: serde::Serialize + Clone>(app: &AppHandle, event: &str, payload: P) {
+/// `None` is the headless sink — a `launchd`/`systemd`/Task Scheduler run has
+/// no window to notify, so every event is dropped and nothing else changes.
+fn emit<P: serde::Serialize + Clone>(app: Option<&AppHandle>, event: &str, payload: P) {
+    let Some(app) = app else {
+        return;
+    };
     if let Err(err) = app.emit(event, payload) {
         tracing::warn!(event, error = %err, "failed to emit pipeline event");
     }
@@ -916,7 +989,10 @@ fn emit<P: serde::Serialize + Clone>(app: &AppHandle, event: &str, payload: P) {
 
 /// Emit `pipeline-progress` for `step` and keep `AppState` in sync so
 /// `get_pipeline_status` reflects the same position as the event stream.
-fn progress(app: &AppHandle, state: &AppState, date: &str, host: &str, step: Step) {
+///
+/// `AppState` is updated even headlessly: it costs nothing, and it keeps the
+/// two front ends walking literally the same code.
+fn progress(app: Option<&AppHandle>, state: &AppState, date: &str, host: &str, step: Step) {
     state.set_percent(step.percent(), step.label().to_string());
     emit(
         app,
@@ -935,7 +1011,7 @@ fn progress(app: &AppHandle, state: &AppState, date: &str, host: &str, step: Ste
 /// Used for the non-fatal failures the spec still surfaces to the UI — an LLM
 /// fallback and the anti-regression skip — where the run is not in an error
 /// state and `CompileResult.status` stays `ok` / `skip`.
-fn warn_event(app: &AppHandle, date: &str, step: Step, code: &str, message: &str) {
+fn warn_event(app: Option<&AppHandle>, date: &str, step: Step, code: &str, message: &str) {
     emit(
         app,
         "pipeline-error",
@@ -949,7 +1025,14 @@ fn warn_event(app: &AppHandle, date: &str, step: Step, code: &str, message: &str
 }
 
 /// Emit `pipeline-error` *and* put `AppState` into the error state.
-fn fail(app: &AppHandle, state: &AppState, date: &str, step: Step, code: &str, message: &str) {
+fn fail(
+    app: Option<&AppHandle>,
+    state: &AppState,
+    date: &str,
+    step: Step,
+    code: &str,
+    message: &str,
+) {
     state.set_error(message.to_string());
     warn_event(app, date, step, code, message);
 }
@@ -966,9 +1049,33 @@ fn fail(app: &AppHandle, state: &AppState, date: &str, step: Step, code: &str, m
 ///
 /// Never returns `Err` for a *compile* failure: a failed date lands in the
 /// returned vector as `status: "error"` so a second target still gets its turn.
-#[tracing::instrument(skip_all, fields(trigger = source.label(), only_date = ?only_date))]
 pub async fn trigger(
     app: &AppHandle,
+    state: &AppState,
+    source: TriggerSource,
+    only_date: Option<NaiveDate>,
+) -> Result<Vec<CompileResult>, AppError> {
+    run(Some(app), state, source, only_date).await
+}
+
+/// [`trigger`] with no window: the `autostand-app --compile` entry point.
+///
+/// Identical pipeline, identical lock, identical last-run stamp; the only
+/// difference is that the `pipeline-*` events go nowhere and the config is read
+/// off disk. This is what a `launchd` agent, a `systemd --user` timer or a
+/// Task Scheduler task actually runs.
+pub async fn trigger_headless(
+    state: &AppState,
+    source: TriggerSource,
+    only_date: Option<NaiveDate>,
+) -> Result<Vec<CompileResult>, AppError> {
+    run(None, state, source, only_date).await
+}
+
+/// The run itself, shared by both front ends.
+#[tracing::instrument(skip_all, fields(trigger = source.label(), only_date = ?only_date, headless = app.is_none()))]
+async fn run(
+    app: Option<&AppHandle>,
     state: &AppState,
     source: TriggerSource,
     only_date: Option<NaiveDate>,
@@ -1085,7 +1192,7 @@ fn self_heal_gate(
 #[allow(clippy::too_many_lines)]
 #[tracing::instrument(skip_all, fields(date = %date, host = %env.host, trigger = source.label()))]
 pub async fn compile_one(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     state: &AppState,
     env: &RunEnv,
     date: NaiveDate,
@@ -1326,7 +1433,7 @@ async fn render_body(
 /// of `date` would see right now, which is exactly what the Debug page wants.
 #[tracing::instrument(skip_all, fields(date = %date))]
 pub async fn preview(app: &AppHandle, date: NaiveDate) -> Result<GatherPreview, AppError> {
-    let env = RunEnv::load(app)?;
+    let env = RunEnv::load(Some(app))?;
     let window = dates::compute_window(date);
     let gathered = gather::gather_all(
         &gather::to_date_window(&window),
@@ -1365,14 +1472,16 @@ pub async fn preview(app: &AppHandle, date: NaiveDate) -> Result<GatherPreview, 
 #[cfg(test)]
 mod tests {
     use super::{
-        audit_patch, base_result, decide_render, error_result, git_root_for, inputs_hash,
-        is_regression, last_trigger, ok_result, outcome_message, parse_note_refs, parse_repo_facts,
+        audit_patch, base_result, config_from_store_bytes, config_store_path, decide_render,
+        error_result, git_root_for, inputs_hash, is_regression, last_trigger,
+        load_config_from_disk, ok_result, outcome_message, parse_note_refs, parse_repo_facts,
         should_skip_unchanged, sidecar_repo_count, skip_result, split_ticket_days, subtitle_for,
         targets, title_for, RenderDecision, Step, STEPS,
     };
     use crate::commands::types::{
-        CompileStatus, LastTrigger, RenderMode, RenderUsed, SchedulerConfig,
+        AppConfig, CompileStatus, LastTrigger, RenderMode, RenderUsed, SchedulerConfig,
     };
+    use crate::error::AppError;
     use crate::gather::Gathered;
     use crate::render::RenderedBody;
     use crate::state::PipelineStateKind;
@@ -2101,6 +2210,89 @@ mod tests {
         assert_eq!(
             patch["validation_failure"]["code"],
             serde_json::json!("invented_ticket")
+        );
+    }
+
+    // ── headless config ───────────────────────────────────────────────────
+
+    #[test]
+    fn the_headless_config_path_matches_the_stores_own_layout() {
+        // `tauri-plugin-store` resolves a relative path against
+        // `app_data_dir()` = `dirs::data_dir()/<bundle identifier>`. If this
+        // drifts, a scheduled run silently compiles with default settings.
+        assert_eq!(
+            config_store_path(Some(Path::new("/home/t/.local/share"))),
+            Some(PathBuf::from(
+                "/home/t/.local/share/com.miguel50flowers.autostand/config.json"
+            ))
+        );
+        assert_eq!(config_store_path(None), None);
+    }
+
+    /// The bytes `tauri-plugin-store` would have written for `config`.
+    fn store_bytes(config: &AppConfig) -> Vec<u8> {
+        serde_json::json!({
+            "config": serde_json::to_value(config).expect("AppConfig serializes"),
+            "unrelated-plugin-key": 7,
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[test]
+    fn the_headless_loader_reads_the_config_out_of_the_store_map() {
+        let stored = AppConfig {
+            dailies_dir: "/srv/dailies".to_string(),
+            jira_base: "https://j.example".to_string(),
+            ..AppConfig::default()
+        };
+        let config = config_from_store_bytes(&store_bytes(&stored)).expect("store parses");
+        assert_eq!(config.dailies_dir, "/srv/dailies");
+        assert_eq!(config.jira_base, "https://j.example");
+        assert_eq!(config.render_mode, stored.render_mode);
+    }
+
+    #[test]
+    fn a_store_without_a_config_entry_yields_defaults() {
+        // The store exists as soon as any plugin key is written; the Settings
+        // page may never have saved a config.
+        let config = config_from_store_bytes(b"{}").expect("empty store parses");
+        assert_eq!(config.dailies_dir, AppConfig::default().dailies_dir);
+    }
+
+    #[test]
+    fn a_corrupt_store_is_an_error_not_a_silent_default() {
+        // Falling back to defaults here would file standups into a directory the
+        // user never configured, from a run with no UI to notice.
+        assert!(matches!(
+            config_from_store_bytes(b"{ not json"),
+            Err(AppError::Config(_))
+        ));
+        assert!(matches!(
+            config_from_store_bytes(br#"{"config": 42}"#),
+            Err(AppError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn the_headless_loader_survives_a_machine_that_never_ran_the_app() {
+        let dir = tempfile::tempdir().expect("temp data dir");
+        // No store file at all: a first-ever scheduled run must still compile.
+        let config = load_config_from_disk(Some(dir.path())).expect("defaults");
+        assert_eq!(config.dailies_dir, AppConfig::default().dailies_dir);
+
+        let stored = AppConfig {
+            dailies_dir: "/srv/d".to_string(),
+            ..AppConfig::default()
+        };
+        let store = config_store_path(Some(dir.path())).expect("path");
+        std::fs::create_dir_all(store.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&store, store_bytes(&stored)).expect("write");
+        assert_eq!(
+            load_config_from_disk(Some(dir.path()))
+                .expect("stored config")
+                .dailies_dir,
+            "/srv/d"
         );
     }
 }
