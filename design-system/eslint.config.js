@@ -21,5 +21,12 @@ export default tseslint.config(
       ...reactHooks.configs.recommended.rules,
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
     },
+  },
+  {
+    // Base components deliberately export their CVA variants next to the
+    // component so app components can compose the same styles. These are
+    // library files, never an app HMR boundary, so the rule does not apply.
+    files: ["components/*.tsx"],
+    rules: { "react-refresh/only-export-components": "off" },
   }
 );
