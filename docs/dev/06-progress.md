@@ -17,7 +17,7 @@ Legend: `[x]` done and verified · `[~]` partially done (detail in the note) · 
 | F1 | Scaffolding: monorepo, Tauri v2 shell, design-system skeleton | done |
 | F2 | Core domain + adapters (8 data sources, 5 LLM providers, pipeline, renderer, audit) | done |
 | F3 | Frontend + IPC contract (25 commands, 23 base components, 9 hooks, 5 pages) | done |
-| F4 | Wiring: gather → compile → render → write → commit, config store, scheduler runtime | in progress |
+| F4 | Wiring: gather → compile → render → write → commit, config store, scheduler runtime | done |
 | F5 | Brand assets + landing page composition | not started |
 | F6 | E2E tests + CI/CD | not started |
 
@@ -60,19 +60,24 @@ Legend: `[x]` done and verified · `[~]` partially done (detail in the note) · 
 - [x] 5 pages (dashboard, settings, history, audit, debug)
 - [x] 176 Rust tests · 97 frontend tests
 
-## F4 — Wiring (in progress)
+## F4 — Wiring
 
-- [ ] `compute_window(F)` — two-business-day window + date list
-- [ ] `compute_provenance` — FORBIDDEN / COVERED / SKEW (`docs/specs/anti-backdating.md`)
-- [ ] Gather orchestration over the enabled data sources, with the 2700s TTL cache
-- [ ] `anti_regression_guard` — skip when FACTS are empty but the last run had repos
-- [ ] `dirty_check` + `persist_hash` — skip re-render when inputs are unchanged
-- [ ] LLM render orchestration: provider selection, keychain keys, CLI-first → API, `AUTOSTAND_RENDER=1`
-- [ ] `validate_render` — reject bodies that invent tickets, then fall back to deterministic
-- [ ] `trigger` / `self_heal` / `commit_push` / `git_sync_pull` with the run lock
-- [ ] In-process scheduler runtime emitting `scheduler-tick`, persisted cron
-- [ ] `compile_standup`, `compile_all`, `trigger_run_now`, `preview_gather` backed by the real pipeline
-- [ ] `pipeline-done` and `scheduler-tick` events actually emitted (their listeners already exist)
+- [x] `compute_window(F)` — two-business-day window + date list (`core::dates`)
+- [x] `compute_provenance` — FORBIDDEN / COVERED / SKEW (`core::provenance`)
+- [x] Gather orchestration over the enabled data sources, with the 2700s TTL cache (`app::gather`)
+- [x] `anti_regression_guard` — skip when FACTS are empty but the last run had repos
+- [x] `dirty_check` + `persist_hash` — sha256 over the redacted inputs (`core::hashes`)
+- [x] LLM render orchestration: provider selection, keychain keys, CLI-first → API, `AUTOSTAND_RENDER=1`
+- [x] `validate_render` — reject bodies that invent tickets, then fall back to deterministic
+- [x] `trigger` / `self_heal` / `commit_push` / `git_sync_pull` with the run lock (`app::pipeline_runner`)
+- [x] In-process scheduler runtime emitting `scheduler-tick`, persisted cron
+- [x] `compile_standup`, `compile_all`, `trigger_run_now`, `preview_gather`, `test_llm_provider` backed by real code
+- [x] `pipeline-done` and `scheduler-tick` events actually emitted
+- [x] End-to-end integration tests over a real temp git repo (`tests/pipeline_e2e.rs`)
+- [ ] System scheduler installation (launchd / systemd / Task Scheduler) — `SchedulerStatus.source` is always
+      `in-process` today; installing the OS unit is deferred to F6 alongside packaging
+
+Test totals after F4: **411 Rust tests** (was 176) · 97 frontend tests.
 
 ## F5 — Brand + landing
 
@@ -101,8 +106,8 @@ status**.
 | Accumulate never-delete | `[x]` | `core::accumulate` |
 | Deterministic fallback always computed | `[x]` | `core::deterministic` |
 | Secrets redaction pre-LLM and pre-write | `[x]` | `core::redact` |
-| Audit sidecar per render | `[~]` | writer done (`core::audit`); not yet produced by a real run |
-| Anti-backdating (FORBIDDEN/COVERED/SKEW/CLAIM) | `[~]` | `core::scrub` consumes them; nothing computes provenance yet — F4 |
-| Union merge driver (`.gitattributes`) | `[ ]` | F4 |
-| No-coauthor commits | `[ ]` | F4 (`commit_push`) |
-| Self-heal missed runs | `[~]` | `scheduler::selfheal::compute_targets` only; the heal itself is F4 |
+| Audit sidecar per render | `[x]` | `core::audit`; asserted end-to-end by `pipeline_e2e` |
+| Anti-backdating (FORBIDDEN/COVERED/SKEW/CLAIM) | `[x]` | `core::provenance` + `core::scrub`; asserted end-to-end |
+| Union merge driver (`.gitattributes`) | `[x]` | `app::git_ops::ensure_gitattributes` (idempotent self-heal) |
+| No-coauthor commits | `[x]` | `app::git_ops::commit_push`; pinned by a test that greps the commit |
+| Self-heal missed runs | `[x]` | `app::pipeline_runner` + `scheduler::selfheal::is_frozen` |
