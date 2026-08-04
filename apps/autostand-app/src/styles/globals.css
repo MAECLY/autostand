@@ -1,28 +1,20 @@
-@import "tailwindcss";
+/* App stylesheet — Tailwind v4, tokens and @theme all come from the design
+   system so the app, Storybook and the landing page stay in lockstep.
+   See docs/tauri/04-frontend-stack.md § Design token integration. */
 
-@theme {
-  --color-background: var(--bg-base);
-  --color-foreground: var(--fg-base);
-  --color-card: var(--bg-surface);
-  --color-card-foreground: var(--fg-base);
-  --color-muted: var(--bg-muted);
-  --color-muted-foreground: var(--fg-muted);
-  --color-border: var(--border-default);
-  --color-input: var(--border-default);
-  --color-ring: var(--border-focus);
-  --color-primary: var(--brand-primary);
-  --color-primary-foreground: var(--fg-inverse);
-  --color-secondary: var(--bg-elevated);
-  --color-secondary-foreground: var(--fg-base);
-  --color-accent: var(--brand-accent);
-  --color-destructive: var(--status-error);
-  --color-success: var(--status-success);
-  --color-warning: var(--status-warning);
-}
+@import "../../../../design-system/styles/globals.css";
 
 :root {
   color-scheme: light dark;
-  font-family: var(--font-sans, "Inter", system-ui, sans-serif);
-  color: var(--fg-base);
-  background: var(--bg-base);
+}
+
+/* The Tauri webview is an app shell, not a scrolling document. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
 }

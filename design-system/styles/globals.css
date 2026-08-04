@@ -1,0 +1,96 @@
+/* Shared design-system stylesheet.
+   Single source of truth for Tailwind v4 + autostand design tokens.
+   Consumed by the Tauri app (apps/autostand-app/src/styles/globals.css)
+   and by Storybook (.storybook/preview.ts). */
+
+@import "tailwindcss";
+@import "../tokens/tokens.css";
+
+/* Dark mode is class-based: tokens.css defines the `.dark` override block. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Component sources live next to this file, outside any app root. */
+@source "../components";
+@source "../app-components";
+
+@theme {
+  /* Surfaces + text */
+  --color-background: var(--bg-base);
+  --color-foreground: var(--fg-base);
+  --color-surface: var(--bg-surface);
+  --color-elevated: var(--bg-elevated);
+  --color-inset: var(--bg-inset);
+  --color-card: var(--bg-surface);
+  --color-card-foreground: var(--fg-base);
+  --color-popover: var(--bg-elevated);
+  --color-popover-foreground: var(--fg-base);
+  --color-muted: var(--bg-muted);
+  --color-muted-foreground: var(--fg-muted);
+  --color-subtle: var(--fg-subtle);
+
+  /* Borders + rings */
+  --color-border: var(--border-default);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--border-default);
+  --color-ring: var(--border-focus);
+
+  /* Brand */
+  --color-primary: var(--brand-primary);
+  --color-primary-hover: var(--brand-primary-hover);
+  --color-primary-foreground: var(--fg-inverse);
+  --color-secondary: var(--bg-muted);
+  --color-secondary-foreground: var(--fg-base);
+  --color-accent: var(--brand-accent);
+  --color-accent-foreground: var(--fg-inverse);
+
+  /* Status */
+  --color-success: var(--status-success);
+  --color-success-bg: var(--status-success-bg);
+  --color-warning: var(--status-warning);
+  --color-warning-bg: var(--status-warning-bg);
+  --color-destructive: var(--status-error);
+  --color-destructive-bg: var(--status-error-bg);
+  --color-destructive-foreground: var(--fg-inverse);
+  --color-info: var(--status-info);
+  --color-info-bg: var(--status-info-bg);
+
+  /* Audit classification (see docs/specs/audit.md) */
+  --color-audit-commit: var(--audit-commit);
+  --color-audit-github: var(--audit-github);
+  --color-audit-review: var(--audit-review);
+  --color-audit-note: var(--audit-note);
+  --color-audit-phantom: var(--audit-phantom);
+  --color-audit-unverified: var(--audit-unverified);
+
+  /* Typography */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  /* Radii */
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  /* Shadows */
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  /* Motion */
+  --default-transition-duration: var(--duration-fast);
+  --default-transition-timing-function: var(--ease-default);
+}
+
+@layer base {
+  * {
+    border-color: var(--border-default);
+  }
+
+  body {
+    background-color: var(--bg-base);
+    color: var(--fg-base);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}
