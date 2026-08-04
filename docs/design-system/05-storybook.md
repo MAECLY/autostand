@@ -47,8 +47,7 @@ export default config;
 
 ```ts
 import type { Preview } from "@storybook/react";
-import "../tokens/tokens.css";
-import "../app/globals.css";   // or a shared design-system/styles.css
+import "../styles/globals.css";  // Tailwind v4 + tokens; the app imports this same file
 
 const preview: Preview = {
   parameters: {
