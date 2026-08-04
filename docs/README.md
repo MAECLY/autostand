@@ -70,6 +70,7 @@ and writes it atomically to a `dailies/` directory that syncs across machines.
 | [dev/03-testing.md](dev/03-testing.md) | Unit, integration, e2e, snapshot strategy. |
 | [dev/04-ci-cd.md](dev/04-ci-cd.md) | GitHub Actions: lint, test, build, release. |
 | [dev/05-migration-from-appscript.md](dev/05-migration-from-appscript.md) | Mapping App Script behavior → autostand crates. |
+| [dev/06-progress.md](dev/06-progress.md) | **Progress tracker** — phase-by-phase implementation status. Update at the end of every phase. |
 
 ### User guide
 

@@ -112,6 +112,9 @@ The choice is made once at first-run setup (Settings → Paths → dailies dir).
 
 ## Invariants preserved
 
+> These are the behaviours the port **must** preserve. For how much of each is actually implemented today, see
+> the status table in [`dev/06-progress.md`](06-progress.md) — this list is the requirement, not the progress.
+
 autostand preserves every invariant the App Script enforces. These are covered by regression tests (see `docs/dev/03-testing.md`):
 
 - [x] **Host slug stability** — slug is persistent across runs, rejects numeric/IP
