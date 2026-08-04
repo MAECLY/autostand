@@ -1,0 +1,165 @@
+name: Release
+
+# Tag-driven. `git push origin v0.2.0` builds the four platform bundles and
+# attaches them to a DRAFT release, which a human reviews and publishes.
+# workflow_dispatch is the re-run path for a tag whose build failed halfway.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build (e.g. v0.2.0)'
+        required: true
+        type: string
+
+# Explicit, not inherited: tauri-action needs to create the draft release and
+# upload assets, and nothing here needs any other scope.
+permissions:
+  contents: write
+
+# One release per tag. Never cancel in flight — a half-uploaded draft release is
+# worse than a slow one.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Cheap gate before four expensive builds: the tag must match the version
+  # committed in every manifest, or the bundles ship a version nobody asked for.
+  version-check:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Manifest versions agree with the tag
+        run: python3 tests/verify-version-consistency.py "$RELEASE_TAG"
+
+  release:
+    name: ${{ matrix.platform }}
+    needs: version-check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14 # Apple Silicon
+            target: aarch64-apple-darwin
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-13 # Intel
+            target: x86_64-apple-darwin
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04 # oldest glibc we support; do not bump casually
+            target: x86_64-unknown-linux-gnu
+            args: ''
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      # Tauri v2 Debian/Ubuntu prerequisites — a superset of what the Linux job
+      # in ci.yml installs (compiling is not enough here: we also bundle), plus
+      # patchelf, which the AppImage bundler shells out to.
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential \
+            pkg-config \
+            file \
+            wget \
+            curl \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Registry/index only. Caching a release `target/` would push multi-GB
+      # entries into the 10 GB repo cache and evict the CI caches that every PR
+      # depends on; a release recompiles from scratch and that is fine.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: 'false'
+          key: ${{ matrix.target }}
+
+      # No `version:` — pnpm/action-setup reads `packageManager` from
+      # package.json (pnpm@11.18.0), so the workflow cannot drift from the repo.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          # The floor from `engines.node: ">=20"` — release bundles are built
+          # against the oldest runtime the repo claims to support.
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # tauri.conf.json defines no `beforeBuildCommand`, so `tauri build` will
+      # not build the web assets itself — it only copies `frontendDist`
+      # (../dist). Build them here or the bundle ships a stale/absent UI.
+      - name: Build the frontend
+        run: pnpm --filter autostand-app build
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS codesigning + notarization. All empty until the secrets are
+          # set, and tauri-action then produces an unsigned build instead of
+          # failing — see docs/user/01-install.md for the Gatekeeper workaround.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows codesigning. Passed by name only: Tauri v2 signs Windows
+          # bundles from `bundle > windows > certificateThumbprint` /
+          # `signCommand` in tauri.conf.json, which is not configured yet, so
+          # these are reserved rather than active.
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          # NOTE: the updater is NOT enabled (no updater plugin, no
+          # `plugins.updater` block, no `bundle.createUpdaterArtifacts`), so no
+          # latest.json and no .sig files are produced and
+          # TAURI_SIGNING_PRIVATE_KEY* are deliberately not wired here.
+          # See docs/dev/04-ci-cd.md § Tauri updater for what enabling it needs.
+        with:
+          projectPath: apps/autostand-app
+          # Explicit: the pnpm lockfile lives at the repo root, so auto-detection
+          # inside apps/autostand-app can guess the wrong package manager.
+          tauriScript: pnpm tauri
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: autostand ${{ env.RELEASE_TAG }}
+          releaseBody: |
+            See CHANGELOG.md for what changed in this release.
+
+            Bundles are attached below once every platform build finishes:
+            macOS `.dmg`/`.app` (Apple Silicon + Intel), Linux
+            `.deb`/`.rpm`/`.AppImage`, Windows `.msi`/`.exe`.
+
+            Builds are unsigned until the codesigning secrets are configured —
+            macOS: right-click → Open; Windows: More info → Run anyway.
+            Install notes: docs/user/01-install.md
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

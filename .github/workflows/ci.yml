@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only: CI never publishes anything. Releases live in release.yml.
+permissions:
+  contents: read
+
+# Supersede in-flight runs for the same PR; never cancel a push to main.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test, audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Derived from this repo's Cargo.lock (tauri 2.11.5 / wry 0.55.1 / tao 0.35.3),
+      # not from the generic Tauri prerequisites page. Every cargo command below
+      # compiles apps/autostand-app/src-tauri, so these must be installed first:
+      #   webkit2gtk-sys 2.0.2       -> pkg-config "webkit2gtk-4.1"  (4.1, NOT 4.0)
+      #   soup3-sys 0.5.0            -> pkg-config "libsoup-3.0"
+      #   javascriptcore-rs-sys 1.1  -> pkg-config "javascriptcoregtk-4.1"
+      #   gtk-sys 0.18.2             -> pkg-config "gtk+-3.0"
+      #   libdbus-sys 0.2.7          -> pkg-config "dbus-1"  (tao's default `dbus` feature)
+      #   libappindicator-sys 0.9.0  -> libayatana-appindicator3  (via tray-icon)
+      # librsvg2-dev is required by the Tauri bundler for Linux icon rasterisation.
+      # Deliberately NOT installed:
+      #   libssl-dev  -- reqwest is `default-features = false` + rustls-tls, so no
+      #                  crate in the graph links OpenSSL (openssl-sys is absent).
+      #   libxdo-dev  -- no libxdo-sys in Cargo.lock; tao 0.35 talks to D-Bus instead.
+      - name: Install Tauri v2 Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            wget \
+            file \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      # --all-targets, so unit tests, integration tests and examples are linted too.
+      # Lint levels come from the workspace [lints] table: rust unsafe_code = deny,
+      # clippy all + pedantic + cargo = warn, promoted to errors by -D warnings.
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      # cargo-audit is installed into ~/.cargo/bin, which Swatinem/rust-cache
+      # restores and saves, so this is a near no-op once the cache is warm.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version '^0.22'
+
+      # `cargo audit` exits non-zero for vulnerabilities only; `unmaintained` and
+      # `unsound` advisories are reported as warnings and do not fail the build.
+      # Current state of this workspace (verified with cargo-audit 0.22.2 against
+      # 541 crates): 0 vulnerabilities, 17 warnings, none of them suppressed --
+      #   RUSTSEC-2024-0411/0412/0413/0414/0415/0416/0417/0418/0419/0420
+      #     gtk-rs GTK3 bindings unmaintained (atk, gdk, gdkx11, gtk, gtk3-macros, ...)
+      #   RUSTSEC-2024-0429  glib 0.18.5 unsound VariantStrIter iterators
+      #   RUSTSEC-2024-0370  proc-macro-error unmaintained
+      #   RUSTSEC-2025-0075/0080/0081/0098/0100  unic-* unmaintained
+      # All of them arrive through Tauri's Linux GTK3 stack or through build-time
+      # proc macros; they clear when Tauri moves off GTK3. There is intentionally
+      # no --ignore flag here: if a real vulnerability appears, this step fails.
+      - name: cargo audit
+        run: cargo audit
+
+  frontend:
+    name: Frontend (lint, typecheck, test, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `version:` input on purpose: action-setup@v4 reads pnpm@11.18.0 from the
+      # root package.json "packageManager" field, so CI cannot drift from the repo.
+      - uses: pnpm/action-setup@v4
+
+      # Node 22 rather than 20: root engines say node >= 20, but
+      # @testing-library/jest-dom@6.10.0 (dev dep of apps/autostand-app) declares
+      # engines.node ">=22", so 20 would install with an unmet-engine warning.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # NOT `pnpm build` -- that script is `tauri build`, which needs the Rust
+      # toolchain plus the GTK/WebKit stack and emits a desktop bundle; it belongs
+      # in release.yml, not here. `pnpm build:web` builds the three web surfaces:
+      # apps/autostand-app (vite), apps/landing (astro) and design-system (Storybook).
+      - name: Build web surfaces
+        run: pnpm build:web

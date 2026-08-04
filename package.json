@@ -13,6 +13,8 @@
     "dev": "pnpm --filter autostand-app tauri dev",
     "build": "pnpm --filter autostand-app tauri build",
     "build:frontend": "pnpm --filter autostand-app build",
+    "build:landing": "pnpm --filter landing build",
+    "build:web": "pnpm build:frontend && pnpm build:landing && pnpm build-storybook",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
