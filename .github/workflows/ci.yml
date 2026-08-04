@@ -132,3 +132,47 @@ jobs:
       # apps/autostand-app (vite), apps/landing (astro) and design-system (Storybook).
       - name: Build web surfaces
         run: pnpm build:web
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Only chromium: both suites declare a single chromium project, and pulling
+      # the other engines would triple the download for no extra coverage.
+      - name: Install Playwright browser
+        run: pnpm --filter autostand-app exec playwright install --with-deps chromium
+
+      # Drives the real React UI against mocked Tauri IPC -- no compiled binary, so
+      # this runs on a plain runner. Not a substitute for the Rust integration tests,
+      # which exercise the real pipeline.
+      - name: App E2E
+        run: pnpm --filter autostand-app test:e2e
+
+      # Runs against the static Astro build served under its deployed base path, so
+      # a base-path or contrast regression fails here rather than in production.
+      - name: Landing E2E
+        run: pnpm --filter landing test:e2e
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            apps/autostand-app/test-results/
+            apps/landing/e2e/.artifacts/
+          retention-days: 7
+          if-no-files-found: ignore
