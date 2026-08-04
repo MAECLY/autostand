@@ -9,7 +9,9 @@
     "core:window:default",
     "core:webview:default",
     "core:app:default",
+    "dialog:default",
     "fs:default",
+    "opener:default",
     "shell:default",
     "store:default"
   ]
