@@ -186,6 +186,14 @@ Used for: error banners, "no standup for this date" notices.
 - Content: shown/hidden with animation
 - Used for: AUTO block collapse in History view, audit bullet expansion
 
+### Spinner
+
+`design-system/components/spinner.tsx`
+
+- `lucide-react` `Loader2` with `animate-spin`, sizes `sm` | `default` | `lg`
+- Takes a `label` announced to screen readers (the icon itself is `aria-hidden`)
+- Used for: pending queries in every page (history probes, sidecar reads, gather preview)
+
 ## Storybook stories
 
 One `.stories.tsx` per component in `design-system/components/`:
