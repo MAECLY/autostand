@@ -30,8 +30,13 @@ fn which(name: &str) -> Option<PathBuf> {
 }
 
 async fn get_version(path: &Path) -> Option<String> {
+    // `AUTOSTAND_RENDER=1` on every provider-binary spawn, not just renders
+    // (`AGENTS.md`: "anti-recursion env set on CLI subprocess calls"). A
+    // `--version` probe writes no session today, but a provider CLI that
+    // starts recording one would turn detection into work autostand ingests.
     let out = tokio::process::Command::new(path)
         .arg("--version")
+        .env("AUTOSTAND_RENDER", "1")
         .output()
         .await
         .ok()?;
