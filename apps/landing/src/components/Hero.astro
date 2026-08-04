@@ -1,0 +1,66 @@
+---
+/**
+ * Landing hero. Headline, subhead and gradient are fixed by
+ * `docs/design-system/02-brand.md` § Landing page hero; the h1 is the tagline and
+ * the only h1 on the page.
+ *
+ * The brand doc's CTA is "Download", but there is no release to download yet, so
+ * both buttons point at the source instead of implying a binary that does not
+ * exist.
+ */
+
+import { Badge } from "@design-system/components/badge";
+import { buttonVariants } from "@design-system/components/button";
+// The GitHub mark comes from our own icon set — lucide deprecated its brand icons.
+import { AuditGithubIcon } from "@design-system/icons";
+import { BookOpen } from "lucide-react";
+
+import AppMockup from "@/components/AppMockup.astro";
+
+const REPO_URL = "https://github.com/MAECLY/autostand";
+const DOCS_URL = "https://github.com/MAECLY/autostand/tree/main/docs";
+---
+
+<section class="hero-gradient border-b border-border">
+  <div
+    class="mx-auto flex max-w-6xl flex-col items-center px-6 pb-16 pt-20 sm:pb-24 sm:pt-28"
+  >
+    <Badge variant="outline" className="bg-surface">
+      Local-first · open source · Tauri v2
+    </Badge>
+
+    <h1
+      class="mt-6 max-w-4xl text-center text-4xl font-bold leading-tight tracking-tight sm:text-5xl lg:text-hero"
+    >
+      Automate your standup.
+      <span class="block text-muted-foreground">Know what you did.</span>
+    </h1>
+
+    <p class="mt-6 max-w-2xl text-center text-lg text-muted-foreground">
+      autostand gathers your commits, PRs, and notes — then writes your daily
+      standup for you.
+    </p>
+
+    <div class="mt-8 flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
+      <a class={buttonVariants({ size: "lg" })} href={REPO_URL}>
+        <AuditGithubIcon />
+        Get it on GitHub
+      </a>
+      <a
+        class={buttonVariants({ variant: "outline", size: "lg" })}
+        href={DOCS_URL}
+      >
+        <BookOpen aria-hidden="true" />
+        Read the docs
+      </a>
+    </div>
+
+    <p class="mt-4 max-w-xl text-center text-sm text-muted-foreground">
+      No installer yet — clone the repo and run
+      <code class="rounded-sm bg-inset px-1 py-0.5 font-mono">pnpm tauri dev</code>
+      to build it. MIT licensed.
+    </p>
+
+    <AppMockup class="mt-14 w-full" />
+  </div>
+</section>
