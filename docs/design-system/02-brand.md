@@ -15,7 +15,7 @@ SVGs live in `brand/logo/`. All are hand-tuned (not auto-exported) for crispness
 | `logo-mark.svg` | Icon only (the "mark") | Favicon, app icon, social cards, avatar |
 | `logo-horizontal.svg` | Icon + wordmark, horizontal | Navbar, header, README badge |
 | `logo-vertical.svg` | Icon over wordmark, stacked | Splash screen, loading state |
-| `logo-mono.svg` | Monochrome (single color, currentColor) | Footer, dark-on-light contexts, print |
+| `logo-mono.svg` | Monochrome horizontal lockup (`currentColor`) | Footer, dark backgrounds, print — must be inlined |
 | `logo-favicon.svg` | Small-optimized mark | Browser tab, PWA icon |
 
 ### Icon concept
@@ -25,8 +25,19 @@ The mark is a stylized stand-up card (rounded rectangle) with a lightning bolt f
 Design rules:
 - Works at 16×16 (favicon), 32×32 (toolbar), 256×256 (app icon), 1024×1024 (store).
 - Single color (uses `currentColor`) for the mono variant.
-- Full-color variant uses `--brand-primary` (`#2563eb`) for the bolt + `--bg-surface` for the card.
+- Full-color variant fills the card with `--brand-primary` (`#2563eb`) and knocks the bolt/check out in
+  `--bg-surface`. (The roles are the reverse of what this doc originally specified: a white card on a white page
+  is an invisible container, and legibility at 16×16 is the harder constraint — a solid tile is what survives at
+  favicon and dock sizes.)
 - No gradients in the mark itself (gradients allowed in hero backgrounds only).
+
+The logo SVGs carry literal hex rather than `var(--brand-primary)`: CSS variables do not resolve when an SVG is
+loaded through `<img>` or as a favicon, so the variable would be dead weight in exactly the contexts these files
+are used. `logo-mono.svg` is the exception — it uses `currentColor` throughout and must be **inlined** into the
+host document (paste the markup, or a `?raw` import) for that to resolve.
+
+Regenerate the whole suite with `python3 tests/make-wordmark.py`. The wordmark is extracted from Inter 700 as
+path outlines, never an SVG `<text>` element, so the lockup cannot reshape itself on a machine without Inter.
 
 ## Typography
 

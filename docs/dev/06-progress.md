@@ -18,7 +18,7 @@ Legend: `[x]` done and verified · `[~]` partially done (detail in the note) · 
 | F2 | Core domain + adapters (8 data sources, 5 LLM providers, pipeline, renderer, audit) | done |
 | F3 | Frontend + IPC contract (25 commands, 23 base components, 9 hooks, 5 pages) | done |
 | F4 | Wiring: gather → compile → render → write → commit, config store, scheduler runtime | done |
-| F5 | Brand assets + landing page composition | not started |
+| F5 | Brand assets + landing page composition | done |
 | F6 | E2E tests + CI/CD | not started |
 
 ---
@@ -81,8 +81,13 @@ Test totals after F4: **411 Rust tests** (was 176) · 97 frontend tests.
 
 ## F5 — Brand + landing
 
-- [ ] Full logo set (mark exists; wordmark, lockup, favicon variants missing)
-- [ ] Landing page composition reusing the component kit (`docs/design-system/06-landing-reuse.md`)
+- [x] Full logo set — mark, horizontal, vertical, mono, favicon; wordmark as Inter 700 path outlines
+- [x] Real app icons (32/128/128@2x/512/icon.png, a multi-size `.ico`, `.icns`) + the 1200×630 Open Graph card
+- [x] Self-hosted Inter + JetBrains Mono woff2, wired through the shared stylesheet and bundled by the app
+- [x] Custom icon set (`design-system/icons/`) with React exports and stories
+- [x] Landing page (`apps/landing/`, Astro static + React islands) reusing the tokens and base components
+- [x] Dark mode, skip link, section anchors; only the theme toggle and FAQ ship JavaScript
+- [ ] Deploy the landing page (the build is static and GitHub-Pages-ready under `/autostand`; no workflow yet — F6)
 
 ## F6 — E2E + CI/CD
 
