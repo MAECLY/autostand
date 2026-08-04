@@ -8,6 +8,11 @@
 // (dead code) and leak private types through public items.
 pub mod commands;
 pub mod error;
+pub mod gather;
+pub mod git_ops;
+pub mod pipeline_runner;
+pub mod render;
+pub mod scheduler_runtime;
 pub mod state;
 
 pub use error::AppError;

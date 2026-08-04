@@ -5,6 +5,8 @@
 //! - [`format`] — parser/writer for the AUTO/MANUAL block file format.
 //! - [`dates`] — `next_business_day`, `prev_business_day_before`.
 //! - [`host`] — host slug derivation + persistence (platform-stable, never DHCP).
+//! - [`provenance`] — FORBIDDEN/COVERED/SKEW classification for anti-backdating.
+//! - [`hashes`] — input hashing for the dirty check.
 //! - [`pipeline`] — gather → scrub → anti-backdate → render → accumulate → redact → write → audit.
 //! - [`scrub`] — anti-backdate scrub (CLAIM regex, FORBIDDEN/COVERED).
 //! - [`meta`] — meta-work filter (standup tooling self-references).
@@ -24,9 +26,11 @@ pub mod dates;
 pub mod deterministic;
 pub mod fileops;
 pub mod format;
+pub mod hashes;
 pub mod host;
 pub mod meta;
 pub mod pipeline;
+pub mod provenance;
 pub mod redact;
 pub mod scrub;
 pub mod standup;
