@@ -125,9 +125,55 @@ const base = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/`;
 // `${base}brand/logo-mark.svg` → /autostand/brand/logo-mark.svg
 ```
 
-There is no CI workflow for this site yet. To publish by hand, build and upload
-`dist/` to the Pages branch or configure a Pages action that runs
-`pnpm --filter landing build` and deploys `apps/landing/dist`.
+### The Pages workflow
+
+`.github/workflows/pages.yml` publishes this site on every push to `main` (and
+on `workflow_dispatch`). A repo gets one Pages site, and this repo has two web
+surfaces, so that one workflow builds both and uploads them as a single artifact:
+
+```
+_site/            ← the uploaded artifact
+├── index.html    ← this package (apps/landing/dist)
+├── _astro/
+├── brand/
+└── storybook/    ← design-system/storybook-static
+```
+
+| Path | Served at |
+|---|---|
+| `_site/` | `https://maecly.github.io/autostand/` |
+| `_site/storybook/` | `https://maecly.github.io/autostand/storybook/` |
+
+It uses the first-party flow (`actions/configure-pages` →
+`actions/upload-pages-artifact` → `actions/deploy-pages`) with
+`permissions: { contents: read, pages: write, id-token: write }`. Nothing is
+pushed to a `gh-pages` branch, and the artifact is served verbatim — Jekyll never
+runs, so `_astro/` is safe.
+
+Reproduce the artifact locally, exactly as the workflow builds it:
+
+```bash
+pnpm --filter landing build
+pnpm --filter design-system build-storybook
+rm -rf _site && mkdir -p _site/storybook          # from the repo root
+cp -R apps/landing/dist/. _site/
+cp -R design-system/storybook-static/. _site/storybook/
+
+# serve it under the real base path
+mkdir -p /tmp/pages && cp -R _site /tmp/pages/autostand
+(cd /tmp/pages && python3 -m http.server 8080)
+# → http://localhost:8080/autostand/  and  /autostand/storybook/
+```
+
+`pnpm preview` does the same thing for this package alone (base path included),
+but it will not show you Storybook or catch a collision between the two.
+
+The workflow's `Verify base paths` step fails the build if `dist/index.html` ever
+emits a root-absolute `href`/`src` that is not under `/autostand/`, or references
+a file that is not in the artifact. That is the guard against someone changing
+`base` and shipping a page whose CSS 404s. Storybook needs no base setting of its
+own — `@storybook/builder-vite` emits a fully relative bundle — and the same step
+fails if that stops being true.
 
 ## Editing the copy
 
