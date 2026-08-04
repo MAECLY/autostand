@@ -190,8 +190,11 @@ export function AuditDemo({ id = "audit", className }: AuditDemoProps) {
           </CardHeader>
           <CardContent className="px-0 pb-0">
             {/* Table ships its own overflow-auto wrapper, so the page never
-                scrolls sideways when the evidence column runs long. */}
-            <Table className="min-w-2xl">
+                scrolls sideways when the evidence column runs long. That wrapper
+                is a keyboard-reachable region: on a phone the table is wider than
+                the screen, and the label is what a screen reader announces when
+                focus lands there. */}
+            <Table className="min-w-2xl" scrollRegionLabel="Audit rows for 2026-08-03.md, scrollable">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[45%]">Standup bullet</TableHead>

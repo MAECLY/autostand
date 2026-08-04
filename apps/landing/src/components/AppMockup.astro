@@ -152,7 +152,10 @@ const MOCKUP_LABEL =
             <Badge variant="success">done</Badge>
           </CardHeader>
           <CardContent className="flex flex-col gap-3 p-4 pt-0">
-            <Progress value={100} />
+            {/* Named even though the frame around it is a single role="img":
+                Chrome still exposes the progressbar node, and a progressbar with
+                no name is a serious axe violation wherever it is reached from. */}
+            <Progress value={100} aria-label="Compile pipeline progress" />
             <div class="flex items-center justify-between text-sm">
               <span class="font-mono text-muted-foreground">write_file</span>
               <span class="font-mono text-muted-foreground">100%</span>

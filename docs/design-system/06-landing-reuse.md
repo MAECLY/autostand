@@ -167,7 +167,11 @@ Before shipping the landing page (or any web surface):
 
 ## Dark mode on the landing page
 
-The landing page supports `.dark` class (same token swap as the app):
+The landing page supports `.dark` class (same token swap as the app). The shipped
+toggle (`src/components/ThemeToggle.tsx`) wraps the flip in `.theme-switching` so the
+page repaints in one step instead of cross-fading through 150ms of half-themed,
+low-contrast tints — see `docs/design-system/01-tokens.md` § Dark mode. The sketches
+below leave that out for brevity:
 
 ```tsx
 // Toggle in navbar

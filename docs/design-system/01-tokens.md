@@ -47,20 +47,28 @@ Full file content:
   --color-blue-950: #172554;
 
   --color-green-50:  #f0fdf4;
+  --color-green-400: #4ade80;
   --color-green-500: #22c55e;
   --color-green-600: #16a34a;
   --color-green-700: #15803d;
+  --color-green-950: #052e16;
 
   --color-amber-50:  #fffbeb;
+  --color-amber-400: #fbbf24;
   --color-amber-500: #f59e0b;
   --color-amber-600: #d97706;
+  --color-amber-700: #b45309;
+  --color-amber-950: #451a03;
 
   --color-red-50:  #fef2f2;
+  --color-red-400: #f87171;
   --color-red-500: #ef4444;
   --color-red-600: #dc2626;
   --color-red-700: #b91c1c;
+  --color-red-950: #450a0a;
 
   --color-purple-50:  #faf5ff;
+  --color-purple-400: #c084fc;
   --color-purple-500: #ab7aff;
   --color-purple-600: #9333ea;
 
@@ -74,9 +82,12 @@ Full file content:
 
   /* Foreground / text */
   --fg-base:    var(--color-slate-900);
-  --fg-muted:   var(--color-slate-500);
+  --fg-muted:   var(--color-slate-600);
   --fg-subtle:  var(--color-slate-400);
+  /* Text on an inverted surface (dark chip in light mode, light chip in dark). */
   --fg-inverse: #ffffff;
+  /* Text on a --brand-primary fill. Tracks the brand colour, not the theme. */
+  --fg-on-brand: #ffffff;
 
   /* Border */
   --border-default: var(--color-slate-200);
@@ -88,28 +99,30 @@ Full file content:
   --brand-primary-hover: var(--color-blue-700);
   --brand-accent:    var(--color-purple-500);
 
-  /* Status */
-  --status-success: var(--color-green-600);
+  /* Status. Green/amber/red sit at -700, not -600: the -600 shades are 3.0–3.3:1
+     on the light surfaces and on their own -bg, under WCAG AA for label text. */
+  --status-success: var(--color-green-700);
   --status-success-bg: var(--color-green-50);
-  --status-warning: var(--color-amber-600);
+  --status-warning: var(--color-amber-700);
   --status-warning-bg: var(--color-amber-50);
-  --status-error:   var(--color-red-600);
+  --status-error:   var(--color-red-700);
   --status-error-bg: var(--color-red-50);
   --status-info:    var(--color-blue-600);
   --status-info-bg: var(--color-blue-50);
 
-  /* Audit classification colors */
-  --audit-commit:    var(--color-green-600);
+  /* Audit classification colors. Same rule: each has to clear 4.5:1 on
+     --bg-surface, --bg-base and --bg-muted (a table row turns muted on hover). */
+  --audit-commit:    var(--color-green-700);
   --audit-commit-bg: var(--color-green-50);
   --audit-github:    var(--color-blue-600);
   --audit-github-bg: var(--color-blue-50);
   --audit-review:    var(--color-purple-600);
   --audit-review-bg: var(--color-purple-50);
-  --audit-note:      var(--color-amber-600);
+  --audit-note:      var(--color-amber-700);
   --audit-note-bg:   var(--color-amber-50);
-  --audit-phantom:   var(--color-red-600);
+  --audit-phantom:   var(--color-red-700);
   --audit-phantom-bg: var(--color-red-50);
-  --audit-unverified: var(--color-slate-400);
+  --audit-unverified: var(--color-slate-600);
   --audit-unverified-bg: var(--color-slate-50);
 
   /* Spacing scale (4px base) */
@@ -183,9 +196,33 @@ Full file content:
   --fg-muted:   var(--color-slate-400);
   --fg-subtle:  var(--color-slate-500);
   --fg-inverse: var(--color-slate-950);
+  /* The brand fill is light blue here, so its label goes dark — the opposite of
+     what --fg-inverse does. That is why on-brand text is a token of its own. */
+  --fg-on-brand: var(--color-slate-950);
 
   --border-default: var(--color-slate-700);
   --border-strong:  var(--color-slate-600);
+
+  /* blue-600 stays the brand blue in light mode; on --bg-base it is only 3.90:1,
+     so dark mode steps the brand up two stops to keep links and icons legible. */
+  --brand-primary:   var(--color-blue-400);
+  --brand-primary-hover: var(--color-blue-300);
+
+  --status-success: var(--color-green-400);
+  --status-success-bg: var(--color-green-950);
+  --status-warning: var(--color-amber-400);
+  --status-warning-bg: var(--color-amber-950);
+  --status-error:   var(--color-red-400);
+  --status-error-bg: var(--color-red-950);
+  --status-info:    var(--color-blue-400);
+  --status-info-bg: var(--color-blue-950);
+
+  --audit-commit:    var(--color-green-400);
+  --audit-github:    var(--color-blue-400);
+  --audit-review:    var(--color-purple-400);
+  --audit-note:      var(--color-amber-400);
+  --audit-phantom:   var(--color-red-400);
+  --audit-unverified: var(--color-slate-400);
 }
 ```
 
@@ -208,6 +245,9 @@ In `apps/autostand-app/src/globals.css` (or a shared `design-system/styles/theme
 
   --color-primary: var(--brand-primary);
   --color-primary-hover: var(--brand-primary-hover);
+  /* --fg-on-brand, not --fg-inverse: the label has to contrast with the brand
+     fill, which is dark blue in light mode and light blue in dark mode. */
+  --color-primary-foreground: var(--fg-on-brand);
   --color-accent: var(--brand-accent);
 
   --color-success: var(--status-success);
@@ -254,7 +294,7 @@ Now `bg-surface`, `text-foreground`, `border-border`, `bg-primary`, `text-succes
 | Category | Examples |
 |----------|----------|
 | `bg-` | `bg-base`, `bg-surface`, `bg-elevated`, `bg-muted`, `bg-inset` |
-| `fg-` | `fg-base`, `fg-muted`, `fg-subtle`, `fg-inverse` |
+| `fg-` | `fg-base`, `fg-muted`, `fg-subtle`, `fg-inverse`, `fg-on-brand` |
 | `border-` | `border-default`, `border-strong`, `border-focus` |
 | `brand-` | `brand-primary`, `brand-primary-hover`, `brand-accent` |
 | `status-` | `status-success`, `status-warning`, `status-error`, `status-info` (+ `-bg` variants) |
@@ -276,6 +316,14 @@ Two strategies (pick one, document in the app):
 - **System**: `@media (prefers-color-scheme: dark)`. Auto-follows OS.
 
 autostand uses class-based (user can toggle in Settings, independent of OS preference). The `.dark` block in `tokens.css` (above) redefines only the semantic tokens that change.
+
+A colour that reads on a light surface generally does not read on a dark one, so the `.dark` block re-maps every **saturated** token as well as the neutrals: the brand blue, the four status colours with their `-bg` bands, and the six audit colours all step from a `-600`/`-700` shade to a `-400` one. Skipping any of them leaves the light-mode value painted on a dark surface, which is where the whole 13-pair contrast failure came from.
+
+Flipping the class also has to be instant. `.theme-switching` in `design-system/styles/globals.css` suppresses transitions for the one style recalculation that repaints the page; without it, every element carrying `transition-colors` for hover feedback cross-fades through ~150ms of half-light, half-dark tints that meet no contrast requirement. Whoever toggles `.dark` adds `.theme-switching` to the same element, forces a reflow, and removes it.
+
+### Contrast
+
+`tests/verify-f5-contrast.py` reads the shipped `tokens.css`, resolves both themes, and measures every foreground/background pair the landing page paints. Every pair — page-owned and token-owned — clears 4.5:1 (WCAG AA, normal text). Run it after touching any colour token.
 
 ## Consuming tokens
 

@@ -40,7 +40,10 @@
   /* Brand */
   --color-primary: var(--brand-primary);
   --color-primary-hover: var(--brand-primary-hover);
-  --color-primary-foreground: var(--fg-inverse);
+  /* --fg-on-brand, not --fg-inverse: the label on a brand-filled control has to
+     contrast with the brand blue, which is dark in light mode and light in dark
+     mode. --fg-inverse flips with the surface and left this at 3.90:1 in dark. */
+  --color-primary-foreground: var(--fg-on-brand);
   --color-secondary: var(--bg-muted);
   --color-secondary-foreground: var(--fg-base);
   --color-accent: var(--brand-accent);
@@ -88,6 +91,20 @@
 @layer base {
   * {
     border-color: var(--border-default);
+  }
+
+  /* Flipping `.dark` changes every colour on the page at once, and the
+     `transition-colors` those elements carry for hover feedback then cross-fades
+     all of them through ~150ms of half-light, half-dark tints. Those in-between
+     values are real painted pixels that meet no contrast requirement — axe run
+     straight after a theme click measures them, and a reader watching the switch
+     sees them. Whoever flips `.dark` also puts this class on the same element for
+     the duration of that one style recalculation. */
+  .theme-switching,
+  .theme-switching *,
+  .theme-switching *::before,
+  .theme-switching *::after {
+    transition: none !important;
   }
 
   body {

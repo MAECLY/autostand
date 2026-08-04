@@ -89,22 +89,27 @@ TOKEN_DEBT: list[tuple[str, str, str, str]] = [
         "--fg-muted is slate-500 in light; only tokens.css can darken it",
     ),
     (
-        "--fg-inverse",
+        # Was --fg-inverse, which dark mode maps to slate-950 and which therefore
+        # painted 3.90:1 labels on the brand fill. --fg-on-brand is the token
+        # --color-primary-foreground now resolves to, so this is the pair the
+        # page actually paints; measuring --fg-inverse here would gate a pair
+        # nothing renders any more.
+        "--fg-on-brand",
         "--brand-primary",
         "every primary button label and the pipeline step numbers",
-        "dark mode maps --fg-inverse to slate-950; on-primary text needs its own token",
+        "on-brand text has its own token; only tokens.css can change it",
     ),
     (
-        "--fg-inverse",
+        "--fg-on-brand",
         "--brand-primary-hover",
         "primary button label while hovered",
-        "same --fg-inverse mapping",
+        "same --fg-on-brand mapping",
     ),
     (
         "--brand-primary",
         "--bg-base",
         "FAQ links",
-        "blue-600 is the brand colour; dark mode would need a lighter --brand-primary",
+        "blue-600 is the brand colour; dark mode needs a lighter --brand-primary",
     ),
     (
         "--brand-primary",

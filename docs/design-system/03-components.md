@@ -13,7 +13,7 @@ All live in `design-system/components/`. Each is a shadcn/ui component (Radix UI
 Variants:
 | Variant | Use | Token |
 |---------|-----|-------|
-| `default` | Primary action (Compile now, Save) | `--brand-primary` bg, `--fg-inverse` text |
+| `default` | Primary action (Compile now, Save) | `--brand-primary` bg, `--fg-on-brand` text |
 | `destructive` | Delete, uninstall | `--status-error` bg |
 | `outline` | Secondary action (Cancel) | `--bg-surface` bg, `--border-default` border |
 | `secondary` | Tertiary action | `--bg-muted` bg |
@@ -106,7 +106,7 @@ Subcomponents:
 Variants:
 | Variant | Bg | Text | Use |
 |---------|----|----|-----|
-| `default` | `--brand-primary` | `--fg-inverse` | Primary tags |
+| `default` | `--brand-primary` | `--fg-on-brand` | Primary tags |
 | `secondary` | `--bg-muted` | `--fg-base` | Neutral tags |
 | `success` | `--status-success-bg` | `--status-success` | "Done", "OK" |
 | `warning` | `--status-warning-bg` | `--status-warning` | "Partial", "Stale" |
@@ -168,6 +168,11 @@ Used for: error banners, "no standup for this date" notices.
 
 - Header: `--bg-muted`, `--text-sm`, `--font-weight-medium`, `--fg-muted`
 - Rows: `--bg-surface`, hover `--bg-muted`, border-bottom `--border-default`
+- Ships its own `overflow-auto` wrapper so a wide table never widens the page. That
+  wrapper is `tabindex="0"`, because a scroll container only a mouse can drive is
+  unreachable for a keyboard (WCAG 2.1.1, axe `scrollable-region-focusable`). Pass
+  `scrollRegionLabel` to name it — it then becomes an announced `role="region"`
+  instead of an anonymous tab stop.
 - Used by: `AuditViewer` (app component), settings tables
 
 ### Accordion

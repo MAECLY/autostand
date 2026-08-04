@@ -25,20 +25,28 @@
   --color-blue-950: #172554;
 
   --color-green-50:  #f0fdf4;
+  --color-green-400: #4ade80;
   --color-green-500: #22c55e;
   --color-green-600: #16a34a;
   --color-green-700: #15803d;
+  --color-green-950: #052e16;
 
   --color-amber-50:  #fffbeb;
+  --color-amber-400: #fbbf24;
   --color-amber-500: #f59e0b;
   --color-amber-600: #d97706;
+  --color-amber-700: #b45309;
+  --color-amber-950: #451a03;
 
   --color-red-50:  #fef2f2;
+  --color-red-400: #f87171;
   --color-red-500: #ef4444;
   --color-red-600: #dc2626;
   --color-red-700: #b91c1c;
+  --color-red-950: #450a0a;
 
   --color-purple-50:  #faf5ff;
+  --color-purple-400: #c084fc;
   --color-purple-500: #ab7aff;
   --color-purple-600: #9333ea;
 
@@ -50,9 +58,17 @@
   --bg-inset:   var(--color-slate-50);
 
   --fg-base:    var(--color-slate-900);
-  --fg-muted:   var(--color-slate-500);
+  /* slate-600, not slate-500: slate-500 is 4.34:1 on --bg-elevated, so every
+     muted label sitting on the elevated surface missed WCAG AA. */
+  --fg-muted:   var(--color-slate-600);
   --fg-subtle:  var(--color-slate-400);
+  /* Text on an inverted surface (a dark chip in light mode, a light one in dark).
+     NOT the label on a brand-filled control — that is --fg-on-brand. */
   --fg-inverse: #ffffff;
+  /* Text and icons on a --brand-primary / --brand-primary-hover fill. It tracks
+     the brand colour rather than the theme: the fill is dark blue in light mode
+     and light blue in dark mode, so this flips the opposite way to --fg-inverse. */
+  --fg-on-brand: #ffffff;
 
   --border-default: var(--color-slate-200);
   --border-strong:  var(--color-slate-300);
@@ -62,21 +78,28 @@
   --brand-primary-hover: var(--color-blue-700);
   --brand-accent:    var(--color-purple-500);
 
-  --status-success: var(--color-green-600);
+  /* The -600 shades of green/amber/red read as their hue but sit at 3.0–4.4:1 on
+     the light surfaces, so every status and audit label using them was under AA.
+     The -700 shades clear 4.5:1 on --bg-surface, --bg-base, --bg-elevated and the
+     matching --status-*-bg. Blue and purple already cleared it at -600 and keep
+     it, so --status-info stays the brand blue. */
+  --status-success: var(--color-green-700);
   --status-success-bg: var(--color-green-50);
-  --status-warning: var(--color-amber-600);
+  --status-warning: var(--color-amber-700);
   --status-warning-bg: var(--color-amber-50);
-  --status-error:   var(--color-red-600);
+  --status-error:   var(--color-red-700);
   --status-error-bg: var(--color-red-50);
   --status-info:    var(--color-blue-600);
   --status-info-bg: var(--color-blue-50);
 
-  --audit-commit:    var(--color-green-600);
+  /* Audit badges are 12px text, so 4.5:1 — and a table row turns --bg-muted on
+     hover, so each of these has to clear it on the muted surface too. */
+  --audit-commit:    var(--color-green-700);
   --audit-github:    var(--color-blue-600);
   --audit-review:    var(--color-purple-600);
-  --audit-note:      var(--color-amber-600);
-  --audit-phantom:   var(--color-red-600);
-  --audit-unverified: var(--color-slate-400);
+  --audit-note:      var(--color-amber-700);
+  --audit-phantom:   var(--color-red-700);
+  --audit-unverified: var(--color-slate-600);
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -114,7 +137,36 @@
   --fg-muted:   var(--color-slate-400);
   --fg-subtle:  var(--color-slate-500);
   --fg-inverse: var(--color-slate-950);
+  /* The brand fill is light blue here, so its label goes dark — the opposite of
+     what --fg-inverse does. This is why on-brand text needs its own token. */
+  --fg-on-brand: var(--color-slate-950);
 
   --border-default: var(--color-slate-700);
   --border-strong:  var(--color-slate-600);
+
+  /* blue-600 is the brand blue and stays the brand blue in light mode
+     (docs/design-system/02-brand.md). On --bg-base it is only 3.90:1, which fails
+     AA for the FAQ links painted with it, so dark mode steps the brand up two
+     stops — the standard way to keep a brand hue legible on a dark surface.
+     Hover goes lighter still, keeping the "hover is brighter" direction. */
+  --brand-primary:   var(--color-blue-400);
+  --brand-primary-hover: var(--color-blue-300);
+
+  /* Without these the status bands were near-white stripes inside dark cards,
+     and the badge labels kept their light-mode -700 shade on them (3.1:1). */
+  --status-success: var(--color-green-400);
+  --status-success-bg: var(--color-green-950);
+  --status-warning: var(--color-amber-400);
+  --status-warning-bg: var(--color-amber-950);
+  --status-error:   var(--color-red-400);
+  --status-error-bg: var(--color-red-950);
+  --status-info:    var(--color-blue-400);
+  --status-info-bg: var(--color-blue-950);
+
+  --audit-commit:    var(--color-green-400);
+  --audit-github:    var(--color-blue-400);
+  --audit-review:    var(--color-purple-400);
+  --audit-note:      var(--color-amber-400);
+  --audit-phantom:   var(--color-red-400);
+  --audit-unverified: var(--color-slate-400);
 }

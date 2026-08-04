@@ -68,18 +68,21 @@ Font tokens defined in `tokens.css`:
 
 Brand colors (from `tokens.css`):
 
-| Role | Token | Hex | Usage |
-|------|-------|-----|-------|
-| Primary | `--brand-primary` (`--color-blue-600`) | `#2563eb` | Primary buttons, links, active states, focus ring |
-| Primary hover | `--brand-primary-hover` (`--color-blue-700`) | `#1d4ed8` | Hover state for primary |
-| Accent | `--brand-accent` (`--color-purple-500`) | `#ab7aff` | Highlights, accent badges, secondary CTA |
-| Neutral | slate scale (50–950) | `#f8fafc`–`#020617` | Backgrounds, text, borders |
-| Success | `--status-success` (`--color-green-600`) | `#16a34a` | "Done" status, commit badge |
-| Warning | `--status-warning` (`--color-amber-600`) | `#d97706` | "Partial" / "needs attention", note badge |
-| Error | `--status-error` (`--color-red-600`) | `#dc2626` | Errors, phantom badge |
-| Info | `--status-info` (`--color-blue-600`) | `#2563eb` | Info badges, github badge |
+| Role | Token | Light | Dark | Usage |
+|------|-------|-------|------|-------|
+| Primary | `--brand-primary` | `#2563eb` (blue-600) | `#60a5fa` (blue-400) | Primary buttons, links, active states |
+| Primary hover | `--brand-primary-hover` | `#1d4ed8` (blue-700) | `#93c5fd` (blue-300) | Hover state for primary |
+| On primary | `--fg-on-brand` | `#ffffff` | `#020617` (slate-950) | Label on a brand-filled control |
+| Accent | `--brand-accent` (`--color-purple-500`) | `#ab7aff` | `#ab7aff` | Highlights, accent badges, secondary CTA |
+| Neutral | slate scale (50–950) | `#f8fafc`–`#020617` | `#020617`–`#f8fafc` | Backgrounds, text, borders |
+| Success | `--status-success` | `#15803d` (green-700) | `#4ade80` (green-400) | "Done" status, commit badge |
+| Warning | `--status-warning` | `#b45309` (amber-700) | `#fbbf24` (amber-400) | "Partial" / "needs attention", note badge |
+| Error | `--status-error` | `#b91c1c` (red-700) | `#f87171` (red-400) | Errors, phantom badge |
+| Info | `--status-info` | `#2563eb` (blue-600) | `#60a5fa` (blue-400) | Info badges, github badge |
 
-Full palette in `docs/design-system/01-tokens.md`.
+**The brand blue is `#2563eb`.** It stays blue-600 in light mode, where it is the colour a visitor and a user both see as *autostand blue*. Dark mode paints the same hue two stops lighter (`#60a5fa`), because blue-600 on the dark page background is 3.90:1 — under WCAG AA for the links and icons drawn with it. The lighter step is a legibility adjustment to the same brand colour, not a second brand colour, and it is the standard way to carry a brand hue onto a dark surface. The logo assets are unaffected: they carry literal `#2563eb` in both themes.
+
+Green, amber and red are one stop darker than the usual `-600` for the same reason — see `docs/design-system/01-tokens.md` § Contrast. Full palette there too.
 
 ## Iconography
 
@@ -152,11 +155,12 @@ The marketing landing page hero (see `docs/design-system/06-landing-reuse.md`):
 
 Before shipping any UI surface (app, landing, docs site):
 
-- [ ] Primary blue is `#2563eb` (via `--brand-primary`, never hardcoded)
+- [ ] Primary blue is `#2563eb` in light mode (via `--brand-primary`, never hardcoded; `#60a5fa` under `.dark`)
 - [ ] Inter for UI text, JetBrains Mono for code
 - [ ] Border radius uses `--radius-lg` for cards, `--radius-md` for inputs, `--radius-full` for pills
 - [ ] Shadows use `--shadow-sm` / `--shadow-md` / `--shadow-lg` (not custom values)
 - [ ] Icons are from lucide-react or the custom set (consistent stroke)
 - [ ] Voice is technical, concise, no-nonsense
-- [ ] Dark mode works (`.dark` class swaps semantic tokens)
+- [ ] Dark mode works (`.dark` class swaps semantic tokens, including the saturated ones)
+- [ ] Every text pair clears 4.5:1 in both themes (`python3 tests/verify-f5-contrast.py`)
 - [ ] Logo uses the variant appropriate for context (see table above)

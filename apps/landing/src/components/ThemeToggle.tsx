@@ -26,8 +26,19 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
   }, []);
 
   const toggleTheme = useCallback(() => {
-    const nextIsDark = !document.documentElement.classList.contains("dark");
-    document.documentElement.classList.toggle("dark", nextIsDark);
+    const root = document.documentElement;
+    const nextIsDark = !root.classList.contains("dark");
+
+    // Repaint the new theme in one step instead of cross-fading into it: see the
+    // `.theme-switching` rule in design-system/styles/globals.css. Reading a
+    // layout property between the two class changes forces the style
+    // recalculation to happen while transitions are still suppressed, so this is
+    // over by the time the click handler returns — no frame is left half-themed.
+    root.classList.add("theme-switching");
+    root.classList.toggle("dark", nextIsDark);
+    root.getBoundingClientRect();
+    root.classList.remove("theme-switching");
+
     setIsDark(nextIsDark);
 
     try {

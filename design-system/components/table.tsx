@@ -5,11 +5,24 @@ import { cn } from "../lib/utils";
 export type TableProps = React.ComponentProps<"table"> & {
   /** Classes for the scroll wrapper that keeps wide tables from breaking layout. */
   wrapperClassName?: string;
+  /**
+   * Accessible name for that wrapper. The wrapper is focusable either way — a
+   * scroll container only a mouse can drive strands keyboard users at the left
+   * edge of a wide table (WCAG 2.1.1) — but naming it also turns it into an
+   * announced region instead of an anonymous tab stop.
+   */
+  scrollRegionLabel?: string;
 };
 
-export function Table({ className, wrapperClassName, ...props }: TableProps) {
+export function Table({ className, wrapperClassName, scrollRegionLabel, ...props }: TableProps) {
   return (
-    <div className={cn("relative w-full overflow-auto", wrapperClassName)}>
+    <div
+      className={cn("relative w-full overflow-auto", wrapperClassName)}
+      // Focus lands on the scroller itself, so arrow keys pan the table.
+      tabIndex={0}
+      role={scrollRegionLabel === undefined ? undefined : "region"}
+      aria-label={scrollRegionLabel}
+    >
       <table
         className={cn("w-full caption-bottom font-sans text-sm text-foreground", className)}
         {...props}
