@@ -5,6 +5,9 @@
 
 @import "tailwindcss";
 @import "../tokens/tokens.css";
+/* @font-face for Inter + JetBrains Mono. tokens.css names them in --font-sans /
+   --font-mono, so without this every surface silently falls back to system-ui. */
+@import "./fonts.css";
 
 /* Dark mode is class-based: tokens.css defines the `.dark` override block. */
 @custom-variant dark (&:where(.dark, .dark *));
