@@ -1,0 +1,2 @@
+# Playwright traces, screenshots and the HTML report (see playwright.config.ts).
+.artifacts/

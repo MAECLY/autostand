@@ -1,0 +1,23 @@
+{
+  "//": "tests/ is not a pnpm workspace package, so nothing is linked into tests/node_modules. Playwright honours `paths`, which is what lets these specs import @playwright/test out of the app package. Type-only imports of the app's DTOs use ordinary relative paths and are erased at transpile time.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "types": [],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@playwright/test": ["../../apps/autostand-app/node_modules/@playwright/test"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

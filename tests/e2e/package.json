@@ -1,0 +1,8 @@
+{
+  "name": "autostand-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright E2E specs for the autostand app UI, driven against a mocked Tauri IPC backend.",
+  "//": "type=commonjs makes this directory a CommonJS island. The repo root is type=module, so Playwright would treat these specs as ESM — and ESM resolution cannot follow the tsconfig `paths` bridge into apps/autostand-app/node_modules. Compiled to CJS they require the real packages instead.",
+  "type": "commonjs"
+}
