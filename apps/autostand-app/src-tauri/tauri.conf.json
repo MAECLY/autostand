@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.miguel50flowers.autostand",
   "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420"
   },
@@ -34,18 +36,5 @@
     "category": "Productivity",
     "shortDescription": "Daily standup automation",
     "longDescription": "Cross-platform daily standup automation with pluggable AI providers and data sources."
-  },
-  "plugins": {
-    "fs": {
-      "scope": [
-        "$HOME/.claude/**",
-        "$HOME/.codex/**",
-        "$HOME/.gemini/**",
-        "$HOME/.local/share/opencode/**",
-        "$HOME/.config/opencode/**",
-        "$HOME/Documents/Github/**",
-        "$HOME/Sync/Github_Dailies/**"
-      ]
-    }
   }
 }
