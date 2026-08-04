@@ -1,0 +1,19 @@
+/* Landing stylesheet — same Tailwind v4 setup and tokens as the app and
+   Storybook, so the marketing page and the product cannot drift apart.
+   See docs/design-system/06-landing-reuse.md. */
+
+@import "../../../../design-system/styles/globals.css";
+
+@theme {
+  --text-hero: 3.5rem;
+}
+
+/* The one gradient shared with the app's onboarding screen — visual continuity
+   between what a visitor sees and what they install. */
+.hero-gradient {
+  background: linear-gradient(
+    135deg,
+    var(--bg-base) 0%,
+    color-mix(in srgb, var(--brand-primary) 10%, var(--bg-surface)) 100%
+  );
+}

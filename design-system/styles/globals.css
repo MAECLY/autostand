@@ -9,9 +9,9 @@
 /* Dark mode is class-based: tokens.css defines the `.dark` override block. */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Component sources live next to this file, outside any app root. */
+/* Component sources live next to this file, outside any consuming app's root,
+   so Tailwind's auto-detection would never reach them. */
 @source "../components";
-@source "../app-components";
 
 @theme {
   /* Surfaces + text */
