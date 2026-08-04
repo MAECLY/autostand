@@ -85,7 +85,7 @@ fn is_local_only(provider: &str) -> bool {
     PROVIDERS
         .iter()
         .find(|p| p.id == provider)
-        .map_or(false, |p| p.local_only)
+        .is_some_and(|p| p.local_only)
 }
 
 /// Resolve the API key status for a provider (keychain → env → none).
@@ -105,7 +105,7 @@ fn resolve_api_key_status(provider: &str) -> ApiKeyStatus {
         }
     }
     if let Some(var) = env_var_for(provider) {
-        if std::env::var(var).map_or(false, |v| !v.is_empty()) {
+        if std::env::var(var).is_ok_and(|v| !v.is_empty()) {
             return ApiKeyStatus {
                 set: true,
                 mode: ApiKeyMode::Env,
@@ -117,7 +117,9 @@ fn resolve_api_key_status(provider: &str) -> ApiKeyStatus {
 
 /// List the 5 providers with CLI/API-key status.
 #[tauri::command]
-pub async fn list_llm_providers(_app_handle: AppHandle) -> Result<Vec<LlmProviderConfig>, AppError> {
+pub async fn list_llm_providers(
+    _app_handle: AppHandle,
+) -> Result<Vec<LlmProviderConfig>, AppError> {
     let mut out = Vec::with_capacity(PROVIDERS.len());
     for def in PROVIDERS {
         let cli = autostand_adapters::llm::detect_cli_binary(def.binary)
@@ -171,7 +173,11 @@ pub async fn test_llm_provider(
 
 /// Store an API key in the OS keychain under `autostand.<provider>`.
 #[tauri::command]
-pub async fn store_api_key(_app_handle: AppHandle, provider: String, key: String) -> Result<(), AppError> {
+pub async fn store_api_key(
+    _app_handle: AppHandle,
+    provider: String,
+    key: String,
+) -> Result<(), AppError> {
     if binary_for(&provider).is_none() {
         return Err(AppError::Invalid(format!("unknown provider: {provider}")));
     }
@@ -189,7 +195,10 @@ pub async fn store_api_key(_app_handle: AppHandle, provider: String, key: String
 
 /// Get the API key status for a provider.
 #[tauri::command]
-pub async fn get_api_key_status(_app_handle: AppHandle, provider: String) -> Result<ApiKeyStatus, AppError> {
+pub async fn get_api_key_status(
+    _app_handle: AppHandle,
+    provider: String,
+) -> Result<ApiKeyStatus, AppError> {
     if binary_for(&provider).is_none() {
         return Err(AppError::Invalid(format!("unknown provider: {provider}")));
     }
@@ -198,7 +207,10 @@ pub async fn get_api_key_status(_app_handle: AppHandle, provider: String) -> Res
 
 /// Detect a provider's CLI binary on PATH and probe `--version`.
 #[tauri::command]
-pub async fn detect_cli(_app_handle: AppHandle, provider: String) -> Result<CliDetection, AppError> {
+pub async fn detect_cli(
+    _app_handle: AppHandle,
+    provider: String,
+) -> Result<CliDetection, AppError> {
     let binary = binary_for(&provider)
         .ok_or_else(|| AppError::Invalid(format!("unknown provider: {provider}")))?;
     let info = autostand_adapters::llm::detect_cli_binary(binary)
@@ -210,4 +222,49 @@ pub async fn detect_cli(_app_handle: AppHandle, provider: String) -> Result<CliD
         })
         .unwrap_or_default();
     Ok(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{binary_for, env_var_for, is_local_only, PROVIDERS};
+
+    #[test]
+    fn exposes_the_five_documented_providers() {
+        let ids: Vec<&str> = PROVIDERS.iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["claude", "ollama", "openai", "gemini", "grok"]);
+    }
+
+    #[test]
+    fn maps_provider_ids_to_cli_binaries() {
+        assert_eq!(binary_for("claude"), Some("claude"));
+        assert_eq!(binary_for("openai"), Some("codex"));
+        assert_eq!(binary_for("nope"), None);
+    }
+
+    #[test]
+    fn unknown_providers_have_no_binary_so_commands_reject_them() {
+        // Every LLM command gates on `binary_for(..).is_none()`.
+        for provider in ["", "Claude", "anthropic", "gpt"] {
+            assert!(binary_for(provider).is_none(), "{provider} must be unknown");
+        }
+    }
+
+    #[test]
+    fn only_ollama_is_local_only() {
+        assert!(is_local_only("ollama"));
+        for provider in ["claude", "openai", "gemini", "grok"] {
+            assert!(!is_local_only(provider), "{provider} needs an API key");
+        }
+        assert!(!is_local_only("nope"));
+    }
+
+    #[test]
+    fn api_providers_declare_an_env_var_and_ollama_does_not() {
+        assert_eq!(env_var_for("claude"), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(env_var_for("openai"), Some("OPENAI_API_KEY"));
+        assert_eq!(env_var_for("gemini"), Some("GEMINI_API_KEY"));
+        assert_eq!(env_var_for("grok"), Some("XAI_API_KEY"));
+        assert_eq!(env_var_for("ollama"), None);
+        assert_eq!(env_var_for("nope"), None);
+    }
 }

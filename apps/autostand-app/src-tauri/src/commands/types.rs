@@ -1,9 +1,18 @@
 //! Serde DTOs mirroring the TypeScript interfaces in
 //! `docs/tauri/02-ipc-contracts.md`.
 //!
-//! Field names are `snake_case` on both sides (the TS contract uses snake_case
-//! too — see the interfaces in `02-ipc-contracts.md`), so no `#[serde(rename_all)]`
-//! is needed.
+//! Field names are `snake_case` on both sides (the TS contract uses `snake_case`
+//! too — see the interfaces in `02-ipc-contracts.md`), so structs need no
+//! `#[serde(rename_all)]`.
+//!
+//! Enums are a different story: the contract fixes each variant's *wire* string
+//! and those strings are not uniform. `RenderMode` / `ProviderMode` are spelled
+//! `PascalCase` (`"Auto"`, `"CliFirst"`), the status-ish enums are `snake_case`
+//! (`"ok"`, `"llm_fallback"`, `"keychain"`) and the scheduler enums are
+//! `kebab-case` (`"task-scheduler"`, `"self-heal"`). Every enum below therefore
+//! carries an explicit `#[serde(rename_all = …)]` — the default (variant name
+//! verbatim) is only correct for the two `PascalCase` ones, and relying on it
+//! elsewhere silently breaks the frontend.
 
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +48,9 @@ pub struct AppConfig {
 }
 
 /// Render mode preference.
+///
+/// Wire values are `PascalCase` (`"Auto" | "Llm" | "Det"`) per the contract, so
+/// the serde default (variant name verbatim) is what we want here.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RenderMode {
     /// Try LLM, fall back to deterministic.
@@ -81,6 +93,9 @@ pub struct ProviderConfig {
 }
 
 /// Provider access mode.
+///
+/// Wire values are `PascalCase` (`"CliFirst" | "ApiFallback" | "CliOnly" |
+/// "ApiOnly"`) per the contract — serde default applies.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderMode {
     /// Try CLI first, fall back to API.
@@ -95,6 +110,10 @@ pub enum ProviderMode {
 }
 
 /// Per-data-source enablement flags.
+// The 8 booleans *are* the contract (`DataSourceConfigs` in
+// `02-ipc-contracts.md`); collapsing them into a set/bitflags would change the
+// JSON the frontend reads, so the lint does not apply here.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataSourceConfigs {
     /// `local-git` (always on in practice; forced elsewhere).
@@ -237,7 +256,10 @@ pub struct CliDetection {
 }
 
 /// API key presence + where it came from.
+///
+/// Wire values: `"keychain" | "env" | "none"`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ApiKeyMode {
     /// Stored in the OS keychain.
     Keychain,
@@ -294,7 +316,10 @@ pub struct CompileResult {
 }
 
 /// Compile outcome.
+///
+/// Wire values: `"ok" | "skip" | "error"`.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum CompileStatus {
     /// Successful compile.
     #[default]
@@ -306,7 +331,11 @@ pub enum CompileStatus {
 }
 
 /// Which renderer produced the body.
+///
+/// Wire values: `"llm" | "det" | "llm_fallback"` — the same strings
+/// `autostand-core` writes into the audit sidecar.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum RenderUsed {
     /// LLM renderer.
     Llm,
@@ -379,7 +408,7 @@ pub struct AuditData {
     pub prrev: Option<String>,
     /// Files edited in Claude Code sessions.
     pub claude_files: Vec<String>,
-    /// OpenCode session ids.
+    /// `OpenCode` session ids.
     pub opencode_sessions: Vec<String>,
     /// Codex session ids.
     pub codex_sessions: Vec<String>,
@@ -395,8 +424,8 @@ pub struct AuditData {
     pub skew: Vec<SkewRecord>,
     /// Ticket → commit days map.
     pub ticket_days: std::collections::BTreeMap<String, Vec<String>>,
-    /// Render mode preference.
-    pub render_mode: String,
+    /// Render mode preference recorded at render time.
+    pub render_mode: AuditRenderMode,
     /// Which renderer actually produced the body.
     pub render_used: RenderUsed,
     /// Provider id used, if any.
@@ -409,6 +438,23 @@ pub struct AuditData {
     pub hash: String,
     /// Number of PREV bullets re-injected.
     pub accumulated_count: u32,
+}
+
+/// Render mode as recorded in the audit sidecar.
+///
+/// Distinct from [`RenderMode`] on purpose: the config field is `PascalCase` on
+/// the wire (`"Auto"`), while `AuditData.render_mode` is lowercase
+/// (`"auto" | "llm" | "det"`) because `autostand-core` writes it that way.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AuditRenderMode {
+    /// Try LLM, fall back to deterministic.
+    #[default]
+    Auto,
+    /// Always LLM.
+    Llm,
+    /// Always deterministic.
+    Det,
 }
 
 /// Date range DTO used in audit + gather preview.
@@ -489,7 +535,7 @@ pub struct GatherPreview {
     pub prrev: Option<String>,
     /// Files edited in Claude Code sessions.
     pub claude_files: Vec<String>,
-    /// OpenCode session ids.
+    /// `OpenCode` session ids.
     pub opencode_sessions: Vec<String>,
     /// Codex session ids.
     pub codex_sessions: Vec<String>,
@@ -523,14 +569,17 @@ pub struct SchedulerStatus {
 }
 
 /// Where the schedule comes from.
+///
+/// Wire values: `"launchd" | "systemd" | "task-scheduler" | "in-process" |
+/// "none"`.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
 pub enum SchedulerSource {
     /// macOS launchd.
     Launchd,
     /// Linux systemd.
     Systemd,
     /// Windows Task Scheduler.
-    #[allow(non_camel_case_types)]
     TaskScheduler,
     /// In-process (dev / fallback).
     #[default]
@@ -540,14 +589,18 @@ pub enum SchedulerSource {
 }
 
 /// Last trigger source.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// Wire values: `"scheduled" | "manual" | "self-heal"`. Also used as the
+/// `trigger` field of the `pipeline-started` event payload.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
 pub enum LastTrigger {
     /// Cron-scheduled run.
     Scheduled,
     /// Manual `trigger_run_now`.
+    #[default]
     Manual,
     /// Self-heal of a missed run.
-    #[allow(non_camel_case_types)]
     SelfHeal,
 }
 
@@ -565,6 +618,10 @@ pub struct RepoInfo {
 }
 
 /// All configured paths returned by `get_settings_paths`.
+// The `_dir` suffix on every field is the contract (`SettingsPaths` in
+// `02-ipc-contracts.md`) and is what `validate_paths` echoes back as the
+// per-path `label`; renaming the fields would break both.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SettingsPaths {
     /// `GITHUB_DIR` (from config).
@@ -613,4 +670,237 @@ pub struct PathValidation {
     pub readable: bool,
     /// Failure message, if any.
     pub message: Option<String>,
+}
+#[cfg(test)]
+mod tests {
+    use super::{
+        ApiKeyMode, ApiKeyStatus, AppConfig, AuditData, AuditRenderMode, AuditSidecar,
+        CompileResult, CompileStatus, LastTrigger, ProviderMode, RenderMode, RenderUsed,
+        SchedulerSource, SchedulerStatus,
+    };
+    use serde::{de::DeserializeOwned, Serialize};
+    use serde_json::json;
+    use std::fmt::Debug;
+
+    /// Assert a variant's exact wire string and that it survives a round-trip.
+    ///
+    /// The round-trip half matters as much as the string: `serde` derives the
+    /// reader and the writer from the same attribute, so a contract test that
+    /// only deserialized would pass even with the wrong `rename_all`.
+    fn assert_wire<T>(value: &T, expected: &str)
+    where
+        T: Serialize + DeserializeOwned + PartialEq + Debug,
+    {
+        let json = serde_json::to_string(value).expect("serializes");
+        assert_eq!(json, format!("\"{expected}\""));
+        let back: T = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(&back, value);
+    }
+
+    #[test]
+    fn compile_status_wire_values() {
+        assert_wire(&CompileStatus::Ok, "ok");
+        assert_wire(&CompileStatus::Skip, "skip");
+        assert_wire(&CompileStatus::Error, "error");
+    }
+
+    #[test]
+    fn render_used_wire_values() {
+        assert_wire(&RenderUsed::Llm, "llm");
+        assert_wire(&RenderUsed::Det, "det");
+        assert_wire(&RenderUsed::LlmFallback, "llm_fallback");
+    }
+
+    #[test]
+    fn api_key_mode_wire_values() {
+        assert_wire(&ApiKeyMode::Keychain, "keychain");
+        assert_wire(&ApiKeyMode::Env, "env");
+        assert_wire(&ApiKeyMode::None, "none");
+    }
+
+    #[test]
+    fn scheduler_source_wire_values() {
+        assert_wire(&SchedulerSource::Launchd, "launchd");
+        assert_wire(&SchedulerSource::Systemd, "systemd");
+        assert_wire(&SchedulerSource::TaskScheduler, "task-scheduler");
+        assert_wire(&SchedulerSource::InProcess, "in-process");
+        assert_wire(&SchedulerSource::None, "none");
+    }
+
+    #[test]
+    fn last_trigger_wire_values() {
+        assert_wire(&LastTrigger::Scheduled, "scheduled");
+        assert_wire(&LastTrigger::Manual, "manual");
+        assert_wire(&LastTrigger::SelfHeal, "self-heal");
+    }
+
+    #[test]
+    fn audit_render_mode_wire_values_are_lowercase() {
+        assert_wire(&AuditRenderMode::Auto, "auto");
+        assert_wire(&AuditRenderMode::Llm, "llm");
+        assert_wire(&AuditRenderMode::Det, "det");
+    }
+
+    #[test]
+    fn config_render_mode_stays_pascal_case() {
+        // `AppConfig.render_mode` and `AuditData.render_mode` intentionally
+        // disagree: the contract spells the former "Auto" and the latter "auto".
+        assert_wire(&RenderMode::Auto, "Auto");
+        assert_wire(&RenderMode::Llm, "Llm");
+        assert_wire(&RenderMode::Det, "Det");
+    }
+
+    #[test]
+    fn provider_mode_stays_pascal_case() {
+        assert_wire(&ProviderMode::CliFirst, "CliFirst");
+        assert_wire(&ProviderMode::ApiFallback, "ApiFallback");
+        assert_wire(&ProviderMode::CliOnly, "CliOnly");
+        assert_wire(&ProviderMode::ApiOnly, "ApiOnly");
+    }
+
+    #[test]
+    fn no_enum_leaks_a_rust_variant_name() {
+        // Regression guard for the whole family: every one of these used to
+        // serialize as its Rust identifier.
+        let leaked = [
+            serde_json::to_string(&CompileStatus::Ok).unwrap(),
+            serde_json::to_string(&RenderUsed::LlmFallback).unwrap(),
+            serde_json::to_string(&ApiKeyMode::Keychain).unwrap(),
+            serde_json::to_string(&SchedulerSource::TaskScheduler).unwrap(),
+            serde_json::to_string(&LastTrigger::SelfHeal).unwrap(),
+            serde_json::to_string(&AuditRenderMode::Auto).unwrap(),
+        ];
+        for value in leaked {
+            assert!(
+                !value.chars().any(|c| c.is_ascii_uppercase()),
+                "{value} still carries a PascalCase variant name"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_result_serializes_the_documented_shape() {
+        let value = serde_json::to_value(CompileResult {
+            date: "2026-08-03".to_string(),
+            host: "MacStudio-de-Miguel".to_string(),
+            status: CompileStatus::Ok,
+            render_used: RenderUsed::LlmFallback,
+            fellback: true,
+            audit_path: Some("/state/audit/2026-08-03-MacStudio-de-Miguel.json".to_string()),
+            file_path: "/dailies/2026-08-03.md".to_string(),
+            accumulated_count: 2,
+            message: "ok".to_string(),
+        })
+        .unwrap();
+        assert_eq!(value["status"], json!("ok"));
+        assert_eq!(value["render_used"], json!("llm_fallback"));
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "accumulated_count",
+                "audit_path",
+                "date",
+                "fellback",
+                "file_path",
+                "host",
+                "message",
+                "render_used",
+                "status",
+            ]
+        );
+    }
+
+    #[test]
+    fn scheduler_status_serializes_the_documented_shape() {
+        let value = serde_json::to_value(SchedulerStatus {
+            enabled: true,
+            source: SchedulerSource::TaskScheduler,
+            cron: "0 7-19 * * 1-5".to_string(),
+            next_run_at: Some("2026-08-03T07:00:00Z".to_string()),
+            last_run_at: None,
+            last_trigger: Some(LastTrigger::SelfHeal),
+        })
+        .unwrap();
+        assert_eq!(value["source"], json!("task-scheduler"));
+        assert_eq!(value["last_trigger"], json!("self-heal"));
+        assert_eq!(value["last_run_at"], json!(null));
+    }
+
+    #[test]
+    fn api_key_status_serializes_set_plus_mode() {
+        let value = serde_json::to_value(ApiKeyStatus {
+            set: true,
+            mode: ApiKeyMode::Keychain,
+        })
+        .unwrap();
+        assert_eq!(value, json!({ "set": true, "mode": "keychain" }));
+    }
+
+    #[test]
+    fn audit_sidecar_serializes_render_used_lowercase() {
+        let value = serde_json::to_value(AuditSidecar {
+            path: "/state/audit/2026-08-03-host.json".to_string(),
+            date: "2026-08-03".to_string(),
+            host: "host".to_string(),
+            rendered_at: "2026-08-03T07:00:00Z".to_string(),
+            render_used: RenderUsed::Llm,
+        })
+        .unwrap();
+        assert_eq!(value["render_used"], json!("llm"));
+    }
+
+    #[test]
+    fn audit_data_render_mode_is_lowercase_unlike_the_config_field() {
+        let audit = serde_json::to_value(AuditData::default()).unwrap();
+        let config = serde_json::to_value(AppConfig::default()).unwrap();
+        assert_eq!(audit["render_mode"], json!("auto"));
+        assert_eq!(config["render_mode"], json!("Auto"));
+    }
+
+    #[test]
+    fn app_config_defaults_serialize_the_documented_keys() {
+        let value = serde_json::to_value(AppConfig::default()).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "dailies_dir",
+                "data_sources",
+                "git_refs",
+                "github_dir",
+                "host_slug_override",
+                "jira_base",
+                "llm",
+                "render_mode",
+                "review",
+                "scheduler",
+                "scrub",
+                "standup_authors",
+            ]
+        );
+    }
+
+    #[test]
+    fn defaults_are_the_documented_ones() {
+        assert_eq!(CompileStatus::default(), CompileStatus::Ok);
+        assert_eq!(RenderUsed::default(), RenderUsed::Det);
+        assert_eq!(ApiKeyMode::default(), ApiKeyMode::None);
+        assert_eq!(SchedulerSource::default(), SchedulerSource::InProcess);
+        assert_eq!(RenderMode::default(), RenderMode::Auto);
+        assert_eq!(ProviderMode::default(), ProviderMode::CliFirst);
+        assert_eq!(AuditRenderMode::default(), AuditRenderMode::Auto);
+    }
 }

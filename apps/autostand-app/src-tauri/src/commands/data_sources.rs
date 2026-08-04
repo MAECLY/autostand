@@ -8,11 +8,14 @@ use crate::commands::{load_config, save_config, types::DataSourceConfig};
 use crate::error::AppError;
 
 /// Static descriptor for each of the 8 data sources.
+///
+/// Deliberately carries no default-enabled flag: the defaults live in
+/// `DataSourceConfigs::default()`, and duplicating them here would let the
+/// catalogue and the persisted config drift apart.
 struct SourceDef {
     id: &'static str,
     label: &'static str,
     description: &'static str,
-    default_enabled: bool,
 }
 
 /// The 8 sources per `docs/data-sources/00-sources-overview.md`.
@@ -21,49 +24,41 @@ const SOURCES: &[SourceDef] = &[
         id: "local-git",
         label: "Local Git",
         description: "Commits, ticket keys, branch, file scope, anti-backdating map from local .git under GITHUB_DIR.",
-        default_enabled: true,
     },
     SourceDef {
         id: "github",
         label: "GitHub (gh CLI)",
         description: "PRs opened/merged, review/issue comments, review states, recent-PR tickets via gh CLI.",
-        default_enabled: true,
     },
     SourceDef {
         id: "claude-code",
         label: "Claude Code sessions",
         description: "Conversation digest + edited file attribution from ~/.claude/projects/*/*.jsonl and ~/.claude/plans/*.md.",
-        default_enabled: true,
     },
     SourceDef {
         id: "remember-plugin",
         label: "Remember plugin",
         description: "Narrative non-commit work notes from <repo>/.remember/*.md and $GITHUB_DIR/.remember/now.md.",
-        default_enabled: true,
     },
     SourceDef {
         id: "opencode",
         label: "OpenCode",
         description: "Session history + edited file attribution from ~/.local/share/opencode/opencode.db (SQLite) and legacy JSON.",
-        default_enabled: true,
     },
     SourceDef {
         id: "codex",
         label: "Codex CLI",
         description: "Session history + edited file attribution from ~/.codex/sessions/YYYY/MM/DD/*.jsonl and ~/.codex/history.jsonl.",
-        default_enabled: false,
     },
     SourceDef {
         id: "gemini-cli",
         label: "Gemini CLI",
         description: "Session history + edited file attribution from ~/.gemini/**/*.jsonl.",
-        default_enabled: false,
     },
     SourceDef {
         id: "grok-cli",
         label: "Grok CLI",
         description: "Session history + edited file attribution from ~/.grok/ or ~/.config/grok-cli/ (variant-dependent).",
-        default_enabled: false,
     },
 ];
 
@@ -83,7 +78,11 @@ fn is_enabled(cfg: &crate::commands::types::DataSourceConfigs, id: &str) -> bool
 }
 
 /// Set the enabled flag for a source id in `AppConfig.data_sources`.
-fn set_enabled(cfg: &mut crate::commands::types::DataSourceConfigs, id: &str, enabled: bool) -> bool {
+fn set_enabled(
+    cfg: &mut crate::commands::types::DataSourceConfigs,
+    id: &str,
+    enabled: bool,
+) -> bool {
     match id {
         "local-git" => {
             cfg.local_git = enabled;
@@ -149,4 +148,76 @@ pub async fn toggle_data_source(
         return Err(AppError::Invalid(format!("unknown data source id: {id}")));
     }
     save_config(&app_handle, &config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_enabled, set_enabled, SOURCES};
+    use crate::commands::types::DataSourceConfigs;
+
+    #[test]
+    fn exposes_the_eight_documented_sources() {
+        let ids: Vec<&str> = SOURCES.iter().map(|s| s.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "local-git",
+                "github",
+                "claude-code",
+                "remember-plugin",
+                "opencode",
+                "codex",
+                "gemini-cli",
+                "grok-cli",
+            ]
+        );
+    }
+
+    /// Every catalogue id must be routable; a typo here would silently render
+    /// a source as permanently disabled and make its toggle a no-op error.
+    #[test]
+    fn every_catalogue_id_is_wired_to_a_config_flag() {
+        let mut cfg = DataSourceConfigs::default();
+        for source in SOURCES {
+            assert!(
+                set_enabled(&mut cfg, source.id, true),
+                "{} has no config flag",
+                source.id
+            );
+            assert!(
+                is_enabled(&cfg, source.id),
+                "{} did not read back",
+                source.id
+            );
+            assert!(set_enabled(&mut cfg, source.id, false));
+            assert!(!is_enabled(&cfg, source.id));
+        }
+    }
+
+    #[test]
+    fn unknown_ids_are_rejected_rather_than_ignored() {
+        let mut cfg = DataSourceConfigs::default();
+        assert!(!set_enabled(&mut cfg, "remember", false));
+        assert!(!set_enabled(&mut cfg, "local_git", false));
+        assert!(!is_enabled(&cfg, "nope"));
+        // A rejected toggle must not have mutated anything.
+        assert!(cfg.local_git && cfg.remember);
+    }
+
+    #[test]
+    fn defaults_match_the_documented_opt_in_set() {
+        let cfg = DataSourceConfigs::default();
+        for on in [
+            "local-git",
+            "github",
+            "claude-code",
+            "remember-plugin",
+            "opencode",
+        ] {
+            assert!(is_enabled(&cfg, on), "{on} defaults on");
+        }
+        for off in ["codex", "gemini-cli", "grok-cli"] {
+            assert!(!is_enabled(&cfg, off), "{off} defaults off");
+        }
+    }
 }

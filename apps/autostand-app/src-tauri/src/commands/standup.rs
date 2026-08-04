@@ -3,34 +3,106 @@
 //! See `docs/tauri/02-ipc-contracts.md` rows `read_standup_file`,
 //! `add_manual_item`, `list_audit_sidecars`, `read_audit_sidecar`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
 
 use tauri::AppHandle;
 
 use crate::commands::{
-    load_config, state_dir,
-    types::{AuditData, AuditSidecar, RenderUsed, StandupFileContent},
+    load_config, resolve_dir, state_dir,
+    types::{
+        AuditData, AuditRenderMode, AuditSidecar, DateRangeDto, RenderUsed, StandupFileContent,
+    },
 };
 use crate::error::AppError;
 
-/// Resolve the dailies directory from config (default `<repo>/dailies/`).
+/// Fallback location for `dailies_dir` under the user's home.
+const DAILIES_DIR_FALLBACK: &[&str] = &["Sync", "Github_Dailies", "dailies"];
+
+/// Resolve the dailies directory: the configured `dailies_dir`, else
+/// `<home>/Sync/Github_Dailies/dailies`.
+pub(crate) fn resolve_dailies_dir(configured: Option<&str>, home: Option<&Path>) -> PathBuf {
+    resolve_dir(configured, home, DAILIES_DIR_FALLBACK)
+}
+
+/// Resolve the dailies directory from the persisted config.
 fn dailies_dir(app: &impl tauri::Manager<tauri::Wry>) -> PathBuf {
     let config = load_config(app).ok();
-    let dir = config
-        .map(|c| c.dailies_dir)
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .map(|h| h.join("Sync").join("Github_Dailies").join("dailies"))
-                .unwrap_or_default()
-        });
-    dir
+    resolve_dailies_dir(
+        config.as_ref().map(|c| c.dailies_dir.as_str()),
+        dirs::home_dir().as_deref(),
+    )
 }
 
 /// Audit sidecar dir (`<state_dir>/audit`).
 fn audit_dir() -> PathBuf {
     state_dir().join("audit")
+}
+
+/// Extract the host slug from an audit sidecar filename `<date>-<host>.json`.
+///
+/// Returns `None` for anything that is not a `.json` sidecar for `prefix`
+/// (which already carries its trailing `-`).
+fn sidecar_host(file_name: &str, prefix: &str) -> Option<String> {
+    let path = Path::new(file_name);
+    if !path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+    {
+        return None;
+    }
+    path.file_stem()?
+        .to_str()?
+        .strip_prefix(prefix)
+        .filter(|host| !host.is_empty())
+        .map(str::to_string)
+}
+
+/// Map the sidecar's `render_used` string onto the IPC enum.
+///
+/// Unknown values degrade to `Det`: the deterministic body is always computed,
+/// so it is the only safe thing to claim about an unreadable sidecar.
+fn parse_render_used(raw: &str) -> RenderUsed {
+    match raw {
+        "llm" => RenderUsed::Llm,
+        "llm_fallback" => RenderUsed::LlmFallback,
+        _ => RenderUsed::Det,
+    }
+}
+
+/// Map the sidecar's `render_mode` string onto the IPC enum (default `auto`).
+fn parse_render_mode(raw: &str) -> AuditRenderMode {
+    match raw {
+        "llm" => AuditRenderMode::Llm,
+        "det" => AuditRenderMode::Det,
+        _ => AuditRenderMode::Auto,
+    }
+}
+
+/// Read a string field, defaulting to empty when absent or the wrong type.
+fn str_field(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Read an optional string field (absent / non-string ⇒ `None`).
+fn opt_str_field(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+/// Map the sidecar's `window: { start, end }` onto the contract's
+/// `{ range_start, range_end }`.
+fn parse_window(value: &Value) -> DateRangeDto {
+    value
+        .get("window")
+        .map_or_else(DateRangeDto::default, |w| DateRangeDto {
+            range_start: str_field(w, "start"),
+            range_end: str_field(w, "end"),
+        })
 }
 
 /// Read and parse a standup file for a date.
@@ -43,10 +115,7 @@ pub async fn read_standup_file(
         .map_err(|e| AppError::Invalid(format!("invalid date '{date}': {e}")))?;
     let path = dailies_dir(&app_handle).join(format!("{parsed}.md"));
     let content = std::fs::read_to_string(&path).map_err(|e| {
-        AppError::NotFound(format!(
-            "standup file {} not found: {e}",
-            path.display()
-        ))
+        AppError::NotFound(format!("standup file {} not found: {e}", path.display()))
     })?;
     let file = autostand_core::format::parse(&content)
         .map_err(|e| AppError::Config(format!("parse standup file: {e}")))?;
@@ -92,36 +161,21 @@ pub async fn list_audit_sidecars(date: String) -> Result<Vec<AuditSidecar>, AppE
     }
     let prefix = format!("{date}-");
     let mut out = Vec::new();
-    let entries = std::fs::read_dir(&dir)?;
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
+        let Some(host) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|name| sidecar_host(name, &prefix))
+        else {
             continue;
         };
-        if !name.starts_with(&prefix) || !name.ends_with(".json") {
-            continue;
-        }
-        let full = path.to_string_lossy().to_string();
-        let host = name
-            .strip_prefix(&prefix)
-            .and_then(|s| s.strip_suffix(".json"))
-            .unwrap_or("")
-            .to_string();
-        let rendered_at;
-        let render_used;
-        match parse_sidecar_fields(&path) {
-            Ok((at, used)) => {
-                rendered_at = at;
-                render_used = used;
-            }
-            Err(_) => {
-                rendered_at = String::new();
-                render_used = RenderUsed::Det;
-            }
-        }
+        // An unreadable sidecar still gets listed — the UI needs the path to
+        // report it — with empty provenance rather than a hard failure.
+        let (rendered_at, render_used) =
+            parse_sidecar_fields(&path).unwrap_or_else(|_| (String::new(), RenderUsed::Det));
         out.push(AuditSidecar {
-            path: full,
+            path: path.to_string_lossy().to_string(),
             date: date.clone(),
             host,
             rendered_at,
@@ -137,70 +191,29 @@ pub async fn list_audit_sidecars(date: String) -> Result<Vec<AuditSidecar>, AppE
 pub async fn read_audit_sidecar(path: String) -> Result<AuditData, AppError> {
     let bytes = std::fs::read(&path)
         .map_err(|e| AppError::NotFound(format!("audit sidecar {path}: {e}")))?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
+    let value: Value = serde_json::from_slice(&bytes)
         .map_err(|e| AppError::Config(format!("parse audit sidecar: {e}")))?;
-    let window = value
-        .get("window")
-        .and_then(|w| {
-            Some(crate::commands::types::DateRangeDto {
-                range_start: w
-                    .get("start")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                range_end: w
-                    .get("end")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            })
-        })
-        .unwrap_or_default();
-    let render_mode = value
-        .get("render_mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("auto")
-        .to_string();
-    let render_used = match value
-        .get("render_used")
-        .and_then(|v| v.as_str())
-        .unwrap_or("det")
-    {
-        "llm" => RenderUsed::Llm,
-        "llm_fallback" => RenderUsed::LlmFallback,
-        _ => RenderUsed::Det,
-    };
-    Ok(AuditData {
-        file: value
-            .get("file")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        host: value
-            .get("host")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        rendered_at: value
-            .get("rendered_at")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        window,
+    Ok(audit_data_from_json(&value))
+}
+
+/// Project a sidecar JSON document onto the `AuditData` contract shape.
+///
+/// Deliberately lenient (missing keys default) — sidecars are written by
+/// `autostand-core` and by older versions of it, and a partial audit is still
+/// worth showing.
+fn audit_data_from_json(value: &Value) -> AuditData {
+    AuditData {
+        file: str_field(value, "file"),
+        host: str_field(value, "host"),
+        rendered_at: str_field(value, "rendered_at"),
+        window: parse_window(value),
+        // Collections are not projected yet: the gather pipeline that fills
+        // them is still unwired, so an empty vec is honest rather than partial.
         facts: Vec::new(),
         notes: Vec::new(),
-        github: value
-            .get("github")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        conv: value
-            .get("conv")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        prrev: value
-            .get("prrev")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        github: opt_str_field(value, "github"),
+        conv: opt_str_field(value, "conv"),
+        prrev: opt_str_field(value, "prrev"),
         claude_files: Vec::new(),
         opencode_sessions: Vec::new(),
         codex_sessions: Vec::new(),
@@ -210,49 +223,186 @@ pub async fn read_audit_sidecar(path: String) -> Result<AuditData, AppError> {
         covered_tickets: Vec::new(),
         skew: Vec::new(),
         ticket_days: std::collections::BTreeMap::new(),
-        render_mode,
-        render_used,
-        provider: value
-            .get("provider")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        model: value
-            .get("model")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        render_mode: parse_render_mode(
+            value
+                .get("render_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("auto"),
+        ),
+        render_used: parse_render_used(
+            value
+                .get("render_used")
+                .and_then(Value::as_str)
+                .unwrap_or("det"),
+        ),
+        provider: opt_str_field(value, "provider"),
+        model: opt_str_field(value, "model"),
         fellback: value
             .get("fellback")
-            .and_then(|v| v.as_bool())
+            .and_then(Value::as_bool)
             .unwrap_or(false),
-        hash: value
-            .get("hash")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        hash: str_field(value, "hash"),
         accumulated_count: value
             .get("accumulated_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-    })
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0),
+    }
 }
 
 /// Extract `rendered_at` + `render_used` from a sidecar without a full parse.
-fn parse_sidecar_fields(path: &std::path::Path) -> Result<(String, RenderUsed), AppError> {
+fn parse_sidecar_fields(path: &Path) -> Result<(String, RenderUsed), AppError> {
     let bytes = std::fs::read(path)?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let rendered_at = value
-        .get("rendered_at")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let render_used = match value
-        .get("render_used")
-        .and_then(|v| v.as_str())
-        .unwrap_or("det")
-    {
-        "llm" => RenderUsed::Llm,
-        "llm_fallback" => RenderUsed::LlmFallback,
-        _ => RenderUsed::Det,
+    let value: Value = serde_json::from_slice(&bytes)?;
+    Ok((
+        str_field(&value, "rendered_at"),
+        parse_render_used(
+            value
+                .get("render_used")
+                .and_then(Value::as_str)
+                .unwrap_or("det"),
+        ),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        audit_data_from_json, parse_render_mode, parse_render_used, parse_window,
+        resolve_dailies_dir, sidecar_host,
     };
-    Ok((rendered_at, render_used))
+    use crate::commands::types::{AuditRenderMode, RenderUsed};
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn dailies_dir_prefers_config_then_falls_back() {
+        let home = Path::new("/home/tester");
+        assert_eq!(
+            resolve_dailies_dir(Some("/work/dailies"), Some(home)),
+            PathBuf::from("/work/dailies")
+        );
+        assert_eq!(
+            resolve_dailies_dir(Some(""), Some(home)),
+            PathBuf::from("/home/tester/Sync/Github_Dailies/dailies")
+        );
+        assert_eq!(
+            resolve_dailies_dir(None, Some(home)),
+            PathBuf::from("/home/tester/Sync/Github_Dailies/dailies")
+        );
+    }
+
+    #[test]
+    fn sidecar_host_extracts_the_slug() {
+        assert_eq!(
+            sidecar_host("2026-08-03-MacStudio-de-Miguel.json", "2026-08-03-"),
+            Some("MacStudio-de-Miguel".to_string())
+        );
+    }
+
+    #[test]
+    fn sidecar_host_accepts_uppercase_extensions() {
+        // The listing must not depend on the case the sidecar was written with;
+        // macOS and Windows filesystems are case-insensitive.
+        assert_eq!(
+            sidecar_host("2026-08-03-host.JSON", "2026-08-03-"),
+            Some("host".to_string())
+        );
+    }
+
+    #[test]
+    fn sidecar_host_rejects_other_dates_and_non_json() {
+        assert_eq!(sidecar_host("2026-08-02-host.json", "2026-08-03-"), None);
+        assert_eq!(
+            sidecar_host("2026-08-03-host.json.tmp", "2026-08-03-"),
+            None
+        );
+        assert_eq!(sidecar_host("2026-08-03-host.md", "2026-08-03-"), None);
+        assert_eq!(sidecar_host("2026-08-03-.json", "2026-08-03-"), None);
+    }
+
+    #[test]
+    fn render_used_parses_the_three_contract_values() {
+        assert_eq!(parse_render_used("llm"), RenderUsed::Llm);
+        assert_eq!(parse_render_used("det"), RenderUsed::Det);
+        assert_eq!(parse_render_used("llm_fallback"), RenderUsed::LlmFallback);
+        assert_eq!(parse_render_used("nonsense"), RenderUsed::Det);
+    }
+
+    #[test]
+    fn render_mode_parses_the_three_contract_values() {
+        assert_eq!(parse_render_mode("auto"), AuditRenderMode::Auto);
+        assert_eq!(parse_render_mode("llm"), AuditRenderMode::Llm);
+        assert_eq!(parse_render_mode("det"), AuditRenderMode::Det);
+        assert_eq!(parse_render_mode("nonsense"), AuditRenderMode::Auto);
+    }
+
+    #[test]
+    fn window_is_renamed_from_start_end_to_range_start_range_end() {
+        let value = json!({ "window": { "start": "2026-08-01", "end": "2026-08-02" } });
+        let window = parse_window(&value);
+        assert_eq!(window.range_start, "2026-08-01");
+        assert_eq!(window.range_end, "2026-08-02");
+    }
+
+    #[test]
+    fn window_defaults_when_absent() {
+        let window = parse_window(&json!({}));
+        assert!(window.range_start.is_empty());
+        assert!(window.range_end.is_empty());
+    }
+
+    #[test]
+    fn audit_data_projects_a_core_sidecar() {
+        let value = json!({
+            "file": "2026-08-03",
+            "host": "MacStudio-de-Miguel",
+            "rendered_at": "2026-08-03T07:00:00Z",
+            "window": { "start": "2026-08-01", "end": "2026-08-02" },
+            "render_mode": "auto",
+            "render_used": "llm_fallback",
+            "provider": "claude",
+            "model": "opus",
+            "fellback": true,
+            "hash": "abc123",
+            "accumulated_count": 3,
+        });
+        let audit = audit_data_from_json(&value);
+        assert_eq!(audit.file, "2026-08-03");
+        assert_eq!(audit.host, "MacStudio-de-Miguel");
+        assert_eq!(audit.render_mode, AuditRenderMode::Auto);
+        assert_eq!(audit.render_used, RenderUsed::LlmFallback);
+        assert_eq!(audit.provider.as_deref(), Some("claude"));
+        assert!(audit.fellback);
+        assert_eq!(audit.accumulated_count, 3);
+    }
+
+    #[test]
+    fn audit_data_tolerates_an_empty_document() {
+        let audit = audit_data_from_json(&json!({}));
+        assert!(audit.file.is_empty());
+        assert_eq!(audit.render_mode, AuditRenderMode::Auto);
+        assert_eq!(audit.render_used, RenderUsed::Det);
+        assert!(audit.provider.is_none());
+        assert_eq!(audit.accumulated_count, 0);
+    }
+
+    #[test]
+    fn accumulated_count_saturates_instead_of_wrapping() {
+        // A u64 that does not fit in u32 used to wrap via `as`, turning a bogus
+        // sidecar value into a plausible-looking bullet count.
+        let audit = audit_data_from_json(&json!({ "accumulated_count": u64::from(u32::MAX) + 1 }));
+        assert_eq!(audit.accumulated_count, 0);
+    }
+
+    #[test]
+    fn audit_data_round_trips_to_the_contract_wire_values() {
+        let audit = audit_data_from_json(&json!({
+            "render_mode": "det",
+            "render_used": "llm",
+        }));
+        let value = serde_json::to_value(&audit).unwrap();
+        assert_eq!(value["render_mode"], json!("det"));
+        assert_eq!(value["render_used"], json!("llm"));
+    }
 }

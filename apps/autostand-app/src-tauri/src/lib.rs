@@ -2,14 +2,20 @@
 
 #![forbid(unsafe_code)]
 
-mod commands;
-mod error;
-mod state;
+// The IPC surface is the crate's API: `main.rs` links this rlib, and the DTOs in
+// `commands::types` appear in the public signatures of `state::PipelineStatus`.
+// Keeping these modules private would make the whole state machine unreachable
+// (dead code) and leak private types through public items.
+pub mod commands;
+pub mod error;
+pub mod state;
 
 pub use error::AppError;
 
 use tracing_subscriber::EnvFilter;
 
+/// Build and run the Tauri application, registering every IPC command from
+/// `docs/tauri/02-ipc-contracts.md`.
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -23,7 +29,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
-        .manage(state::AppState::default())
+        .manage(state::AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::set_config,

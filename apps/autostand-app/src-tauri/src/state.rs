@@ -62,11 +62,13 @@ impl AppState {
     }
 
     /// Snapshot the current `PipelineStatus`.
+    ///
+    /// A poisoned lock degrades to the default (idle) snapshot rather than
+    /// panicking — a status read must never take down an IPC command.
     pub fn status(&self) -> PipelineStatus {
         self.status
             .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default()
+            .map_or_else(|_| PipelineStatus::default(), |s| s.clone())
     }
 
     /// Begin a run for `date` + `host`; clears any prior error.
@@ -113,5 +115,162 @@ impl AppState {
             status.state = PipelineStateKind::Error;
             status.error = Some(message.into());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppState, PipelineStateKind, PipelineStatus};
+    use crate::commands::types::{CompileResult, CompileStatus};
+
+    fn sample_result() -> CompileResult {
+        CompileResult {
+            date: "2026-08-03".to_string(),
+            host: "MacStudio-de-Miguel".to_string(),
+            status: CompileStatus::Ok,
+            ..CompileResult::default()
+        }
+    }
+
+    #[test]
+    fn starts_idle_and_empty() {
+        let status = AppState::new().status();
+        assert_eq!(status.state, PipelineStateKind::Idle);
+        assert_eq!(status.percent, 0);
+        assert!(status.current_date.is_none());
+        assert!(status.current_host.is_none());
+        assert!(status.step.is_none());
+        assert!(status.last_run_at.is_none());
+        assert!(status.last_result.is_none());
+        assert!(status.error.is_none());
+    }
+
+    #[test]
+    fn set_state_records_run_identity_and_stamps_last_run() {
+        let state = AppState::new();
+        state.set_state(
+            "2026-08-03".to_string(),
+            "MacStudio-de-Miguel".to_string(),
+            PipelineStateKind::Gathering,
+            "gather".to_string(),
+        );
+        let status = state.status();
+        assert_eq!(status.state, PipelineStateKind::Gathering);
+        assert_eq!(status.current_date.as_deref(), Some("2026-08-03"));
+        assert_eq!(status.current_host.as_deref(), Some("MacStudio-de-Miguel"));
+        assert_eq!(status.step.as_deref(), Some("gather"));
+        assert_eq!(status.percent, 0);
+        assert!(status.last_run_at.is_some(), "set_state stamps last_run_at");
+    }
+
+    #[test]
+    fn set_state_clears_a_previous_error() {
+        let state = AppState::new();
+        state.set_error("boom");
+        state.set_state(None, None, PipelineStateKind::Gathering, None);
+        assert!(state.status().error.is_none());
+    }
+
+    #[test]
+    fn set_percent_updates_progress_and_optional_step() {
+        let state = AppState::new();
+        state.set_state(
+            None,
+            None,
+            PipelineStateKind::Gathering,
+            "gather".to_string(),
+        );
+        state.set_percent(42, "render_llm".to_string());
+        let status = state.status();
+        assert_eq!(status.percent, 42);
+        assert_eq!(status.step.as_deref(), Some("render_llm"));
+    }
+
+    #[test]
+    fn set_percent_without_a_step_keeps_the_current_step() {
+        let state = AppState::new();
+        state.set_state(
+            None,
+            None,
+            PipelineStateKind::Gathering,
+            "gather".to_string(),
+        );
+        state.set_percent(10, None);
+        let status = state.status();
+        assert_eq!(status.percent, 10);
+        assert_eq!(status.step.as_deref(), Some("gather"));
+    }
+
+    #[test]
+    fn set_percent_clamps_to_the_contracts_0_100_range() {
+        let state = AppState::new();
+        state.set_percent(240, None);
+        assert_eq!(state.status().percent, 100);
+    }
+
+    #[test]
+    fn set_done_stores_the_result_and_completes_progress() {
+        let state = AppState::new();
+        state.set_state(None, None, PipelineStateKind::Rendering, None);
+        state.set_done(sample_result());
+        let status = state.status();
+        assert_eq!(status.state, PipelineStateKind::Done);
+        assert_eq!(status.percent, 100);
+        assert_eq!(
+            status.last_result.map(|r| r.date).as_deref(),
+            Some("2026-08-03")
+        );
+    }
+
+    #[test]
+    fn set_error_flips_state_and_keeps_the_last_result() {
+        let state = AppState::new();
+        state.set_done(sample_result());
+        state.set_error("gather pipeline not yet wired");
+        let status = state.status();
+        assert_eq!(status.state, PipelineStateKind::Error);
+        assert_eq!(
+            status.error.as_deref(),
+            Some("gather pipeline not yet wired")
+        );
+        assert!(
+            status.last_result.is_some(),
+            "an error must not erase the previous run's result"
+        );
+    }
+
+    #[test]
+    fn state_kind_serializes_lowercase_for_the_frontend() {
+        let cases = [
+            (PipelineStateKind::Idle, "\"idle\""),
+            (PipelineStateKind::Gathering, "\"gathering\""),
+            (PipelineStateKind::Rendering, "\"rendering\""),
+            (PipelineStateKind::Done, "\"done\""),
+            (PipelineStateKind::Error, "\"error\""),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(serde_json::to_string(&kind).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn status_serializes_with_the_contract_field_names() {
+        let value = serde_json::to_value(PipelineStatus::default()).unwrap();
+        let obj = value.as_object().expect("PipelineStatus is an object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "current_date",
+                "current_host",
+                "error",
+                "last_result",
+                "last_run_at",
+                "percent",
+                "state",
+                "step",
+            ]
+        );
     }
 }
