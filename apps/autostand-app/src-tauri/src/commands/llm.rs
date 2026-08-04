@@ -3,16 +3,23 @@
 //! See `docs/tauri/02-ipc-contracts.md` rows `list_llm_providers`,
 //! `test_llm_provider`, `store_api_key`, `get_api_key_status`, `detect_cli`.
 //!
-//! These are functional stubs: they return the right shapes with sensible
-//! defaults (providers `enabled: false`, CLI detection via the adapter
-//! `detect_cli_binary` helper, keyring via the `keyring` crate).
+//! CLI detection goes through the adapter `detect_cli_binary` helper and API
+//! keys through the `keyring` crate; `test_llm_provider` dispatches to the
+//! adapter's `test_connection`. `list_llm_providers` still reports
+//! `enabled: false` for every provider — enablement lives in `AppConfig.llm`,
+//! which the Settings screen reads directly.
+//!
+//! Nothing in this module ever puts an API key into a return value, an error or
+//! a log line: keys move keychain/env → adapter and stop there.
 
 use std::time::Instant;
 
+use autostand_adapters::llm::{LlmError, ProviderMode as AdapterMode};
 use tauri::AppHandle;
 
 use crate::commands::types::{
-    ApiKeyMode, ApiKeyStatus, CliDetection, LlmProviderConfig, ProviderMode, TestProviderResult,
+    ApiKeyMode, ApiKeyStatus, AppConfig, CliDetection, LlmProviderConfig, ProviderConfig,
+    ProviderMode, TestProviderResult,
 };
 use crate::error::AppError;
 
@@ -143,14 +150,78 @@ pub async fn list_llm_providers(
     Ok(out)
 }
 
-/// Test a provider connection (CLI or API depending on `mode`).
+/// Map the IPC transport (`"cli" | "api"`) onto a single-channel adapter mode.
 ///
-/// This is a stub: it returns `ok: true, message: "not wired"` with a tiny
-/// measured latency. The real implementation will dispatch to the adapter's
-/// `test_connection` once provider config is wired into `AppConfig.llm`.
+/// WHY single-channel: the adapters' `CliFirst` / `ApiFallback` modes silently
+/// try the *other* transport when the first fails, so a "cli" probe could come
+/// back green while the CLI is missing — and could bill the user's API key for
+/// a button labelled "test the CLI".
+fn probe_mode(raw: &str) -> Option<AdapterMode> {
+    match raw {
+        "cli" => Some(AdapterMode::CliOnly),
+        "api" => Some(AdapterMode::ApiOnly),
+        _ => None,
+    }
+}
+
+/// Secret-free reason a connection probe failed, for the UI and the run log.
+///
+/// WHY not [`autostand_adapters::llm::LlmError`]'s `Display`: `ApiError` carries
+/// the raw transport-error string and `CliExitError` carries stderr. Gemini
+/// authenticates with the key in the URL query, so that string can contain the
+/// key verbatim. This message is rendered in Settings and logged, so it is built
+/// from a fixed per-variant label plus fields that can never hold a secret.
+fn probe_failure(err: &LlmError) -> String {
+    match err {
+        LlmError::Timeout { secs } => format!("timed out after {secs}s"),
+        LlmError::CliNotFound { .. } => "CLI binary not found".to_string(),
+        LlmError::CliExitError { code, .. } => format!("CLI exited with code {code}"),
+        LlmError::ApiError { status, .. } => format!("API error (HTTP {status})"),
+        LlmError::AuthError => "no API key in the keychain or the environment".to_string(),
+        LlmError::ParseError { .. } => "could not parse the provider response".to_string(),
+        LlmError::RateLimit { retry_after_secs } => retry_after_secs.map_or_else(
+            || "rate limited".to_string(),
+            |secs| format!("rate limited (retry after {secs}s)"),
+        ),
+    }
+}
+
+/// The stored settings for `provider`, or a blank entry when it has none yet.
+///
+/// Defaulting rather than failing is what lets a provider be probed straight
+/// from a fresh install: `render::provider_config` substitutes the documented
+/// per-provider model, base URL and timeout for every blank field.
+fn stored_entry(config: &AppConfig, provider: &str) -> ProviderConfig {
+    config
+        .llm
+        .providers
+        .iter()
+        .find(|p| p.id == provider)
+        .cloned()
+        .unwrap_or_else(|| ProviderConfig {
+            id: provider.to_string(),
+            ..ProviderConfig::default()
+        })
+}
+
+/// Test a provider connection over one transport (`mode` is `"cli"` or `"api"`).
+///
+/// Dispatches to the adapter's `test_connection` with the provider's stored
+/// settings (model, CLI path, base URL, timeout). Only the transport probe can
+/// fail: a refused connection comes back as `ok: false` with a reason, never as
+/// an IPC error, so the Settings card can show it inline.
+///
+/// The API key is deliberately *not* resolved here — the adapter resolves it
+/// itself, and only on its API path, so a `"cli"` probe never unlocks the
+/// keychain.
+///
+/// # Errors
+///
+/// [`AppError::Invalid`] when `provider` is not one of the five documented ids,
+/// and [`AppError::Config`] when the config store cannot be read.
 #[tauri::command]
 pub async fn test_llm_provider(
-    _app_handle: AppHandle,
+    app_handle: AppHandle,
     provider: String,
     mode: String,
 ) -> Result<TestProviderResult, AppError> {
@@ -158,17 +229,49 @@ pub async fn test_llm_provider(
         return Err(AppError::Invalid(format!("unknown provider: {provider}")));
     }
     let start = Instant::now();
-    let ok = matches!(mode.as_str(), "cli" | "api");
-    let message = if ok {
-        "test not yet wired".to_string()
-    } else {
-        format!("unknown mode: {mode} (expected cli|api)")
+    let Some(probe) = probe_mode(&mode) else {
+        return Ok(TestProviderResult {
+            ok: false,
+            message: format!("unknown mode: {mode} (expected cli|api)"),
+            latency_ms: elapsed_ms(start),
+        });
     };
-    Ok(TestProviderResult {
-        ok,
-        message,
-        latency_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(0),
-    })
+    // `binary_for` already accepted the id, so the registry must know it too;
+    // treat a mismatch as the same invalid-provider error rather than panicking.
+    let adapter = crate::render::adapter_for(&provider)
+        .ok_or_else(|| AppError::Invalid(format!("unknown provider: {provider}")))?;
+
+    let app_config = crate::commands::load_config(&app_handle)?;
+    let mut adapter_config =
+        crate::render::provider_config(&stored_entry(&app_config, &provider), None);
+    adapter_config.mode = probe;
+
+    match adapter.test_connection(&adapter_config).await {
+        Ok(result) => Ok(TestProviderResult {
+            ok: result.ok,
+            message: result.message,
+            latency_ms: result.latency_ms,
+        }),
+        Err(err) => {
+            let message = probe_failure(&err);
+            tracing::warn!(
+                provider = %provider,
+                transport = %mode,
+                reason = %message,
+                "provider connection test failed"
+            );
+            Ok(TestProviderResult {
+                ok: false,
+                message,
+                latency_ms: elapsed_ms(start),
+            })
+        }
+    }
+}
+
+/// Milliseconds since `start`, saturating instead of wrapping.
+fn elapsed_ms(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Store an API key in the OS keychain under `autostand.<provider>`.
@@ -226,7 +329,10 @@ pub async fn detect_cli(
 
 #[cfg(test)]
 mod tests {
-    use super::{binary_for, env_var_for, is_local_only, PROVIDERS};
+    use super::{
+        binary_for, env_var_for, is_local_only, probe_failure, probe_mode, stored_entry,
+        AdapterMode, AppConfig, LlmError, ProviderConfig, ProviderMode, PROVIDERS,
+    };
 
     #[test]
     fn exposes_the_five_documented_providers() {
@@ -266,5 +372,140 @@ mod tests {
         assert_eq!(env_var_for("grok"), Some("XAI_API_KEY"));
         assert_eq!(env_var_for("ollama"), None);
         assert_eq!(env_var_for("nope"), None);
+    }
+
+    // ---- connection probe -------------------------------------------------
+
+    #[test]
+    fn the_two_contract_transports_map_to_single_channel_modes() {
+        assert_eq!(probe_mode("cli"), Some(AdapterMode::CliOnly));
+        assert_eq!(probe_mode("api"), Some(AdapterMode::ApiOnly));
+    }
+
+    #[test]
+    fn no_other_transport_is_accepted() {
+        // A typo must surface as `ok: false`, never as a mode that falls back
+        // to the other transport.
+        for raw in ["", "CLI", "Api", "cli-first", "clifirst", "auto"] {
+            assert!(probe_mode(raw).is_none(), "{raw:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn probe_failures_never_carry_the_transport_payload() {
+        // Gemini authenticates with `?key=<secret>` in the URL, so reqwest's
+        // error string — and therefore `ApiError.body` — can contain the key.
+        let secret = "AIzaSy-not-a-real-key";
+        let leaky = [
+            LlmError::ApiError {
+                status: 400,
+                body: format!("error sending request for url (https://x/v1beta?key={secret})"),
+            },
+            LlmError::CliExitError {
+                code: 2,
+                stderr: format!("bad credentials: {secret}"),
+            },
+            LlmError::ParseError {
+                raw: secret.to_string(),
+            },
+        ];
+        for err in &leaky {
+            let message = probe_failure(err);
+            assert!(
+                !message.contains(secret),
+                "probe message leaked the payload: {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn probe_failures_keep_the_non_secret_detail() {
+        assert_eq!(
+            probe_failure(&LlmError::Timeout { secs: 15 }),
+            "timed out after 15s"
+        );
+        assert_eq!(
+            probe_failure(&LlmError::ApiError {
+                status: 503,
+                body: String::new()
+            }),
+            "API error (HTTP 503)"
+        );
+        assert_eq!(
+            probe_failure(&LlmError::CliExitError {
+                code: 127,
+                stderr: String::new()
+            }),
+            "CLI exited with code 127"
+        );
+        assert_eq!(
+            probe_failure(&LlmError::RateLimit {
+                retry_after_secs: Some(30)
+            }),
+            "rate limited (retry after 30s)"
+        );
+        assert_eq!(
+            probe_failure(&LlmError::RateLimit {
+                retry_after_secs: None
+            }),
+            "rate limited"
+        );
+        assert_eq!(
+            probe_failure(&LlmError::CliNotFound { searched: vec![] }),
+            "CLI binary not found"
+        );
+        assert_eq!(
+            probe_failure(&LlmError::AuthError),
+            "no API key in the keychain or the environment"
+        );
+    }
+
+    #[test]
+    fn stored_settings_win_when_the_provider_is_configured() {
+        let mut config = AppConfig::default();
+        config.llm.providers = vec![ProviderConfig {
+            id: "ollama".to_string(),
+            enabled: true,
+            mode: ProviderMode::ApiOnly,
+            model: "llama3.3".to_string(),
+            api_base_url: Some("http://localhost:11500".to_string()),
+            timeout_secs: 42,
+            ..ProviderConfig::default()
+        }];
+        let entry = stored_entry(&config, "ollama");
+        assert_eq!(entry.model, "llama3.3");
+        assert_eq!(
+            entry.api_base_url.as_deref(),
+            Some("http://localhost:11500")
+        );
+        assert_eq!(entry.timeout_secs, 42);
+    }
+
+    #[test]
+    fn an_unconfigured_provider_probes_with_a_blank_entry() {
+        // A fresh install has no `llm.providers` at all; the probe must still
+        // run, with `render::provider_config` filling in the defaults.
+        let entry = stored_entry(&AppConfig::default(), "claude");
+        assert_eq!(entry.id, "claude");
+        assert!(entry.model.is_empty());
+        assert!(entry.api_base_url.is_none());
+        assert_eq!(entry.timeout_secs, 0);
+    }
+
+    #[test]
+    fn a_stored_entry_never_carries_a_key_only_a_reference() {
+        // `api_key_ref` is a keychain *name*; the key itself must never be in
+        // the config store, so there is no field on the DTO that could hold it.
+        let mut config = AppConfig::default();
+        config.llm.providers = vec![ProviderConfig {
+            id: "claude".to_string(),
+            api_key_ref: Some("autostand.claude".to_string()),
+            ..ProviderConfig::default()
+        }];
+        let entry = stored_entry(&config, "claude");
+        let value = serde_json::to_value(&entry).expect("ProviderConfig serializes");
+        let object = value.as_object().expect("object");
+        assert!(!object.contains_key("api_key"), "{object:?}");
+        assert_eq!(object["api_key_ref"], serde_json::json!("autostand.claude"));
     }
 }
