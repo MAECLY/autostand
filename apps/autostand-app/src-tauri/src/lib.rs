@@ -35,6 +35,12 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .manage(state::AppState::new())
+        // The in-process scheduler must start with the app, not on first IPC
+        // call: nothing in the UI is required for a cron boundary to come due.
+        .setup(|app| {
+            scheduler_runtime::spawn(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::set_config,
