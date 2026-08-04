@@ -111,6 +111,25 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # apps/autostand-app depends on @autostand/ui, a PRIVATE git dependency in
+      # MAECLY/autostand-ui. GITHUB_TOKEN is scoped to this repository and cannot
+      # clone it, so `pnpm install` needs a token with read access supplied as the
+      # repository secret AUTOSTAND_UI_TOKEN. Same requirement as ci.yml; see
+      # docs/dev/04-ci-cd.md § Private dependency authentication.
+      - name: Authenticate to MAECLY/autostand-ui
+        env:
+          AUTOSTAND_UI_TOKEN: ${{ secrets.AUTOSTAND_UI_TOKEN }}
+        run: |
+          if [ -z "$AUTOSTAND_UI_TOKEN" ]; then
+            echo "::error::secret AUTOSTAND_UI_TOKEN is not set. @autostand/ui is a private git dependency and GITHUB_TOKEN cannot read another repository. Create a fine-grained PAT with Contents: Read on MAECLY/autostand-ui and add it as a repository secret named AUTOSTAND_UI_TOKEN."
+            exit 1
+          fi
+          rewrite="https://x-access-token:$AUTOSTAND_UI_TOKEN@github.com/"
+          # --add, not plain set: insteadOf is multi-valued.
+          git config --global --add url."$rewrite".insteadOf "git@github.com:"
+          git config --global --add url."$rewrite".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$rewrite".insteadOf "https://github.com/"
+
       - run: pnpm install --frozen-lockfile
 
       # tauri.conf.json defines no `beforeBuildCommand`, so `tauri build` will

@@ -7,13 +7,13 @@
 
 import { ChevronRight } from "lucide-react";
 
-import { Badge } from "@design-system/components/badge";
+import { Badge } from "@autostand/ui/components/badge";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "@design-system/components/collapsible";
-import { ScrollArea } from "@design-system/components/scroll-area";
+} from "@autostand/ui/components/collapsible";
+import { ScrollArea } from "@autostand/ui/components/scroll-area";
 
 import { cn } from "@/lib/utils";
 

@@ -19,9 +19,6 @@ apps/autostand-app/.tauri/
 *.log
 .vite/
 
-# Storybook
-design-system/storybook-static/
-
 # opencode tooling (self-managed)
 .opencode/node_modules/
 .opencode/package.json

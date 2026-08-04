@@ -19,7 +19,7 @@ import {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@design-system/components/tooltip";
+} from "@autostand/ui/components/tooltip";
 
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";

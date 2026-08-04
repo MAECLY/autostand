@@ -5,8 +5,8 @@
 
 import { Play } from "lucide-react";
 
-import { Button } from "@design-system/components/button";
-import { Spinner } from "@design-system/components/spinner";
+import { Button } from "@autostand/ui/components/button";
+import { Spinner } from "@autostand/ui/components/spinner";
 
 import { useTriggerRunNow } from "@/hooks/use-compile";
 import { usePipelineStatus } from "@/hooks/use-pipeline-status";

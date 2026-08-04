@@ -6,13 +6,13 @@
  * the same provenance everywhere in the app.
  */
 
-import { Badge } from "@design-system/components/badge";
+import { Badge } from "@autostand/ui/components/badge";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@design-system/components/tooltip";
+} from "@autostand/ui/components/tooltip";
 
 import { cn } from "@/lib/utils";
 

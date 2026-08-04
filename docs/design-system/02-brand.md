@@ -1,5 +1,11 @@
 # Brand
 
+> **Where the code lives.** The logo suite stays in this repo under `brand/logo/` (the generators in `tests/`
+> produce it and the app icons from it), and the marketing site keeps its own copy under `public/brand/`. Fonts
+> and the custom icon set moved into the `@autostand/ui` package
+> ([`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui)); paths like `icons/` and `tokens/` below are
+> relative to that repository's root.
+
 The autostand brand is technical, concise, and no-nonsense — matching the product's voice: automate the tedious, surface what matters.
 
 ## Brand name
@@ -43,10 +49,14 @@ path outlines, never an SVG `<text>` element, so the lockup cannot reshape itsel
 
 | Font | Role | Weights | Source |
 |------|------|---------|--------|
-| **Inter** | Sans — UI text, display, body | 400, 500, 600, 700 | Google Fonts or self-hosted woff2 |
-| **JetBrains Mono** | Mono — code, audit JSON, commit SHAs, file paths | 400, 500, 700 | Google Fonts or self-hosted woff2 |
+| **Inter** | Sans — UI text, display, body | 400, 500, 600, 700 | self-hosted woff2 in `@autostand/ui` |
+| **JetBrains Mono** | Mono — code, audit JSON, commit SHAs, file paths | 400, 500, 700 | self-hosted woff2 in `@autostand/ui` |
 
-Both are open-source (SIL OFL). Self-host woff2 for the Tauri app (no network dependency on Google Fonts). For the landing page, Google Fonts is fine.
+Both are open-source (SIL OFL), which is what makes redistributing them inside the package legal. Every surface
+self-hosts: the Tauri app has no network to spend on typography, and the marketing site should not hand Google a
+request per visitor. The latin subsets live in `fonts/` and are declared by `styles/fonts.css`, so importing
+`@autostand/ui/styles.css` is all a consumer does — the app's Vite build fingerprints all seven woff2 files into
+`dist/assets/`.
 
 ### Usage
 
@@ -91,7 +101,7 @@ Green, amber and red are one stop darker than the usual `-600` for the same reas
 | **lucide-react** | Standard UI icons (consistent stroke weight, MIT licensed). Pre-installed via shadcn/ui. |
 | **Custom SVG** | App-specific concepts not in lucide |
 
-Custom icons (in `design-system/icons/`):
+Custom icons (in `icons/`):
 
 | Icon | Concept |
 |------|---------|
@@ -140,16 +150,16 @@ The marketing landing page hero (see `docs/design-system/06-landing-reuse.md`):
 | `brand/logo/logo-mono.svg` | Monochrome | SVG | Footer, print |
 | `brand/logo/logo-favicon.svg` | Small-optimized | SVG | Browser tab |
 | `brand/logo/logo-og.png` | 1200×630 social card | PNG | Open Graph meta tag |
-| `design-system/tokens/tokens.css` | Design tokens | CSS | App + Storybook + landing |
-| `design-system/icons/*.svg` | Custom icons | SVG | App components |
-| `apps/autostand-app/src/fonts/*.woff2` | Self-hosted fonts | woff2 | Tauri app |
+| `tokens/tokens.css` (in `autostand-ui`) | Design tokens | CSS | App + marketing site + Storybook |
+| `icons/*.tsx` (in `autostand-ui`) | Custom icons as React components | TSX | App + marketing site |
+| `fonts/*.woff2` (in `autostand-ui`) | Self-hosted fonts | woff2 | App + marketing site |
 
 ### Adding a new brand asset
 
 1. Place the SVG/PNG in `brand/logo/` (or `brand/` subfolder).
 2. Update the asset inventory table above.
 3. If it's a logo variant, ensure a mono version exists (`currentColor`).
-4. If it's an icon, add to `design-system/icons/` and export from the icon index.
+4. If it's an icon, add it to `icons/` in the `autostand-ui` repo and export it from the icon index there.
 
 ## Brand consistency checklist
 
@@ -162,5 +172,5 @@ Before shipping any UI surface (app, landing, docs site):
 - [ ] Icons are from lucide-react or the custom set (consistent stroke)
 - [ ] Voice is technical, concise, no-nonsense
 - [ ] Dark mode works (`.dark` class swaps semantic tokens, including the saturated ones)
-- [ ] Every text pair clears 4.5:1 in both themes (`python3 tests/verify-f5-contrast.py`)
+- [ ] Every text pair clears 4.5:1 in both themes, verified against the shipped `tokens.css`
 - [ ] Logo uses the variant appropriate for context (see table above)

@@ -8,23 +8,23 @@ import { addDays, format, isValid, parseISO } from "date-fns";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 
-import { Button } from "@design-system/components/button";
+import { Button } from "@autostand/ui/components/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@design-system/components/card";
-import { Label } from "@design-system/components/label";
+} from "@autostand/ui/components/card";
+import { Label } from "@autostand/ui/components/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@design-system/components/select";
-import { Spinner } from "@design-system/components/spinner";
-import { Textarea } from "@design-system/components/textarea";
+} from "@autostand/ui/components/select";
+import { Spinner } from "@autostand/ui/components/spinner";
+import { Textarea } from "@autostand/ui/components/textarea";
 
 import { StandupMarkdown } from "@/components/standup/StandupPreview";
 import { useAddManualItem } from "@/hooks/use-standup";

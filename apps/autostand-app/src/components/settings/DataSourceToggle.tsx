@@ -5,13 +5,13 @@
  * so disabling it would leave the audit sidecar unable to verify anything.
  */
 
-import { Switch } from "@design-system/components/switch";
+import { Switch } from "@autostand/ui/components/switch";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@design-system/components/tooltip";
+} from "@autostand/ui/components/tooltip";
 
 import { useToggleDataSource } from "@/hooks/use-data-sources";
 import type { DataSourceConfig } from "@/lib/types";

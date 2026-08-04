@@ -7,7 +7,6 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      "@design-system": path.resolve(__dirname, "../../design-system"),
     },
     dedupe: ["react", "react-dom"],
   },

@@ -37,11 +37,12 @@ ROOT = Path(__file__).resolve().parent.parent
 # Every file that carries the product version, in the order a human bumps them.
 CARGO_WORKSPACE = Path("Cargo.toml")
 TAURI_CONF = Path("apps/autostand-app/src-tauri/tauri.conf.json")
+# The design system (MAECLY/autostand-ui) and the marketing site
+# (MAECLY/autostand-landing-page) version independently in their own repos; the
+# design system is pinned here by commit in pnpm-lock.yaml, not by semver.
 PACKAGE_JSONS = [
     Path("package.json"),
     Path("apps/autostand-app/package.json"),
-    Path("apps/landing/package.json"),
-    Path("design-system/package.json"),
 ]
 
 # Workspace members are expected to inherit the version rather than restate it;

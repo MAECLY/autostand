@@ -114,6 +114,36 @@ jobs:
           node-version: "22"
           cache: pnpm
 
+      # apps/autostand-app depends on @autostand/ui, which lives in the PRIVATE
+      # repo MAECLY/autostand-ui and is installed straight from git. The built-in
+      # GITHUB_TOKEN is scoped to THIS repository and cannot clone another one,
+      # so a token with read access to autostand-ui has to be supplied as a
+      # repository secret named AUTOSTAND_UI_TOKEN -- a fine-grained PAT with
+      # Contents: Read on MAECLY/autostand-ui, or a GitHub App installation
+      # token. This is a real new operational cost of the three-repo split; see
+      # docs/dev/04-ci-cd.md. Without the secret `pnpm install` fails inside git
+      # with a bare authentication error, so the step checks first and says what
+      # is missing.
+      #
+      # The rewrite covers all three spellings on purpose: pnpm pinned the
+      # dependency as `git@github.com:MAECLY/autostand-ui.git` (private repos
+      # resolve over SSH, not to a codeload tarball), and a future re-resolve
+      # could emit `ssh://` or `https://` instead.
+      - name: Authenticate to MAECLY/autostand-ui
+        env:
+          AUTOSTAND_UI_TOKEN: ${{ secrets.AUTOSTAND_UI_TOKEN }}
+        run: |
+          if [ -z "$AUTOSTAND_UI_TOKEN" ]; then
+            echo "::error::secret AUTOSTAND_UI_TOKEN is not set. @autostand/ui is a private git dependency and GITHUB_TOKEN cannot read another repository. Create a fine-grained PAT with Contents: Read on MAECLY/autostand-ui and add it as a repository secret named AUTOSTAND_UI_TOKEN."
+            exit 1
+          fi
+          rewrite="https://x-access-token:$AUTOSTAND_UI_TOKEN@github.com/"
+          # --add, not plain set: insteadOf is multi-valued and a second plain
+          # `git config` would replace the first rather than append to it.
+          git config --global --add url."$rewrite".insteadOf "git@github.com:"
+          git config --global --add url."$rewrite".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$rewrite".insteadOf "https://github.com/"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -128,9 +158,9 @@ jobs:
 
       # NOT `pnpm build` -- that script is `tauri build`, which needs the Rust
       # toolchain plus the GTK/WebKit stack and emits a desktop bundle; it belongs
-      # in release.yml, not here. `pnpm build:web` builds the three web surfaces:
-      # apps/autostand-app (vite), apps/landing (astro) and design-system (Storybook).
-      - name: Build web surfaces
+      # in release.yml, not here. `pnpm build:web` builds only the app's Vite
+      # bundle; the marketing site and Storybook build in their own repos.
+      - name: Build web bundle
         run: pnpm build:web
 
   e2e:
@@ -147,10 +177,26 @@ jobs:
           node-version: "22"
           cache: pnpm
 
+      # Same private-dependency problem as the frontend job; see the comment there.
+      - name: Authenticate to MAECLY/autostand-ui
+        env:
+          AUTOSTAND_UI_TOKEN: ${{ secrets.AUTOSTAND_UI_TOKEN }}
+        run: |
+          if [ -z "$AUTOSTAND_UI_TOKEN" ]; then
+            echo "::error::secret AUTOSTAND_UI_TOKEN is not set. @autostand/ui is a private git dependency and GITHUB_TOKEN cannot read another repository. Create a fine-grained PAT with Contents: Read on MAECLY/autostand-ui and add it as a repository secret named AUTOSTAND_UI_TOKEN."
+            exit 1
+          fi
+          rewrite="https://x-access-token:$AUTOSTAND_UI_TOKEN@github.com/"
+          # --add, not plain set: insteadOf is multi-valued and a second plain
+          # `git config` would replace the first rather than append to it.
+          git config --global --add url."$rewrite".insteadOf "git@github.com:"
+          git config --global --add url."$rewrite".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$rewrite".insteadOf "https://github.com/"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Only chromium: both suites declare a single chromium project, and pulling
+      # Only chromium: the suite declares a single chromium project, and pulling
       # the other engines would triple the download for no extra coverage.
       - name: Install Playwright browser
         run: pnpm --filter autostand-app exec playwright install --with-deps chromium
@@ -161,18 +207,11 @@ jobs:
       - name: App E2E
         run: pnpm --filter autostand-app test:e2e
 
-      # Runs against the static Astro build served under its deployed base path, so
-      # a base-path or contrast regression fails here rather than in production.
-      - name: Landing E2E
-        run: pnpm --filter landing test:e2e
-
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-artifacts
-          path: |
-            apps/autostand-app/test-results/
-            apps/landing/e2e/.artifacts/
+          path: apps/autostand-app/test-results/
           retention-days: 7
           if-no-files-found: ignore

@@ -10,10 +10,10 @@ import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen } from "lucide-react";
 
-import { Badge } from "@design-system/components/badge";
-import { Button } from "@design-system/components/button";
-import { Input } from "@design-system/components/input";
-import { Label } from "@design-system/components/label";
+import { Badge } from "@autostand/ui/components/badge";
+import { Button } from "@autostand/ui/components/button";
+import { Input } from "@autostand/ui/components/input";
+import { Label } from "@autostand/ui/components/label";
 
 import { useValidatePaths } from "@/hooks/use-paths";
 import type { PathValidation } from "@/lib/types";

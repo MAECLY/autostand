@@ -15,14 +15,14 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { Button } from "@design-system/components/button";
+import { Button } from "@autostand/ui/components/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
-} from "@design-system/components/dropdown-menu";
+} from "@autostand/ui/components/dropdown-menu";
 
 import { useUiStore, type Theme } from "@/lib/store";
 

@@ -7,6 +7,21 @@ Markdown standup files.
 🚧 In development (v0.1.0, unreleased). Full architecture and specs live in [`docs/`](docs/README.md);
 implementation status is tracked in [`docs/dev/06-progress.md`](docs/dev/06-progress.md).
 
+## Where everything lives
+
+autostand is three repositories. **This one is the product**: the Rust workspace and the Tauri desktop app.
+
+| Repo | What | Ships as |
+| --- | --- | --- |
+| `MAECLY/autostand` (here) | Rust crates + the Tauri v2 desktop app | desktop bundles, from a `v*` tag |
+| [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) | The design system: tokens, 24 base components, icons, brand fonts, Storybook | the `@autostand/ui` package, consumed here as a git dependency |
+| [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page) | The marketing site (Next.js 15) | a Vercel deployment |
+
+The design system is a private git dependency (`"@autostand/ui": "github:MAECLY/autostand-ui#main"`), pinned by
+commit in `pnpm-lock.yaml`. Installing it needs read access to that repo — an SSH key locally, and the
+`AUTOSTAND_UI_TOKEN` secret in CI. See [`docs/dev/04-ci-cd.md`](docs/dev/04-ci-cd.md) § Private dependency
+authentication.
+
 ## Features
 
 - **Cross-platform**: macOS, Linux, Windows (Tauri v2).
@@ -18,7 +33,8 @@ implementation status is tracked in [`docs/dev/06-progress.md`](docs/dev/06-prog
 - **Two-machine sync**: per-host AUTO blocks plus a union merge driver.
 - **Scheduled + self-healing**: installs a launchd agent / systemd `--user` timer / Task Scheduler job and
   fills missed runs from durable on-disk data.
-- **Design system**: Tailwind v4 tokens + shadcn/ui + Storybook 8, shared by the app and the landing page.
+- **Design system**: Tailwind v4 tokens + shadcn/ui + Storybook 8, shared with the marketing site through the
+  `@autostand/ui` package.
 
 ## Prerequisites
 
@@ -47,7 +63,7 @@ pnpm dev            # hot-reload desktop app (tauri dev)
 
 ```bash
 cargo build --workspace     # Rust crates only
-pnpm build:web              # the three web surfaces: app, landing page, Storybook
+pnpm build:web              # the app's web bundle (Vite), the only web surface here
 pnpm build                  # production desktop bundles (tauri build)
 ```
 
@@ -65,14 +81,13 @@ pnpm lint
 pnpm typecheck
 pnpm test                                   # vitest
 
-# End-to-end (Playwright; not yet part of CI)
+# End-to-end (Playwright)
 pnpm test:e2e                               # app UI over a mocked Tauri IPC
-pnpm --filter landing test:e2e              # the built landing page
 ```
 
 `pnpm test:e2e` needs a Chromium build once: `pnpm --filter autostand-app exec playwright install chromium`.
 
-Everything above is what CI runs, minus the two Playwright suites. The Rust tests are hermetic — no network,
+Everything above is what CI runs. The Rust tests are hermetic — no network,
 no real `git`/`gh`/LLM calls, and independent of your `HOME`.
 
 ## Repository layout
@@ -83,22 +98,17 @@ no real `git`/`gh`/LLM calls, and independent of your `HOME`.
 | `crates/autostand-adapters` | `LlmAdapter` + 5 providers; `DataSource` + 8 sources |
 | `crates/autostand-scheduler` | Cron parser, self-heal, OS scheduler installation |
 | `apps/autostand-app` | The Tauri app — Rust in `src-tauri/`, React/Vite in `src/` |
-| `apps/landing` | Astro marketing site |
-| `design-system` | Tokens, 23 base components, icons, Storybook 8 |
+| `brand` | Logo SVGs and the Open Graph card; the generators live in `tests/` |
 | `tests/e2e` | Playwright specs for the app UI |
 | `docs` | Full project documentation — start at [`docs/README.md`](docs/README.md) |
 
 ## Published sites
 
-Both are deployed from `main` by [`.github/workflows/pages.yml`](.github/workflows/pages.yml) as a single
-GitHub Pages site:
+None from this repo. It used to publish the landing page and Storybook as one GitHub Pages site; both moved to
+their own repositories in the split, and `pages.yml` is gone. The marketing site deploys to Vercel from
+`autostand-landing-page`, and Storybook builds in `autostand-ui`.
 
-- Landing page — <https://maecly.github.io/autostand/>
-- Storybook — <https://maecly.github.io/autostand/storybook/>
-
-Run Storybook locally with `pnpm storybook`.
-
-Desktop bundles are built separately: pushing a `v*` tag runs
+Desktop bundles are built here: pushing a `v*` tag runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which attaches macOS (Apple Silicon +
 Intel), Linux and Windows bundles to a draft release for a human to publish. Codesigning secrets are not
 configured yet, so those bundles are unsigned — see [`docs/user/01-install.md`](docs/user/01-install.md).

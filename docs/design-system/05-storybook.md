@@ -1,16 +1,16 @@
 # Storybook 8
 
-Storybook is the development + documentation environment for the autostand design system. It lives in `design-system/` and is shared between the Tauri app and (future) landing page.
+> **Where the code lives.** Storybook is part of the `@autostand/ui` package and runs from
+> [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) — `pnpm storybook` in **that** repo, not this
+> one. There is no Storybook script here any more, and nothing in this repo builds or deploys it. Paths below
+> are relative to the `autostand-ui` root.
+
+Storybook is the development and documentation environment for the autostand design system. It documents the
+base components, the icon set and the tokens — everything the desktop app and the marketing site consume.
 
 ## Setup
 
-Storybook 8 is installed in `design-system/`:
-
-```bash
-pnpm dlx storybook@latest init    # run inside design-system/
-```
-
-Config in `design-system/.storybook/`:
+Storybook 8 is installed at the root of the `autostand-ui` repo. Config in `.storybook/`:
 
 ### `main.ts`
 
@@ -141,7 +141,7 @@ Three story categories in the sidebar:
 
 ### Base components
 
-`design-system/components/*.stories.tsx`
+`components/*.stories.tsx`
 
 ```
 Components/
@@ -170,7 +170,7 @@ Components/
 
 ### App components
 
-`design-system/app-components/*.stories.tsx`
+`app-components/*.stories.tsx`
 
 ```
 App Components/
@@ -192,7 +192,7 @@ App Components/
 
 ### Tokens page
 
-`design-system/tokens/tokens.stories.tsx` — a special story showing all tokens visually:
+`tokens/tokens.stories.tsx` — a special story showing all tokens visually:
 
 ```
 Tokens/
@@ -211,21 +211,20 @@ This is the design system's "source of truth" page — designers and devs check 
 | Command | What it does |
 |---------|--------------|
 | `pnpm storybook` | Start Storybook dev server at `localhost:6006` |
-| `pnpm build-storybook` | Build static Storybook to `design-system/storybook-static/` |
+| `pnpm build-storybook` | Build static Storybook to `storybook-static/` |
 | `pnpm storybook test` | Run Storybook test-runner (interaction tests) |
 
-Run from the repo root. The `pnpm storybook` command is defined in the root `package.json` and invokes Storybook in `design-system/`.
+All three run **from the `autostand-ui` repo**, whose `package.json` defines them.
 
 ## CI
 
-`storybook.yml` GitHub Action (see `docs/dev/04-ci-cd.md`):
+`autostand-ui`'s own workflow builds Storybook on every push and pull request — that build is what catches a
+broken story. Hosting goes through Vercel like the rest of autostand's hosting: `vercel.json` in that repo
+already declares the build command and output directory, so connecting the repo in Vercel is all it takes.
+Nothing is published until someone does, so until then Storybook is a local tool.
 
-- Trigger: push to `main` with changes in `design-system/`.
-- Runs `pnpm build-storybook`.
-- Deploys `design-system/storybook-static/` to GitHub Pages.
-- URL: `https://MAECLY.github.io/autostand/storybook/`.
-
-This means every merged PR updates the live Storybook — designers can always see the latest state.
+This repo used to publish it at `https://MAECLY.github.io/autostand/storybook/` from `pages.yml`, alongside the
+Astro landing page. That workflow is deleted; the monorepo no longer deploys any web surface.
 
 ## Testing
 
@@ -262,15 +261,18 @@ Not required — the test-runner covers interaction testing. Add Chromatic when 
 
 ## Adding a new story
 
-1. Create the component (e.g., `design-system/components/pagination.tsx`).
-2. Create the story (`design-system/components/pagination.stories.tsx`).
-3. Run `pnpm storybook` — the story appears in the sidebar.
+1. Create the component (e.g., `components/pagination.tsx`).
+2. Create the story (`components/pagination.stories.tsx`).
+3. Run `pnpm storybook` (in `autostand-ui`) — the story appears in the sidebar.
 4. Verify in light + dark mode (use the backgrounds toolbar).
 5. Add `tags: ["autodocs"]` for a docs page.
 6. Commit both files in the same PR.
 
 ## Storybook + Tauri
 
-Storybook runs in the browser (Vite), NOT in Tauri. App components that call `invoke` use mock callbacks in stories (no-ops or `console.log`). This keeps Storybook fast and dependency-free.
+Storybook runs in the browser (Vite), NOT in Tauri — and after the split it cannot reach Tauri even in
+principle: it lives in a repo that has no Rust, no `@tauri-apps/api` and no autostand domain types.
 
-The real Tauri integration is tested in E2E tests (see `docs/dev/03-testing.md`), not Storybook.
+That is why only **base** components have stories. App components (`AuditViewer`, `PipelineCard`, …) stay in
+`apps/autostand-app/src/components/` and are covered by vitest and Playwright in this repo instead — see
+`docs/design-system/04-app-components.md` and `docs/dev/03-testing.md`.

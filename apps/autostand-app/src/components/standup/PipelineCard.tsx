@@ -9,15 +9,15 @@ import {
   Alert,
   AlertDescription,
   AlertTitle,
-} from "@design-system/components/alert";
-import { Badge } from "@design-system/components/badge";
+} from "@autostand/ui/components/alert";
+import { Badge } from "@autostand/ui/components/badge";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@design-system/components/card";
-import { Progress } from "@design-system/components/progress";
+} from "@autostand/ui/components/card";
+import { Progress } from "@autostand/ui/components/progress";
 
 import { usePipelineStatus } from "@/hooks/use-pipeline-status";
 import type { PipelineState } from "@/lib/types";

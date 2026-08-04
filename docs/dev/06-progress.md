@@ -20,27 +20,31 @@ Legend: `[x]` done and verified · `[~]` partially done (detail in the note) · 
 | F4 | Wiring: gather → compile → render → write → commit, config store, scheduler runtime | done |
 | F5 | Brand assets + landing page composition | done |
 | F6 | E2E tests + CI/CD | done |
+| F7 | Repo split: design system and marketing site moved out | done |
 
 ---
 
 ## Last full verification
 
-Every command below was run locally, in this repo, at the close of F6 — the whole of `ci.yml`, including the
-E2E job.
+Every command below was re-run locally, in this repo, at the close of F7 — after the landing page and the
+design system were removed and the app was repointed at `@autostand/ui`.
 
 | Command | Result |
 | --- | --- |
 | `cargo fmt --all --check` | pass |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass, 0 warnings |
-| `cargo test --workspace` | **470 passed**, 0 failed, 0 ignored |
-| `cargo audit` | pass — 0 vulnerabilities, 17 unmaintained/unsound warnings, none suppressed |
+| `cargo test --workspace` | **470 passed**, 0 failed, 0 ignored (52 adapters · 252 + 16 app · 84 core · 58 scheduler · 6 + 2 integration) |
+| `cargo audit` | last run at F6 — 0 vulnerabilities, 17 unmaintained/unsound warnings, none suppressed. Not re-run at F7: no Rust dependency changed. |
+| `pnpm install` | pass — resolves `@autostand/ui` from `MAECLY/autostand-ui`, lockfile committed |
 | `pnpm install --frozen-lockfile` | pass (lockfile in sync, pnpm 11.18.0) |
-| `pnpm lint` | pass (3 packages) |
-| `pnpm typecheck` | pass (3 packages, 0 errors) |
+| `pnpm lint` | pass (1 package) |
+| `pnpm typecheck` | pass (0 errors) |
 | `pnpm test` | **97 passed** (8 files) |
-| `pnpm build:web` | pass — app (vite), landing (astro), Storybook |
-| `pnpm --filter autostand-app test:e2e` | **20 passed** / 20 |
-| `pnpm --filter landing test:e2e` | **46 passed** / 46, axe gate included |
+| `pnpm build:web` | pass — the app's Vite bundle, the only web surface left |
+| `pnpm exec vite build` (in `apps/autostand-app`) | pass — 7 woff2 emitted into `dist/assets/`, all from the package |
+| `pnpm exec playwright test` (in `apps/autostand-app`) | **20 passed** / 20 |
+
+The landing suite (46 specs) moved with the site to `MAECLY/autostand-landing-page` and no longer runs here.
 
 Hermeticity re-checked: `cargo test --workspace` also passes with `HOME` pointed at an empty temp
 directory and `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` set to `/dev/null` — no test reads the developer's
@@ -62,8 +66,9 @@ tree are the synthetic fixtures in `core::redact`'s own tests.
 
 - [x] Cargo workspace with shared lints (`unsafe_code = deny`, clippy pedantic)
 - [x] Tauri v2 app shell, capabilities, icons
-- [x] pnpm workspace: `apps/autostand-app` + `design-system` (`apps/landing` joined it in F5 — 3 packages today)
-- [x] Design tokens (`design-system/tokens/tokens.css`) + Storybook 8 config
+- [x] pnpm workspace: 3 packages at F5 (`apps/autostand-app`, `apps/landing`, `design-system`) — **1 today**,
+      see F7
+- [x] Design tokens + Storybook 8 config — moved to `MAECLY/autostand-ui` in F7
 
 ## F2 — Core domain + adapters
 
@@ -79,8 +84,8 @@ tree are the synthetic fixtures in `core::redact`'s own tests.
 
 - [x] 25 IPC commands matching `docs/tauri/02-ipc-contracts.md`, `AppError`, managed `AppState`
 - [x] Wire format verified against the contract (serde renames + round-trip tests)
-- [x] 23 design-system base components + Storybook stories
-- [x] Shared Tailwind v4 stylesheet consumed by app and Storybook
+- [x] 23 design-system base components + Storybook stories (24 in the package today, after the split)
+- [x] Shared Tailwind v4 stylesheet consumed by app and Storybook — now `@autostand/ui/styles.css`
 - [x] TS contract layer (`lib/types.ts`, `lib/tauri.ts`, `lib/error.ts`, `lib/store.ts`)
 - [x] 9 TanStack Query hooks, app shell, standup/settings/audit/debug components
 - [x] 5 pages (dashboard, settings, history, audit, debug)
@@ -114,15 +119,17 @@ Test totals after F4: **411 Rust tests** (was 176) · 97 frontend tests.
 - [x] Full logo set — mark, horizontal, vertical, mono, favicon; wordmark as Inter 700 path outlines
 - [x] Real app icons (32/128/128@2x/512/icon.png, a multi-size `.ico`, `.icns`) + the 1200×630 Open Graph card
 - [x] Self-hosted Inter + JetBrains Mono woff2, wired through the shared stylesheet and bundled by the app
-- [x] Custom icon set (`design-system/icons/`) with React exports and stories
-- [x] Landing page (`apps/landing/`, Astro static + React islands) reusing the tokens and base components
+- [x] Custom icon set with React exports and stories — now `icons/` in `MAECLY/autostand-ui`
+- [x] Landing page (`apps/landing/`, Astro static + React islands) reusing the tokens and base components —
+      **moved out in F7**, ported to Next.js 15 in `MAECLY/autostand-landing-page`
 - [x] Dark mode, skip link, section anchors; only the theme toggle and FAQ ship JavaScript
       (all four re-verified green by the F6 landing suite: `theme.spec.ts`, `a11y.spec.ts` skip-link tests,
       `navigation.spec.ts`, `structure.spec.ts` "hydrates both islands and only those")
-- [x] Deploy the landing page — `pages.yml` publishes it at `/autostand` alongside Storybook at
-      `/autostand/storybook/` (closed in F6)
+- [x] Deploy the landing page — `pages.yml` published it at `/autostand` alongside Storybook at
+      `/autostand/storybook/` (closed in F6). **Superseded in F7:** `pages.yml` is deleted, the site deploys
+      to Vercel from its own repo and Storybook from `autostand-ui`. This repo deploys no web surface.
 - [x] **WCAG 2.1 AA colour contrast — met.** F6's axe gate measured the palette for the first time and found
-      13 token pairs in `design-system/tokens/tokens.css` below 4.5:1. Root cause was structural, not cosmetic:
+      13 token pairs in `tokens/tokens.css` below 4.5:1. Root cause was structural, not cosmetic:
       `.dark` had no overrides at all for `--brand-primary`, `--audit-*` or `--status-*-bg`, and text on a
       brand-filled control reused `--fg-inverse`, which flips to slate-950 in dark mode — so every primary
       button label sat at 3.01:1. Fixed by adding a dedicated `--fg-on-brand`, giving dark mode real overrides
@@ -130,34 +137,94 @@ Test totals after F4: **411 Rust tests** (was 176) · 97 frontend tests.
       logo assets are untouched), and darkening six light-mode status/audit values one stop. Two markup defects
       went with it: `<Progress>` in the mockup had no accessible name, and the table's `overflow-auto` wrapper
       was unreachable by keyboard.
-      Verified: `tests/verify-f5-contrast.py` reports 0 pairs below threshold, and all four axe audits pass.
+      Verified at F6: 0 pairs below threshold and all four axe audits passing. The tokens and the axe gate both
+      live outside this repo now, so that verification is owned by `autostand-ui` and the landing repo.
 
 ## F6 — E2E + CI/CD
 
-- [x] GitHub Actions — `ci.yml`, `pages.yml`, `release.yml`. All three parse as YAML; every pinned action ref
-      resolves on GitHub (`actions/checkout@v4`, `actions/setup-node@v4`, `actions/configure-pages@v5`,
+- [x] GitHub Actions — `ci.yml`, `pages.yml`, `release.yml`. All three parsed as YAML; every pinned action ref
+      resolved on GitHub (`actions/checkout@v4`, `actions/setup-node@v4`, `actions/configure-pages@v5`,
       `actions/upload-pages-artifact@v3`, `actions/deploy-pages@v4`, `pnpm/action-setup@v4`,
       `Swatinem/rust-cache@v2`, `tauri-apps/tauri-action@v0`, and `dtolnay/rust-toolchain@stable`, which is a
-      branch rather than a tag — the documented usage). Permissions are least-privilege per workflow:
-      `ci.yml` `contents: read`, `pages.yml` `contents: read` + `pages: write` + `id-token: write`,
-      `release.yml` `contents: write`. Secrets appear only as `${{ secrets.* }}`.
+      branch rather than a tag — the documented usage). Permissions were least-privilege per workflow.
+      Secrets appear only as `${{ secrets.* }}`. **`pages.yml` was deleted in F7**; the two remaining
+      workflows are `ci.yml` (`contents: read`) and `release.yml` (`contents: write`).
 - [x] Every `ci.yml` step run locally and green — see the verification table above.
 - [x] `pages.yml`'s two inline scripts (`Assemble site`, `Verify base paths`) executed verbatim against real
-      builds: the landing page's root-absolute refs are all under `/autostand/` and present in the artifact,
-      and Storybook emits a fully relative bundle.
-- [x] `release.yml`'s gate executed: `python3 tests/verify-version-consistency.py v0.1.0` agrees across all
-      10 manifests.
-- [x] Playwright E2E — two suites, 66 specs, **all green**:
+      builds: the landing page's root-absolute refs were all under `/autostand/` and present in the artifact,
+      and Storybook emitted a fully relative bundle. Both surfaces have since left the repo.
+- [x] `release.yml`'s gate executed: `python3 tests/verify-version-consistency.py v0.1.0` agreed across all
+      manifests (10 at F6, 8 after F7 dropped the two removed `package.json` files).
+- [x] Playwright E2E — two suites, 66 specs, **all green at F6**:
       - `tests/e2e/` (app UI over a mocked Tauri IPC, config in `apps/autostand-app/playwright.config.ts`) —
-        **20/20**.
+        **20/20**. Still here, still green.
       - `apps/landing/e2e/` (the built Astro site served under its deployed base path) — **46/46**, axe gate
-        included.
-- [x] Both suites run in CI. `ci.yml` has a third job that installs chromium only and runs each suite, with
-      failure artifacts uploaded for 7 days.
+        included. Moved to `MAECLY/autostand-landing-page` in F7.
+- [x] Both suites ran in CI via a third job that installs chromium only, with failure artifacts uploaded for
+      7 days. After F7 that job runs the app suite alone.
 - [ ] Tauri updater — deliberately not enabled (no updater plugin, no `plugins.updater`, no
       `bundle.createUpdaterArtifacts`), so no `latest.json` and no `.sig` are produced and
       `TAURI_SIGNING_PRIVATE_KEY*` are not wired. `docs/dev/04-ci-cd.md` § Tauri updater lists what turning it
       on needs. Codesigning/notarization secrets are referenced but unset, so bundles ship unsigned.
+
+## F7 — Repo split
+
+The design system and the marketing site each became their own repository. This repo stopped being a second
+source of truth for either.
+
+- [x] `apps/landing/` deleted (Astro site + its 46-spec Playwright suite). It lives on as a Next.js 15 App
+      Router port in [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page),
+      deployed by Vercel at `autostand.maecly.com`. The `/autostand` base path is gone with the move — the site
+      is served from a domain root now.
+- [x] `design-system/` deleted, extracted **with its history** to
+      [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) and published as the `@autostand/ui`
+      package. Storybook went with it and builds from that repo's CI.
+- [x] `.github/workflows/pages.yml` deleted. This repo deploys no web surface; the only workflows left are
+      `ci.yml` and `release.yml`.
+- [x] `apps/autostand-app` consumes the package instead of the source tree:
+      `"@autostand/ui": "github:MAECLY/autostand-ui#main"`, with **0** remaining `@design-system` references.
+      The alias is dropped from `vite.config.ts`, `vitest.config.ts` and `tsconfig.json` — resolution goes
+      through the package's `exports` map.
+- [x] `src/styles/globals.css` is now `@import "@autostand/ui/styles.css";` plus two `@source` lines pointing
+      into `node_modules`.
+- [x] `apps/autostand-app/src/fonts/*.woff2` deleted — the fonts ship inside the package. **Verified, not
+      assumed:** a production `vite build` emits all seven (`inter-400/500/600/700`,
+      `jetbrains-mono-400/500/700`) into `apps/autostand-app/dist/assets/`, fingerprinted, so the app still
+      fetches no font at runtime.
+- [x] Workspace reduced to one package. Root `package.json` lost `build:landing`, `storybook` and
+      `build-storybook`; `build:web` is now just the app's Vite build. The Makefile lost `dev-landing` and
+      `storybook`; `make` still self-documents. `ci.yml` typechecks one app plus the Rust workspace and runs
+      one Playwright suite.
+- [x] `tests/verify-version-consistency.py` dropped the two removed manifests, so `make versions` and
+      `release.yml`'s version gate still pass.
+- [x] Docs rewritten for the three-repo reality: `docs/design-system/*` keep the design specs but point at the
+      package, `06-landing-reuse.md` is rewritten from a proposal into a record of what was done, and
+      `docs/tauri/04-frontend-stack.md`, `docs/dev/02-commands.md` and `docs/dev/04-ci-cd.md` follow the
+      removed alias, targets, jobs and Pages deploy.
+
+### What the split cost
+
+Honest accounting, because the tracker is worth nothing if it only records wins:
+
+1. **CI cannot install `@autostand/ui` without a new secret, and that secret does not exist yet.**
+   `autostand-ui` is private, so pnpm resolved it over SSH and pinned
+   `git+ssh://git@github.com/MAECLY/autostand-ui.git#f53413ec…` in `pnpm-lock.yaml`. GitHub Actions' built-in
+   `GITHUB_TOKEN` is scoped to the repository the workflow runs in and **cannot read another repository**, so
+   `pnpm install --frozen-lockfile` fails. Both JS jobs in `ci.yml` and every platform build in `release.yml`
+   now run an `Authenticate to MAECLY/autostand-ui` step that requires a repository secret named
+   **`AUTOSTAND_UI_TOKEN`** (a fine-grained PAT with `Contents: Read` on `MAECLY/autostand-ui`, or a GitHub App
+   installation token). Until someone creates it, those jobs fail — loudly and by name, but they fail. This is
+   a real, recurring operational cost: the token has an expiry and someone has to rotate it. Making
+   `autostand-ui` public would remove the requirement entirely.
+2. **A design-system change is now two commits in two repos plus a lockfile bump.** The branch specifier
+   (`#main`) does not auto-update: the lockfile pins a commit, deliberately, so a push to `autostand-ui` cannot
+   silently change what this repo builds.
+3. **A breaking component change is caught at bump time, not edit time.** Previously `pnpm typecheck` in this
+   repo covered the design system too.
+4. **Three CI configurations to keep honest** instead of one.
+
+Against that: no copy of the components exists anywhere, so no copy can drift — which is exactly the failure
+mode the alternative (copying components into the marketing site) guaranteed.
 
 ---
 
@@ -192,13 +259,15 @@ Nothing regressed; F0–F3 are as claimed:
 | Claim | Counted | Verdict |
 | --- | --- | --- |
 | 25 IPC commands | 25 `#[tauri::command]` in `src-tauri/src/**`, all reachable from `generate_handler!` | holds |
-| 23 design-system base components | 23 `.tsx` components, each with a `.stories.tsx` | holds |
+| 23 design-system base components | 23 `.tsx` components, each with a `.stories.tsx`; 24 in `@autostand/ui` today | holds |
 | 9 TanStack Query hooks | 9 files in `src/hooks/` | holds |
 | 5 pages | `index`, `settings`, `history`, `audit`, `debug` under `src/routes/` | holds |
 | 8 data sources | `local_git`, `github`, `claude_code`, `remember`, `opencode`, `codex`, `gemini_cli`, `grok_cli` | holds |
 | 5 LLM providers | `claude`, `ollama`, `openai`, `gemini`, `grok` | holds |
 | 97 frontend tests | 97 in 8 files | holds |
 | 47 docs files | **48** `.md` under `docs/` | corrected above |
+
+Counts under `apps/autostand-app/` are unchanged by F7 — the split moved the design system out, not the app.
 
 ## Outstanding for the project
 
@@ -216,3 +285,13 @@ Nothing regressed; F0–F3 are as claimed:
    testing doc has not caught up.
 3. **Release signing.** macOS notarization and Windows codesigning secrets are referenced in `release.yml`
    but unset, so `v*` tags produce unsigned bundles on a draft release.
+4. **`AUTOSTAND_UI_TOKEN` is not configured, and CI's JS jobs cannot pass without it.** See F7 § What the
+   split cost. This is the highest-priority item on this list: as it stands, the next push to `main` fails
+   `ci.yml`'s `frontend` and `e2e` jobs, and the next `v*` tag fails all four `release.yml` builds. The fix is
+   a repository secret, not a code change.
+5. **Stale references to the removed surfaces remain in docs this phase did not cover** —
+   `docs/architecture/02-monorepo-structure.md`, `docs/dev/01-setup.md`,
+   `docs/dev/05-migration-from-appscript.md`, `docs/tauri/01-tauri-setup.md` and `docs/README.md`'s index still
+   describe `design-system/` and `apps/landing/` as directories of this repo. `tests/verify-f5-a11y.py` and
+   `tests/verify-f5-contrast.py` read `apps/landing/dist/` and `design-system/tokens/tokens.css`, which no
+   longer exist here; they belong with the repos that own those artefacts.

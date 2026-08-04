@@ -3,9 +3,9 @@
  * scheduled run on the right. Everything here is read-only backend state.
  */
 
-import { Badge } from "@design-system/components/badge";
-import { Progress } from "@design-system/components/progress";
-import { Separator } from "@design-system/components/separator";
+import { Badge } from "@autostand/ui/components/badge";
+import { Progress } from "@autostand/ui/components/progress";
+import { Separator } from "@autostand/ui/components/separator";
 
 import { useHostSlug } from "@/hooks/use-config";
 import { usePipelineStatus } from "@/hooks/use-pipeline-status";

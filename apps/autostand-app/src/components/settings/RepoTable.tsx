@@ -7,7 +7,7 @@
 
 import { FolderSearch, RefreshCw } from "lucide-react";
 
-import { Button } from "@design-system/components/button";
+import { Button } from "@autostand/ui/components/button";
 import {
   Table,
   TableBody,
@@ -15,7 +15,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@design-system/components/table";
+} from "@autostand/ui/components/table";
 
 import { useDiscoverRepos } from "@/hooks/use-paths";
 import { formatRelative } from "@/lib/utils";

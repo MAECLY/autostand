@@ -1,6 +1,12 @@
 # App Components
 
-App components are composite, autostand-specific components in `design-system/app-components/`. They compose base components (see `docs/design-system/03-components.md`) and add business logic — Tauri `invoke` calls, data fetching, config read/write.
+> **Where the code lives.** App components stay in this repo, under
+> `apps/autostand-app/src/components/` (grouped `audit/`, `debug/`, `layout/`, `settings/`, `standup/`). They are
+> deliberately **not** in the `@autostand/ui` package: they know about autostand's domain types and about Tauri
+> `invoke`, so shipping them to a web surface would mean shipping a mock layer with them. Only the base
+> components they compose are shared — see `docs/design-system/06-landing-reuse.md`.
+
+App components are composite, autostand-specific components. They compose base components (see `docs/design-system/03-components.md`) and add business logic — Tauri `invoke` calls, data fetching, config read/write. The names below are the design spec; the shipped file for each lives under `apps/autostand-app/src/components/`, and a few landed under a different name (`PipelineProgress` shipped as `PipelineCard`, `SchedulerControl` as `SchedulerForm`).
 
 ## App components
 
@@ -266,9 +272,18 @@ interface QuickAddDialogProps {
 - "Add" button → calls `onSubmit` → closes dialog + toast.
 - Global hotkey (`Cmd/Ctrl+Shift+S`) opens it.
 
-## Storybook stories
+## Testing app components
 
-Each app component has stories in `design-system/app-components/*.stories.tsx` with mock data:
+App components are **not** in Storybook: Storybook lives in the `autostand-ui` repo and that package has no
+access to autostand's domain types or to Tauri. They are covered here instead, by two suites that run against
+real component trees:
+
+- **vitest + Testing Library** — `apps/autostand-app/src/components/**/__tests__/*.test.tsx`, for a component in
+  isolation with props supplied directly.
+- **Playwright** — `tests/e2e/`, which drives the whole React UI against a mocked Tauri IPC layer, so the
+  `invoke` path is exercised without a compiled binary.
+
+A story for one of these would have looked like this, and the props it feeds are exactly what the tests supply:
 
 ```tsx
 // audit-badge.stories.tsx
@@ -290,10 +305,12 @@ export const Phantom: Story = { args: { classification: "phantom" } };
 export const Unverified: Story = { args: { classification: "unverified" } };
 ```
 
-Mock data lives in `design-system/app-components/__mocks__/`:
+The fixtures the tests use mirror the mock data this spec called for:
 - `mockStandupFile.ts` — sample `StandupFileContent` with 2 AUTO blocks + MANUAL region.
 - `mockProviderConfig.ts` — sample `ProviderConfig` per provider (detected/not, key set/not).
 - `mockPipelineStatus.ts` — sample `PipelineStatus` for each state.
 - `mockAuditSidecar.ts` — sample `AuditSidecar` with one of each classification.
 
-Stories use mock data (no Tauri invoke in Storybook — callbacks are no-ops or `console.log`).
+Every one of them is props-in, callbacks-out. That is the rule this whole document exists to enforce: an app
+component takes its data as a prop rather than fetching it, so the same tree can be driven by a real `invoke`
+response, by a vitest fixture, or by a Playwright route handler without changing.

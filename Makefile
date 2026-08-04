@@ -5,6 +5,10 @@
 # runs, so anything can still be invoked directly.
 #
 # Written for GNU Make 3.81 — the version macOS ships — so no 4.x-only features.
+#
+# Scope: the desktop app and the Rust workspace. The design system (Storybook
+# included) lives in MAECLY/autostand-ui and the marketing site in
+# MAECLY/autostand-landing-page; each has its own task runner.
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -58,14 +62,6 @@ dev: $(NODE_MODULES) ## Run the desktop app with hot reload (Vite + Rust)
 dev-web: $(NODE_MODULES) ## Run only the Vite dev server, no Tauri window (UI work)
 	$(PNPM) --filter autostand-app dev
 
-.PHONY: dev-landing
-dev-landing: $(NODE_MODULES) ## Run the marketing landing page dev server
-	$(PNPM) --filter landing dev
-
-.PHONY: storybook
-storybook: $(NODE_MODULES) ## Run Storybook on :6006
-	$(PNPM) storybook
-
 # ── Build ───────────────────────────────────────────────────────────────────
 
 .PHONY: build
@@ -73,7 +69,7 @@ build: $(NODE_MODULES) ## Build the desktop bundles for this platform
 	$(PNPM) tauri build
 
 .PHONY: build-web
-build-web: $(NODE_MODULES) ## Build the three web surfaces (app, landing, Storybook)
+build-web: $(NODE_MODULES) ## Build the app's web bundle (Vite, no Tauri shell)
 	$(PNPM) build:web
 
 .PHONY: build-rust
@@ -94,9 +90,8 @@ test-web: $(NODE_MODULES) ## Run the frontend unit tests (vitest)
 	$(PNPM) test
 
 .PHONY: test-e2e
-test-e2e: $(NODE_MODULES) ## Run both Playwright suites (app + landing)
+test-e2e: $(NODE_MODULES) ## Run the Playwright suite against the app UI
 	$(PNPM) --filter autostand-app test:e2e
-	$(PNPM) --filter landing test:e2e
 
 # ── Quality ─────────────────────────────────────────────────────────────────
 
@@ -110,7 +105,7 @@ lint: $(NODE_MODULES) ## Lint everything (clippy + eslint)
 	$(PNPM) lint
 
 .PHONY: typecheck
-typecheck: $(NODE_MODULES) ## Typecheck the three JS packages
+typecheck: $(NODE_MODULES) ## Typecheck the app's TypeScript
 	$(PNPM) typecheck
 
 .PHONY: audit
@@ -157,10 +152,8 @@ docs: ## Build and open the Rust API docs
 
 .PHONY: clean
 clean: ## Remove build output (keeps node_modules and the cargo cache)
-	rm -rf apps/autostand-app/dist apps/landing/dist apps/landing/.astro \
-		design-system/storybook-static apps/landing/e2e/.artifacts \
-		apps/autostand-app/test-results
+	rm -rf apps/autostand-app/dist apps/autostand-app/test-results
 
 .PHONY: clean-all
 clean-all: clean ## Also remove node_modules and the Rust target directory
-	rm -rf target node_modules apps/*/node_modules design-system/node_modules
+	rm -rf target node_modules apps/*/node_modules

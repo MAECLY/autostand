@@ -1,6 +1,11 @@
 # Build, Test, and Lint Commands
 
-Comprehensive reference for all commands in the autostand monorepo. Run these from the repo root unless noted.
+Comprehensive reference for all commands in the autostand repo. Run these from the repo root unless noted.
+
+This repo is the Rust workspace plus the Tauri desktop app. The design system
+([`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) — Storybook included) and the marketing site
+([`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page)) each have their own
+commands, in their own repos. Nothing here builds or deploys either.
 
 ## Makefile
 
@@ -11,13 +16,11 @@ tauri, so everything below can still be invoked directly.
 |--------|--------------|
 | `make dev` | Run the desktop app with hot reload (Vite + Rust) |
 | `make dev-web` | Vite dev server only, no Tauri window — for UI-only work |
-| `make dev-landing` | The marketing landing page dev server |
-| `make storybook` | Storybook on `:6006` |
 | `make setup` | First-time setup: JS deps, Rust build, Playwright browser |
 | `make build` | Desktop bundles for this platform |
-| `make build-web` | The three web surfaces (app, landing, Storybook) |
+| `make build-web` | The app's web bundle (Vite, no Tauri shell) |
 | `make test` | Rust + frontend unit suites |
-| `make test-e2e` | Both Playwright suites |
+| `make test-e2e` | The Playwright suite against the app UI |
 | `make lint` / `make fmt` / `make typecheck` / `make audit` | Quality gates |
 | `make check` | **Everything CI runs** — do this before pushing |
 | `make compile` | Compile a standup headlessly, the way the scheduler does (`DATE=YYYY-MM-DD` optional) |
@@ -54,16 +57,15 @@ before it runs.
 
 | Command | What it does |
 |---------|--------------|
-| `pnpm install` | Install frontend + design-system + storybook deps |
+| `pnpm install` | Install the app's dependencies, `@autostand/ui` included (needs read access to the private `autostand-ui` repo) |
 | `pnpm dev` | Alias for `pnpm tauri dev` — the full app. For Vite alone use `pnpm --filter autostand-app dev` |
 | `pnpm build` | Alias for `pnpm tauri build` — desktop bundles, not a frontend build |
-| `pnpm build:frontend` | Build the app frontend only (outputs `apps/autostand-app/dist/`) |
-| `pnpm build:landing` | Build the landing page (outputs `apps/landing/dist/`) |
-| `pnpm build:web` | Build all three web surfaces (app, landing, Storybook) |
-| `pnpm lint` | ESLint across the three JS packages |
-| `pnpm typecheck` | Type-check the three JS packages (`tsc --noEmit`, `astro check` for the landing) |
+| `pnpm build:frontend` | Build the app frontend (outputs `apps/autostand-app/dist/`) |
+| `pnpm build:web` | Same thing — kept as the name CI and `make` call |
+| `pnpm lint` | ESLint over the app |
+| `pnpm typecheck` | Generate the route tree, then `tsc --noEmit` |
 | `pnpm test` | Frontend unit tests (vitest) |
-| `pnpm test:e2e` | Playwright E2E for the app; the landing suite is `pnpm --filter landing test:e2e` |
+| `pnpm test:e2e` | Playwright E2E for the app UI, over a mocked Tauri IPC |
 
 ### Tauri (app bundling)
 
@@ -74,14 +76,20 @@ before it runs.
 | `pnpm tauri build --debug` | Production build with debug symbols (for profiling) |
 | `pnpm tauri info` | Print Tauri environment diagnostics |
 
-### Design system + Storybook
+### Design system
+
+There are no design-system commands in this repo any more. `@autostand/ui` is an ordinary dependency, pinned by
+commit in `pnpm-lock.yaml`:
 
 | Command | What it does |
 |---------|--------------|
-| `pnpm storybook` | Run Storybook dev server at `localhost:6006` (in `design-system/`) |
-| `pnpm build-storybook` | Build static Storybook to `design-system/storybook-static/` |
+| `pnpm --filter autostand-app update @autostand/ui` | Re-resolve `#main` to its current commit and rewrite the lockfile |
+| `pnpm storybook` **in the `autostand-ui` repo** | Storybook on `localhost:6006` |
 
-Base components are hand-written into `design-system/components/` rather than added with the shadcn CLI — see
+Because the specifier is a branch but the lockfile pins a commit, pushing to `autostand-ui/main` does not change
+what this repo builds. Picking up a design-system change is a deliberate lockfile bump.
+
+Base components are hand-written rather than added with the shadcn CLI — see
 `docs/tauri/04-frontend-stack.md` § shadcn/ui components for why.
 
 ## Common workflows
@@ -96,9 +104,10 @@ That is exactly what CI runs, in the same order. Fixing it locally first saves a
 
 ### Adding a base component
 
-Write it into `design-system/components/<name>.tsx` alongside a `<name>.stories.tsx`, importing `cn` from
-`../lib/utils` (the `@/` alias means something different in each package, so it is banned there). Export it from
-`design-system/components/index.ts`. Apps consume it as `@design-system/components/<name>`.
+It goes in the `autostand-ui` repo, not here: `components/<name>.tsx` alongside a `<name>.stories.tsx`, importing
+`cn` from `../lib/utils` (the `@/` alias means something different in every consuming project, so it is banned
+there), exported from `components/index.ts`. Then bump the lockfile here and consume it as
+`@autostand/ui/components/<name>`.
 
 ### Adding a new Rust crate
 
@@ -127,7 +136,10 @@ The CI pipeline (`.github/workflows/ci.yml`) runs:
 6. `pnpm typecheck`
 7. `pnpm test`
 8. `pnpm build:web`
-9. Both Playwright suites
+9. The app's Playwright suite
+
+The two JS jobs run an extra first step that authenticates to the private `autostand-ui` repo; without the
+`AUTOSTAND_UI_TOKEN` secret they fail before installing. See `docs/dev/04-ci-cd.md`.
 
 `make check` runs all of them locally. All must pass for a PR to merge. See `docs/dev/04-ci-cd.md`.
 
@@ -152,6 +164,7 @@ The CI pipeline (`.github/workflows/ci.yml`) runs:
 |---------|-----|
 | `pnpm tauri dev` hangs on first run | Wait for initial Rust compile. Check `cargo build --workspace` succeeds standalone. |
 | `cargo test` fails with "linker not found" | Install platform build tools (see above). |
-| `pnpm storybook` blank page | Check `design-system/.storybook/preview.ts` imports `../styles/globals.css`. |
+| `pnpm install` fails cloning `autostand-ui` | It is a private repo. Locally you need an SSH key with access; in CI you need the `AUTOSTAND_UI_TOKEN` secret. |
+| A design-system class is missing from the build | Check the `@source` lines in `apps/autostand-app/src/styles/globals.css` — Tailwind never scans `node_modules` on its own. |
 | `cargo audit` not found | `make audit` installs it on first use |
 | `make` target not found | You need GNU Make (macOS ships 3.81, which is enough) |

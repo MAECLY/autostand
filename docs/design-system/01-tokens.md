@@ -1,6 +1,12 @@
 # Design Tokens
 
-Design tokens are the single source of truth for visual style. They're defined once as CSS custom properties, consumed by Tailwind v4 and shadcn/ui, and shared between the Tauri app, Storybook, and (future) the landing page.
+> **Where the code lives.** The design system is the `@autostand/ui` package in
+> [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui). Paths in this document are relative to that
+> repository's root; the specs stay here because they are decisions, not code. Consumers — this repo's Tauri app
+> and [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page) — reach the tokens
+> through `@import "@autostand/ui/styles.css"`, never by path. See `docs/design-system/06-landing-reuse.md`.
+
+Design tokens are the single source of truth for visual style. They're defined once as CSS custom properties, consumed by Tailwind v4 and shadcn/ui, and shared between the Tauri app, the marketing site and Storybook.
 
 ## Token architecture
 
@@ -12,9 +18,9 @@ Three layers, from concrete to abstract:
 | **Semantic** | Mapped to meaning (role in the UI) | `--brand-primary: var(--color-blue-600);` |
 | **Component** | Component-specific (rarely needed if semantic is good) | `--button-primary-bg: var(--brand-primary);` |
 
-All tokens are CSS custom properties (variables), defined in `design-system/tokens/tokens.css`. This file is the **only** place colors, spacing, typography, radius, shadow, z-index, and animation timing are defined. Nothing in the app or Storybook hardcodes these values.
+All tokens are CSS custom properties (variables), defined in `tokens/tokens.css`. This file is the **only** place colors, spacing, typography, radius, shadow, z-index, and animation timing are defined. Nothing in the app or Storybook hardcodes these values.
 
-## `design-system/tokens/tokens.css`
+## `tokens/tokens.css`
 
 Full file content:
 
@@ -228,7 +234,8 @@ Full file content:
 
 ## Tailwind v4 integration
 
-In `apps/autostand-app/src/globals.css` (or a shared `design-system/styles/theme.css`):
+`styles/globals.css` in the package does the mapping once, and every consumer imports that one file
+(`@import "@autostand/ui/styles.css";`) rather than repeating the `@theme` block:
 
 ```css
 @import "tailwindcss";
@@ -319,11 +326,13 @@ autostand uses class-based (user can toggle in Settings, independent of OS prefe
 
 A colour that reads on a light surface generally does not read on a dark one, so the `.dark` block re-maps every **saturated** token as well as the neutrals: the brand blue, the four status colours with their `-bg` bands, and the six audit colours all step from a `-600`/`-700` shade to a `-400` one. Skipping any of them leaves the light-mode value painted on a dark surface, which is where the whole 13-pair contrast failure came from.
 
-Flipping the class also has to be instant. `.theme-switching` in `design-system/styles/globals.css` suppresses transitions for the one style recalculation that repaints the page; without it, every element carrying `transition-colors` for hover feedback cross-fades through ~150ms of half-light, half-dark tints that meet no contrast requirement. Whoever toggles `.dark` adds `.theme-switching` to the same element, forces a reflow, and removes it.
+Flipping the class also has to be instant. `.theme-switching` in `styles/globals.css` suppresses transitions for the one style recalculation that repaints the page; without it, every element carrying `transition-colors` for hover feedback cross-fades through ~150ms of half-light, half-dark tints that meet no contrast requirement. Whoever toggles `.dark` adds `.theme-switching` to the same element, forces a reflow, and removes it.
 
 ### Contrast
 
-`tests/verify-f5-contrast.py` reads the shipped `tokens.css`, resolves both themes, and measures every foreground/background pair the landing page paints. Every pair — page-owned and token-owned — clears 4.5:1 (WCAG AA, normal text). Run it after touching any colour token.
+Contrast is verified against the shipped `tokens.css` by resolving both themes and measuring every
+foreground/background pair a surface paints. Every pair clears 4.5:1 (WCAG AA, normal text). Re-run that check
+after touching any colour token; it lives with the surfaces that consume the tokens, not with the specs.
 
 ## Consuming tokens
 

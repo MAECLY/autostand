@@ -10,10 +10,10 @@
 
 import { useState, type ReactNode } from "react";
 
-import { Badge } from "@design-system/components/badge";
-import { Input } from "@design-system/components/input";
-import { Label } from "@design-system/components/label";
-import { Switch } from "@design-system/components/switch";
+import { Badge } from "@autostand/ui/components/badge";
+import { Input } from "@autostand/ui/components/input";
+import { Label } from "@autostand/ui/components/label";
+import { Switch } from "@autostand/ui/components/switch";
 
 import { useConfig, useSetConfig } from "@/hooks/use-config";
 import {

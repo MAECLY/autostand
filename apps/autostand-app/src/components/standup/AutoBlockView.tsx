@@ -6,15 +6,15 @@
 import { useState } from "react";
 import { Eye, Pencil } from "lucide-react";
 
-import { Badge } from "@design-system/components/badge";
-import { Button } from "@design-system/components/button";
+import { Badge } from "@autostand/ui/components/badge";
+import { Button } from "@autostand/ui/components/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@design-system/components/card";
-import { Textarea } from "@design-system/components/textarea";
+} from "@autostand/ui/components/card";
+import { Textarea } from "@autostand/ui/components/textarea";
 
 import { StandupMarkdown } from "@/components/standup/StandupPreview";
 import type { AutoBlock } from "@/lib/types";

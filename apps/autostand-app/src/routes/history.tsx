@@ -18,9 +18,9 @@ import {
   Alert,
   AlertDescription,
   AlertTitle,
-} from "@design-system/components/alert";
-import { Badge } from "@design-system/components/badge";
-import { Spinner } from "@design-system/components/spinner";
+} from "@autostand/ui/components/alert";
+import { Badge } from "@autostand/ui/components/badge";
+import { Spinner } from "@autostand/ui/components/spinner";
 
 import { StandupPreview } from "@/components/standup/StandupPreview";
 import { useHostSlug } from "@/hooks/use-config";

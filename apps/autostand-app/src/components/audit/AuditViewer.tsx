@@ -11,14 +11,14 @@ import type { ReactNode } from "react";
 
 import { ChevronRight } from "lucide-react";
 
-import { Badge } from "@design-system/components/badge";
+import { Badge } from "@autostand/ui/components/badge";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "@design-system/components/collapsible";
-import { ScrollArea } from "@design-system/components/scroll-area";
-import { Separator } from "@design-system/components/separator";
+} from "@autostand/ui/components/collapsible";
+import { ScrollArea } from "@autostand/ui/components/scroll-area";
+import { Separator } from "@autostand/ui/components/separator";
 import {
   Table,
   TableBody,
@@ -26,7 +26,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@design-system/components/table";
+} from "@autostand/ui/components/table";
 
 import { AuditBadge } from "@/components/audit/AuditBadge";
 import { GatherPanel } from "@/components/debug/GatherPanel";

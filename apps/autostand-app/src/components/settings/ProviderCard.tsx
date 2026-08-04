@@ -14,14 +14,14 @@
 import { useState } from "react";
 import { KeyRound, Zap } from "lucide-react";
 
-import { Badge } from "@design-system/components/badge";
-import { Button } from "@design-system/components/button";
+import { Badge } from "@autostand/ui/components/badge";
+import { Button } from "@autostand/ui/components/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@design-system/components/card";
+} from "@autostand/ui/components/card";
 import {
   Dialog,
   DialogContent,
@@ -29,16 +29,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@design-system/components/dialog";
-import { Input } from "@design-system/components/input";
-import { Label } from "@design-system/components/label";
+} from "@autostand/ui/components/dialog";
+import { Input } from "@autostand/ui/components/input";
+import { Label } from "@autostand/ui/components/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@design-system/components/select";
+} from "@autostand/ui/components/select";
 
 import { toAppError } from "@/lib/error";
 import type {

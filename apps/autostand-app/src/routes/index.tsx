@@ -10,14 +10,14 @@ import {
   Alert,
   AlertDescription,
   AlertTitle,
-} from "@design-system/components/alert";
+} from "@autostand/ui/components/alert";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@design-system/components/card";
+} from "@autostand/ui/components/card";
 
 import { CompileButton } from "@/components/standup/CompileButton";
 import { ManualEditor } from "@/components/standup/ManualEditor";

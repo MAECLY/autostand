@@ -16,12 +16,12 @@ import {
   Alert,
   AlertDescription,
   AlertTitle,
-} from "@design-system/components/alert";
-import { Badge } from "@design-system/components/badge";
-import { Button } from "@design-system/components/button";
-import { Input } from "@design-system/components/input";
-import { Label } from "@design-system/components/label";
-import { Spinner } from "@design-system/components/spinner";
+} from "@autostand/ui/components/alert";
+import { Badge } from "@autostand/ui/components/badge";
+import { Button } from "@autostand/ui/components/button";
+import { Input } from "@autostand/ui/components/input";
+import { Label } from "@autostand/ui/components/label";
+import { Spinner } from "@autostand/ui/components/spinner";
 import {
   Table,
   TableBody,
@@ -29,7 +29,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@design-system/components/table";
+} from "@autostand/ui/components/table";
 
 import { GatherPanel } from "@/components/debug/GatherPanel";
 import { toAppError } from "@/lib/error";

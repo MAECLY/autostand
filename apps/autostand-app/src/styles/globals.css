@@ -1,8 +1,22 @@
-/* App stylesheet — Tailwind v4, tokens and @theme all come from the design
-   system so the app, Storybook and the landing page stay in lockstep.
-   See docs/tauri/04-frontend-stack.md § Design token integration. */
+/* App stylesheet — Tailwind v4, the tokens, the @theme mapping and the
+   self-hosted fonts all come from @autostand/ui, so the app and the marketing
+   site cannot drift apart. See docs/tauri/04-frontend-stack.md § Design token
+   integration. */
 
-@import "../../../../design-system/styles/globals.css";
+@import "@autostand/ui/styles.css";
+
+/* Tailwind v4's automatic content detection never descends into node_modules,
+   so a class only the design system uses would be dropped from the build unless
+   something declares its sources. @autostand/ui does that for itself (its
+   styles/globals.css carries `@source "../components"`, which Tailwind resolves
+   against that file, i.e. inside node_modules), so these two lines are belt and
+   braces rather than load-bearing today — verified by building with them
+   commented out and getting a byte-identical stylesheet. They are kept because
+   they make the app's CSS independent of an internal detail of the package, and
+   because the marketing site declares the same pair. Paths are relative to this
+   file; pnpm links the package into the app's own node_modules. */
+@source "../../node_modules/@autostand/ui/components";
+@source "../../node_modules/@autostand/ui/icons";
 
 :root {
   color-scheme: light dark;

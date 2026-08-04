@@ -1,14 +1,18 @@
 # Base Components (shadcn/ui)
 
-Base components are the presentational primitives — shadcn/ui components installed into `design-system/components/`. They're pure UI: no business logic, no Tauri invoke calls, no state management beyond local UI state. App components (see `docs/design-system/04-app-components.md`) compose these and add logic.
+> **Where the code lives.** These components ship in the `@autostand/ui` package
+> ([`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui)). Paths below are relative to that
+> repository's root. Consumers import them by subpath — `@autostand/ui/components/button` — never by file path.
+
+Base components are the presentational primitives — shadcn/ui components hand-written into `components/`. They're pure UI: no business logic, no Tauri invoke calls, no app types, no state management beyond local UI state. That purity is what lets the marketing site use the same components as the product. App components (see `docs/design-system/04-app-components.md`) compose these and add logic, and they stay in the app.
 
 ## Base components
 
-All live in `design-system/components/`. Each is a shadcn/ui component (Radix UI primitive + Tailwind styling) customized to use our design tokens.
+All live in `components/`. Each is a shadcn/ui component (Radix UI primitive + Tailwind styling) customized to use our design tokens. Inside the package they import each other relatively (`../lib/utils`): the `@/` alias means something different in every consuming project, so it is banned there.
 
 ### Button
 
-`design-system/components/button.tsx`
+`components/button.tsx`
 
 Variants:
 | Variant | Use | Token |
@@ -30,7 +34,7 @@ Sizes:
 
 ### Card
 
-`design-system/components/card.tsx`
+`components/card.tsx`
 
 Subcomponents:
 - `Card` — outer container (`--bg-surface`, `--border-default`, `--radius-lg`, `--shadow-sm`)
@@ -42,7 +46,7 @@ Subcomponents:
 
 ### Dialog / Sheet
 
-`design-system/components/dialog.tsx` (modal) and `sheet.tsx` (slide-over).
+`components/dialog.tsx` (modal) and `sheet.tsx` (slide-over).
 
 - Overlay: `--bg-base` at 50% opacity
 - Content: `--bg-surface`, `--border-default`, `--radius-lg`, `--shadow-lg`
@@ -51,7 +55,7 @@ Subcomponents:
 
 ### DropdownMenu
 
-`design-system/components/dropdown-menu.tsx`
+`components/dropdown-menu.tsx`
 
 - Trigger: any element (usually a Button)
 - Content: `--bg-elevated`, `--border-default`, `--shadow-md`, `--radius-md`
@@ -61,7 +65,7 @@ Subcomponents:
 
 ### Input / Textarea / Label
 
-`design-system/components/input.tsx`, `textarea.tsx`, `label.tsx`
+`components/input.tsx`, `textarea.tsx`, `label.tsx`
 
 - Input/Textarea: `--bg-surface`, `--border-default`, `--radius-md`, focus ring `--border-focus`
 - Label: `--text-sm`, `--font-weight-medium`
@@ -69,7 +73,7 @@ Subcomponents:
 
 ### Select
 
-`design-system/components/select.tsx`
+`components/select.tsx`
 
 - Trigger: like an Input + chevron icon
 - Content: `--bg-elevated`, `--shadow-md`
@@ -77,7 +81,7 @@ Subcomponents:
 
 ### Switch / Checkbox
 
-`design-system/components/switch.tsx`, `checkbox.tsx`
+`components/switch.tsx`, `checkbox.tsx`
 
 - Switch on: `--brand-primary` bg
 - Switch off: `--bg-muted` bg, `--border-strong` border
@@ -86,7 +90,7 @@ Subcomponents:
 
 ### Tabs
 
-`design-system/components/tabs.tsx`
+`components/tabs.tsx`
 
 - Trigger: `--fg-muted`, active `--fg-base` + bottom border `--brand-primary`
 - Content: `--bg-surface`
@@ -94,14 +98,14 @@ Subcomponents:
 
 ### Tooltip
 
-`design-system/components/tooltip.tsx`
+`components/tooltip.tsx`
 
 - Content: `--bg-elevated` (dark), `--fg-inverse` text, `--text-xs`, `--radius-md`, `--shadow-md`
 - Used for: icon button hints, audit badge explanations
 
 ### Badge
 
-`design-system/components/badge.tsx`
+`components/badge.tsx`
 
 Variants:
 | Variant | Bg | Text | Use |
@@ -117,7 +121,7 @@ Used by: `AuditBadge` (app component), status indicators, provider status.
 
 ### Progress
 
-`design-system/components/progress.tsx`
+`components/progress.tsx`
 
 - Track: `--bg-muted`, `--radius-full`
 - Bar: `--brand-primary`, animated width
@@ -125,21 +129,21 @@ Used by: `AuditBadge` (app component), status indicators, provider status.
 
 ### Separator
 
-`design-system/components/separator.tsx`
+`components/separator.tsx`
 
 - Horizontal/vertical, `--border-default`, 1px
 - Used for: card section dividers, settings section dividers
 
 ### ScrollArea
 
-`design-system/components/scroll-area.tsx`
+`components/scroll-area.tsx`
 
 - Custom scrollbar (Radix), `--border-default` thumb, `--bg-muted` track
 - Used for: history list, audit table, settings (long pages)
 
 ### Sonner
 
-`design-system/components/sonner.tsx`
+`components/sonner.tsx`
 
 Toast notifications:
 - Position: bottom-right (default) or bottom-center (configurable)
@@ -149,7 +153,7 @@ Toast notifications:
 
 ### Alert
 
-`design-system/components/alert.tsx`
+`components/alert.tsx`
 
 Variants: `default`, `destructive`, `success`, `warning`.
 
@@ -164,7 +168,7 @@ Used for: error banners, "no standup for this date" notices.
 
 ### Table
 
-`design-system/components/table.tsx`
+`components/table.tsx`
 
 - Header: `--bg-muted`, `--text-sm`, `--font-weight-medium`, `--fg-muted`
 - Rows: `--bg-surface`, hover `--bg-muted`, border-bottom `--border-default`
@@ -177,7 +181,7 @@ Used for: error banners, "no standup for this date" notices.
 
 ### Accordion
 
-`design-system/components/accordion.tsx`
+`components/accordion.tsx`
 
 - Trigger: `--bg-surface`, hover `--bg-muted`, chevron rotates
 - Content: `--bg-surface`, `--border-default` top border
@@ -185,7 +189,7 @@ Used for: error banners, "no standup for this date" notices.
 
 ### Collapsible
 
-`design-system/components/collapsible.tsx`
+`components/collapsible.tsx`
 
 - Trigger: any element
 - Content: shown/hidden with animation
@@ -193,7 +197,7 @@ Used for: error banners, "no standup for this date" notices.
 
 ### Spinner
 
-`design-system/components/spinner.tsx`
+`components/spinner.tsx`
 
 - `lucide-react` `Loader2` with `animate-spin`, sizes `sm` | `default` | `lg`
 - Takes a `label` announced to screen readers (the icon itself is `aria-hidden`)
@@ -201,10 +205,10 @@ Used for: error banners, "no standup for this date" notices.
 
 ## Storybook stories
 
-One `.stories.tsx` per component in `design-system/components/`:
+One `.stories.tsx` per component in `components/`:
 
 ```
-design-system/components/
+components/
 ├── button.tsx
 ├── button.stories.tsx
 ├── card.tsx
@@ -271,4 +275,4 @@ App components (see `docs/design-system/04-app-components.md`) wrap base compone
 - App-specific types
 - Business logic
 
-This separation keeps base components reusable on the landing page (see `docs/design-system/06-landing-reuse.md`).
+This separation is what makes the base components reusable on the marketing site, which has no Tauri runtime and no autostand domain types (see `docs/design-system/06-landing-reuse.md`).

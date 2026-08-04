@@ -16,22 +16,22 @@ import {
   Alert,
   AlertDescription,
   AlertTitle,
-} from "@design-system/components/alert";
-import { Button } from "@design-system/components/button";
+} from "@autostand/ui/components/alert";
+import { Button } from "@autostand/ui/components/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@design-system/components/card";
-import { Separator } from "@design-system/components/separator";
+} from "@autostand/ui/components/card";
+import { Separator } from "@autostand/ui/components/separator";
 import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
-} from "@design-system/components/tabs";
+} from "@autostand/ui/components/tabs";
 
 import { DataSourceToggle } from "@/components/settings/DataSourceToggle";
 import { PathInput } from "@/components/settings/PathInput";

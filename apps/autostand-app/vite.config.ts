@@ -16,9 +16,9 @@ export default defineConfig(async () => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      "@design-system": path.resolve(__dirname, "../../design-system"),
     },
-    // design-system components are imported from source; keep a single React copy.
+    // @autostand/ui ships source, not a build, and brings its own React dev
+    // dependency; dedupe keeps a single React copy so hooks do not break.
     dedupe: ["react", "react-dom"],
   },
   // Tauri dev server

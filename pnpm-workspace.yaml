@@ -1,7 +1,8 @@
+# The design system lives in MAECLY/autostand-ui and the marketing site in
+# MAECLY/autostand-landing-page; both are separate repos now. This workspace is
+# the desktop app and nothing else.
 packages:
   - "apps/autostand-app"
-  - "apps/landing"
-  - "design-system"
 
 allowBuilds:
   esbuild: true

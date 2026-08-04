@@ -19,8 +19,7 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"],
-      "@design-system/*": ["../../design-system/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"]

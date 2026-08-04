@@ -2,6 +2,11 @@
 
 autostand uses GitHub Actions for continuous integration and release. All workflows live in `.github/workflows/`.
 
+This repo builds the Rust workspace and the Tauri desktop app, and nothing else. It used to also deploy the
+marketing site and Storybook to GitHub Pages; both moved to their own repos, and `pages.yml` was deleted — see
+§ `pages.yml` (removed) below. What it gained in exchange is a private git dependency that CI has to
+authenticate for — see § Private dependency authentication.
+
 ## Workflows
 
 ### 1. `ci.yml` — Continuous integration
@@ -12,8 +17,8 @@ autostand uses GitHub Actions for continuous integration and release. All workfl
 `github.ref` with `cancel-in-progress` only for pull requests, so pushing a fixup supersedes the
 in-flight PR run while a push to `main` always runs to completion.
 
-Two jobs, both `ubuntu-latest`, both with a `timeout-minutes` and no `continue-on-error` anywhere —
-a step that fails must fail the job.
+Three jobs — `rust`, `frontend`, `e2e` — all `ubuntu-latest`, all with a `timeout-minutes` and no
+`continue-on-error` anywhere: a step that fails must fail the job.
 
 `.github/workflows/ci.yml` is the source of truth. Abridged (the real file carries comments
 explaining every non-obvious line):
@@ -66,11 +71,32 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
+      # @autostand/ui is a private git dependency; GITHUB_TOKEN cannot read it.
+      - name: Authenticate to MAECLY/autostand-ui
+        env:
+          AUTOSTAND_UI_TOKEN: ${{ secrets.AUTOSTAND_UI_TOKEN }}
+        run: |
+          if [ -z "$AUTOSTAND_UI_TOKEN" ]; then
+            echo "::error::secret AUTOSTAND_UI_TOKEN is not set."; exit 1
+          fi
+          rewrite="https://x-access-token:$AUTOSTAND_UI_TOKEN@github.com/"
+          git config --global --add url."$rewrite".insteadOf "git@github.com:"
+          git config --global --add url."$rewrite".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$rewrite".insteadOf "https://github.com/"
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build:web
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # …checkout, pnpm, node and the same authenticate step…
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter autostand-app exec playwright install --with-deps chromium
+      - run: pnpm --filter autostand-app test:e2e
 ```
 
 **CI runs (in order):**
@@ -81,11 +107,13 @@ jobs:
 | 2 | rust | `cargo clippy --workspace --all-targets -- -D warnings` |
 | 3 | rust | `cargo test --workspace` |
 | 4 | rust | `cargo audit` |
-| 5 | frontend | `pnpm install --frozen-lockfile` |
-| 6 | frontend | `pnpm lint` |
-| 7 | frontend | `pnpm typecheck` |
-| 8 | frontend | `pnpm test` |
-| 9 | frontend | `pnpm build:web` |
+| 5 | frontend | Authenticate to `MAECLY/autostand-ui` |
+| 6 | frontend | `pnpm install --frozen-lockfile` |
+| 7 | frontend | `pnpm lint` |
+| 8 | frontend | `pnpm typecheck` |
+| 9 | frontend | `pnpm test` |
+| 10 | frontend | `pnpm build:web` |
+| 11 | e2e | `pnpm --filter autostand-app test:e2e` (chromium only) |
 
 All must pass for a PR to merge (branch protection rule).
 
@@ -109,10 +137,9 @@ repo caught up, and the workflow deliberately diverges:
   `libxdo-sys` in `Cargo.lock`.
 - **`pnpm build` cannot run in the frontend job.** The root `build` script is `tauri build`; it needs
   the Rust toolchain and the same GTK/WebKit stack, and it emits a desktop bundle. That belongs in
-  `release.yml`. CI calls `pnpm build:web` instead, a root script that builds the three web surfaces
-  in order — `build:frontend` (Vite, `apps/autostand-app`), `build:landing` (Astro, `apps/landing`),
-  `build-storybook` (`design-system` → `design-system/storybook-static`). `build:frontend`, `lint`,
-  `typecheck` and `test` keep their existing meanings.
+  `release.yml`. CI calls `pnpm build:web` instead — today that is just `build:frontend` (Vite,
+  `apps/autostand-app`), since the marketing site and Storybook build in their own repos. The name is
+  kept because CI, `make build-web` and `make check` all call it.
 - **pnpm version.** The repo pins `pnpm@11.18.0` via `packageManager`, not 9. `pnpm/action-setup@v4`
   is given no `version:` input so it reads that field; hardcoding a version here would just be a
   second place to forget to update.
@@ -285,116 +312,69 @@ The bundle list per platform follows from `"bundle": { "targets": "all" }` in `t
 Ubuntu 22.04 is the oldest glibc supported and must not be bumped casually — bundles built on a newer
 runner will not start on 22.04.
 
-### 3. `pages.yml` — Web surfaces (landing page + Storybook)
+### 3. `pages.yml` — deleted
 
-**Triggers:** `push` to `main`, `workflow_dispatch`.
+This repo published one GitHub Pages site carrying two surfaces: the Astro landing page at
+`https://MAECLY.github.io/autostand/` and Storybook at `https://MAECLY.github.io/autostand/storybook/`. A
+repository gets exactly one Pages site, so a single workflow built both, assembled them into one directory,
+verified every base path and uploaded the lot.
 
-A repository gets exactly **one** GitHub Pages site, and this repo has two web
-surfaces to publish. So there is one workflow, not two: it builds both, assembles
-them into a single directory, and uploads that once.
+Both surfaces left the repo, so the workflow was deleted. Nothing in this repo deploys a web page any more.
 
-| URL | Source | Build output |
-|-----|--------|--------------|
-| `https://MAECLY.github.io/autostand/` | `apps/landing` (Astro 5) | `apps/landing/dist` |
-| `https://MAECLY.github.io/autostand/storybook/` | `design-system` (Storybook 8) | `design-system/storybook-static` |
+| Surface | Where it lives now | How it deploys |
+| --- | --- | --- |
+| Marketing site | [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page) (Next.js 15) | Vercel, at `autostand.maecly.com` |
+| Storybook | [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) | that repo's own CI builds it; `vercel.json` is ready, hosting is opt-in |
 
-It uses the first-party Pages flow (`configure-pages` → `upload-pages-artifact` →
-`deploy-pages`), not a third-party push-to-`gh-pages`-branch action. That flow
-needs `pages: write` + `id-token: write` (OIDC) + `contents: read`, and a
-`concurrency` group so two pushes cannot race a deployment.
+Two consequences worth recording, because they were the hard parts of the deleted workflow and they are now
+somebody else's problem — or nobody's:
+
+- **The base path is gone.** The Astro build was served from `/autostand`, so `astro.config.mjs` set
+  `base: "/autostand"` and the workflow's `Verify base paths` step failed the build if any root-absolute
+  reference escaped it. The Next.js site is served at a domain root, so there is no base path to get wrong.
+  Any leftover `BASE_URL` handling in the ported site is a bug, not a feature.
+- **GitHub Pages permissions are gone with it.** `pages: write` and `id-token: write` existed only for this
+  workflow. `ci.yml` and `release.yml` never had them.
+
+## Private dependency authentication
+
+This is the one real operational cost the three-repo split added, and it is not yet paid.
+
+`apps/autostand-app` depends on `@autostand/ui`, which lives in the **private** repo `MAECLY/autostand-ui` and is
+installed straight from git. pnpm resolved it over SSH and pinned the commit in `pnpm-lock.yaml`:
 
 ```yaml
-name: Pages
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false   # never cancel a deploy mid-swap
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4        # version comes from `packageManager`
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-      - uses: actions/configure-pages@v5
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter landing build
-      - run: pnpm --filter design-system build-storybook
-      - name: Assemble site
-        run: |
-          rm -rf _site && mkdir -p _site/storybook
-          cp -R apps/landing/dist/. _site/
-          cp -R design-system/storybook-static/. _site/storybook/
-          touch _site/.nojekyll
-      - name: Verify base paths        # see below — this is the real failure mode
-        run: ...
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+'@autostand/ui@git+ssh://git@github.com/MAECLY/autostand-ui.git#f53413ec…':
+  resolution: {commit: f53413ec…, repo: git@github.com:MAECLY/autostand-ui.git, type: git}
 ```
 
-#### Base paths
+On a developer machine this is invisible: the SSH key that clones `autostand` clones the dependency too. **In
+GitHub Actions it is not.** The built-in `GITHUB_TOKEN` is scoped to the repository the workflow runs in, so it
+cannot read `autostand-ui`, and `pnpm install --frozen-lockfile` fails inside git with a bare authentication
+error that says nothing about the cause.
 
-The site is served from `/autostand/`, not from a domain root, so every asset URL
-in both surfaces has to account for that prefix. A wrong base path deploys green
-and then 404s every stylesheet and script — which is why the workflow asserts it
-rather than trusting it.
+### What has to be configured
 
-- **Landing page** — `apps/landing/astro.config.mjs` sets `base: "/autostand"`,
-  and Astro bakes it into the emitted markup: `href="/autostand/_astro/…"`,
-  `src="/autostand/brand/…"`. Root-absolute, so the build drops straight in at
-  the artifact root.
-- **Storybook** — needs no base configuration. `@storybook/builder-vite` builds
-  with Vite's `base` set to `"./"`, so `index.html`/`iframe.html` reference
-  `./assets/…`, and `__vitePreload` resolves each chunk's dependency list
-  against that chunk's own `import.meta.url`. The bundle is position-independent
-  and works at any depth. (Verified: the same `storybook-static` bytes serve
-  cleanly from both `/autostand/storybook/` and `/a/b/c/storybook/`.) If that ever
-  stops being true, the fix is `config.base = "/autostand/storybook/"` inside the
-  existing `viteFinal` hook in `design-system/.storybook/main.ts` — `storybook
-  build` has no `--base` flag.
+1. Create a credential with read access to `MAECLY/autostand-ui` — a **fine-grained personal access token** with
+   `Contents: Read` on that repository is the smallest thing that works; a GitHub App installation token is the
+   tidier long-term option.
+2. Add it to **this** repo under Settings → Secrets and variables → Actions as **`AUTOSTAND_UI_TOKEN`**.
 
-The `Verify base paths` step therefore fails the build when:
+Nothing else changes: the `Authenticate to MAECLY/autostand-ui` step in both JS jobs reads that secret and
+rewrites the git URL to use it. The rewrite is registered for `git@github.com:`, `ssh://git@github.com/` and
+`https://github.com/` with `git config --global --add`, so it holds whichever spelling a future re-resolve
+produces (`--add`, not a plain set: `insteadOf` is multi-valued and a second plain `git config` would replace the
+first).
 
-1. `_site/index.html` has a root-absolute `href`/`src` that is **not** under
-   `/autostand/` (someone changed or dropped the Astro `base`);
-2. a URL the landing page references is not actually in the artifact;
-3. `_site/storybook/index.html` or `iframe.html` contains **any** root-absolute
-   `href`/`src` (Storybook stopped emitting a relative bundle).
+**Until the secret exists, `ci.yml`'s `frontend` and `e2e` jobs and every `release.yml` platform build fail** —
+deliberately, at a step that names the missing secret, rather than 40 lines later inside pnpm. `release.yml`
+needs it because it runs `pnpm install --frozen-lockfile` before `pnpm --filter autostand-app build`; without the
+frontend there is nothing for `tauri build` to bundle. `ci.yml`'s `rust` job is the only JS-free job and is
+unaffected.
 
-`.nojekyll` is defensive only. The artifact flow serves the upload verbatim and
-never runs Jekyll; the file exists so `_astro/` survives if Pages is ever
-switched back to branch-based publishing, where Jekyll strips `_`-prefixed
-directories.
-
-#### Why no `paths:` filter
-
-The old design triggered only on `design-system/**`. With one combined artifact
-that would publish a site missing whichever surface did not change, so the
-workflow rebuilds both on every push to `main`. Both builds are a few seconds.
+Making `autostand-ui` public would remove the requirement entirely — pnpm would resolve a public GitHub repo to
+a codeload tarball needing no credentials at all. That is a product decision, not a CI one, so the token is the
+answer for now.
 
 ## Caching
 
@@ -411,6 +391,7 @@ Store these in GitHub repository settings → Secrets and variables → Actions.
 
 | Secret | Used by | Purpose |
 |--------|---------|---------|
+| **`AUTOSTAND_UI_TOKEN`** | `ci.yml`, `release.yml` | **Required, not yet configured.** Read access to the private `MAECLY/autostand-ui` repo so `pnpm install` can fetch `@autostand/ui`. See § Private dependency authentication. |
 | `APPLE_CERTIFICATE` | `release.yml` | macOS codesigning certificate (base64-encoded `.p12`) |
 | `APPLE_CERTIFICATE_PASSWORD` | `release.yml` | Password for the certificate |
 | `APPLE_ID` | `release.yml` | Apple ID for notarization |
@@ -421,7 +402,9 @@ Store these in GitHub repository settings → Secrets and variables → Actions.
 | `TAURI_SIGNING_PRIVATE_KEY` | `release.yml` | Tauri updater signing key (for auto-updates) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | `release.yml` | Password for the updater key |
 
-Until codesigning secrets are set, builds are unsigned (macOS users must right-click → Open to bypass Gatekeeper; Windows shows SmartScreen warning). See `docs/user/01-install.md`.
+`AUTOSTAND_UI_TOKEN` is the only one of these that CI cannot run without. The codesigning secrets are optional:
+until they are set, builds are unsigned (macOS users must right-click → Open to bypass Gatekeeper; Windows shows
+a SmartScreen warning). See `docs/user/01-install.md`.
 
 ## Tauri updater
 
@@ -515,7 +498,7 @@ The `main` branch has:
 
 ## Manual release process
 
-The version lives in six files and they must all agree — cargo stamps the binary from the workspace
+The version lives in four files and they must all agree — cargo stamps the binary from the workspace
 `Cargo.toml`, `tauri build` stamps the bundle from `tauri.conf.json`, and nothing reconciles the two.
 
 ```bash
@@ -523,8 +506,6 @@ The version lives in six files and they must all agree — cargo stamps the bina
 #      Cargo.toml                                    -> [workspace.package] version
 #      package.json                                  -> "version"   (repo root)
 #      apps/autostand-app/package.json               -> "version"
-#      apps/landing/package.json                     -> "version"
-#      design-system/package.json                    -> "version"
 #      apps/autostand-app/src-tauri/tauri.conf.json  -> "version"
 #    The member crates inherit `version.workspace = true` — leave those alone.
 

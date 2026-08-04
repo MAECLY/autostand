@@ -1,3 +1,0 @@
-# Playwright traces, screenshots and the HTML report (see outputDir in
-# playwright.config.ts). Kept inside this directory so the package root stays clean.
-.artifacts/

@@ -83,14 +83,18 @@ and writes it atomically to a `dailies/` directory that syncs across machines.
 
 ### Design system
 
+The code these specs describe lives in [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) and is
+consumed here as the `@autostand/ui` package. The specs stay in this repo because they are decisions, not code;
+paths inside them are relative to the `autostand-ui` root unless stated otherwise.
+
 | File | Description |
 | --- | --- |
 | [design-system/01-tokens.md](design-system/01-tokens.md) | Color, type, spacing, motion tokens. |
 | [design-system/02-brand.md](design-system/02-brand.md) | Logo, mark, wordmark, usage. |
 | [design-system/03-components.md](design-system/03-components.md) | Base shadcn/ui component inventory. |
-| [design-system/04-app-components.md](design-system/04-app-components.md) | App-specific composite components. |
-| [design-system/05-storybook.md](design-system/05-storybook.md) | Storybook 8 setup, stories, chromatic. |
-| [design-system/06-landing-reuse.md](design-system/06-landing-reuse.md) | Landing page composition reusing the component kit. |
+| [design-system/04-app-components.md](design-system/04-app-components.md) | App-specific composite components — these stay in `apps/autostand-app/src/components/`. |
+| [design-system/05-storybook.md](design-system/05-storybook.md) | Storybook 8 setup, stories, chromatic — runs from the `autostand-ui` repo. |
+| [design-system/06-landing-reuse.md](design-system/06-landing-reuse.md) | How the design system is shared across the three repos, and what the split cost. |
 
 ### Specifications
 

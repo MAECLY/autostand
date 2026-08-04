@@ -13,14 +13,14 @@ import {
   Alert,
   AlertDescription,
   AlertTitle,
-} from "@design-system/components/alert";
-import { Badge } from "@design-system/components/badge";
+} from "@autostand/ui/components/alert";
+import { Badge } from "@autostand/ui/components/badge";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@design-system/components/card";
+} from "@autostand/ui/components/card";
 
 import type { StandupFileContent } from "@/lib/types";
 import { cn, hostColor } from "@/lib/utils";
