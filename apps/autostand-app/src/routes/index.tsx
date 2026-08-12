@@ -1,10 +1,11 @@
 /**
- * Dashboard — today's standup, the single "Compile now" action, and the live
- * pipeline card. Spec: `docs/tauri/04-frontend-stack.md` § Key pages.
+ * Dashboard — focused tabs for today's standup, manual items, and the pipeline.
+ * The TerminalViewer lives in the global bottom panel (__root.tsx).
  */
 
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AlertTriangle, Inbox } from "lucide-react";
+import { AlertTriangle, Inbox, RefreshCw } from "lucide-react";
 
 import {
   Alert,
@@ -18,22 +19,37 @@ import {
   CardHeader,
   CardTitle,
 } from "@autostand/ui/components/card";
+import { Button } from "@autostand/ui/components/button";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@autostand/ui/components/tabs";
 
 import { CompileButton } from "@/components/standup/CompileButton";
 import { ManualEditor } from "@/components/standup/ManualEditor";
 import { PipelineCard } from "@/components/standup/PipelineCard";
 import { StandupPreview } from "@/components/standup/StandupPreview";
 import { useHostSlug } from "@/hooks/use-config";
+import { usePipelineStatus } from "@/hooks/use-pipeline-status";
+import { useSchedulerStatus } from "@/hooks/use-scheduler";
 import { useStandupFile } from "@/hooks/use-standup";
 import { toAppError } from "@/lib/error";
 import { formatIsoDate, todayIso } from "@/lib/utils";
+import type { TriggerSource } from "@/lib/types";
 
 export const Route = createFileRoute("/")({
   component: DashboardPage,
 });
 
-/** Widths of the placeholder lines, so the skeleton reads as prose. */
 const SKELETON_LINES = ["w-full", "w-11/12", "w-3/4"] as const;
+
+const TRIGGER_LABELS: Record<TriggerSource, string> = {
+  scheduled: "Scheduled",
+  manual: "Manual",
+  "self-heal": "Self-heal",
+};
 
 function PreviewSkeleton() {
   return (
@@ -71,31 +87,30 @@ function EmptyToday({ date }: EmptyTodayProps) {
         <Inbox className="size-6 text-muted-foreground" aria-hidden="true" />
         <CardTitle>No standup filed for {formatIsoDate(date)}</CardTitle>
         <CardDescription>
-          Compiling gathers commits, notes and enrichment for the window and
-          writes the AUTO block. Manual items can be added before or after.
+          Use Compile now to gather commits, notes and enrichment for the
+          window and write the AUTO block. Manual items can be added before or
+          after.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex justify-center">
-        <CompileButton />
-      </CardContent>
     </Card>
   );
 }
 
 interface TodayStandupProps {
   date: string;
+  regenerating: boolean;
 }
 
-function TodayStandup({ date }: TodayStandupProps) {
+function TodayStandup({ date, regenerating }: TodayStandupProps) {
   const { data: hostSlug } = useHostSlug();
   const standup = useStandupFile(date);
+  const scheduler = useSchedulerStatus();
+  const [retryNonce, setRetryNonce] = useState(0);
 
   if (standup.isPending) return <PreviewSkeleton />;
 
   if (standup.isError) {
     const error = toAppError(standup.error);
-    // `read_standup_file` rejects with `not_found` until the day's first
-    // compile writes the file — that is an empty state, not a failure.
     if (error.code === "not_found") return <EmptyToday date={date} />;
 
     return (
@@ -105,16 +120,61 @@ function TodayStandup({ date }: TodayStandupProps) {
         <AlertDescription>
           <p className="font-mono text-xs">{error.code}</p>
           <p>{error.message}</p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-3"
+            onClick={() => {
+              setRetryNonce((n) => n + 1);
+              void standup.refetch();
+            }}
+            data-retry-nonce={retryNonce}
+          >
+            <RefreshCw className="size-4" aria-hidden="true" />
+            Retry
+          </Button>
         </AlertDescription>
       </Alert>
     );
   }
 
-  return <StandupPreview content={standup.data} hostSlug={hostSlug} />;
+  const lastTrigger = scheduler.data?.last_trigger ?? null;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        {lastTrigger ? (
+          <span>
+            Last run:{" "}
+            <span className="font-medium text-foreground">
+              {TRIGGER_LABELS[lastTrigger]}
+            </span>
+          </span>
+        ) : null}
+        {regenerating ? (
+          <span className="animate-pulse text-warning-fg">
+            Regenerating…
+          </span>
+        ) : null}
+      </div>
+      <div className={regenerating ? "opacity-60" : undefined}>
+        <StandupPreview content={standup.data} hostSlug={hostSlug} />
+      </div>
+    </div>
+  );
 }
+
+type DashboardTab = "today" | "manual" | "pipeline";
 
 function DashboardPage() {
   const date = todayIso();
+  const [tab, setTab] = useState<DashboardTab>("today");
+  const pipeline = usePipelineStatus();
+
+  const isCompiling =
+    pipeline.data?.state === "gathering" ||
+    pipeline.data?.state === "rendering";
 
   return (
     <div className="flex min-h-0 flex-col gap-6 p-6">
@@ -128,21 +188,32 @@ function DashboardPage() {
             directory.
           </p>
         </div>
-        {/* TopBar takes page actions as children, but routes render inside its
-            sibling <Outlet>, so the primary action sits in the page header. */}
         <CompileButton />
       </header>
 
-      <div className="grid min-h-0 min-w-0 content-start gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <div className="flex min-h-0 min-w-0 flex-col gap-6">
-          <TodayStandup date={date} />
-          <ManualEditor date={date} />
-        </div>
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as DashboardTab)}
+        className="min-h-0"
+      >
+        <TabsList>
+          <TabsTrigger value="today">Today</TabsTrigger>
+          <TabsTrigger value="manual">Manual item</TabsTrigger>
+          <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
+        </TabsList>
 
-        <div className="flex min-h-0 min-w-0 flex-col gap-6">
+        <TabsContent value="today" className="min-h-0">
+          <TodayStandup date={date} regenerating={isCompiling} />
+        </TabsContent>
+
+        <TabsContent value="manual" className="min-h-0">
+          <ManualEditor date={date} />
+        </TabsContent>
+
+        <TabsContent value="pipeline" className="min-h-0">
           <PipelineCard />
-        </div>
-      </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

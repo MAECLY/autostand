@@ -5,7 +5,7 @@
  * compile mutations invalidate after a run.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { handleInvokeError } from "@/lib/error";
 import { tauriApi } from "@/lib/tauri";
@@ -20,6 +20,7 @@ export function useStandupFile(date: string) {
     queryKey: standupKey(date),
     queryFn: () => tauriApi.readStandupFile(date),
     enabled: date.length > 0,
+    placeholderData: keepPreviousData,
   });
 }
 
