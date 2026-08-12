@@ -155,6 +155,9 @@ pub fn is_keepable_prompt(s: &str) -> bool {
     if lower.starts_with("you are") {
         return false;
     }
+    if lower.starts_with("established facts") {
+        return false;
+    }
     if looks_like_code_paste(trimmed) {
         return false;
     }
@@ -164,33 +167,104 @@ pub fn is_keepable_prompt(s: &str) -> bool {
     true
 }
 
-/// Collector for deduped, filtered user-prompt snippets (max 15, ≤ 200 chars each).
+/// Strip Claude Code preamble blocks that are not real user prompts: XML-like
+/// wrappers (`<system-reminder>…</system-reminder>`, `<context>`, `<env>`,
+/// `<dcp-system-reminder>`, etc.) and `ESTABLISHED FACTS:` preambles. Returns the
+/// surviving lines joined with `\n`.
+pub fn strip_preamble(s: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut skip_until: Option<String> = None;
+    for line in s.lines() {
+        let trimmed = line.trim();
+        if let Some(ref close) = skip_until {
+            if trimmed.starts_with(close.as_str()) {
+                skip_until = None;
+            }
+            continue;
+        }
+        if let Some(tag) = open_xml_block(trimmed) {
+            skip_until = Some(tag);
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("ESTABLISHED FACTS (do not re-derive, build on these):")
+            || trimmed.eq_ignore_ascii_case("ESTABLISHED FACTS:")
+            || trimmed.eq_ignore_ascii_case("ESTABLISHED FACTS")
+        {
+            continue;
+        }
+        if trimmed.starts_with('-') {
+            let bullet = trimmed.trim_start_matches('-').trim();
+            if bullet.starts_with("Repo A")
+                || bullet.starts_with("Repo B")
+                || bullet.contains("ESTABLISHED FACTS")
+            {
+                continue;
+            }
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
+/// Detect a `<tag>` opener and return its matching `</tag>` closer prefix.
+fn open_xml_block(trimmed: &str) -> Option<String> {
+    if !(trimmed.starts_with('<') && trimmed.ends_with('>')) {
+        return None;
+    }
+    if !trimmed.starts_with("</") && !trimmed.starts_with("</") {
+        let inner = trimmed
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .split([' ', '/'])
+            .next()?
+            .to_string();
+        if inner.is_empty()
+            || inner
+                .chars()
+                .any(|c| !c.is_alphanumeric() && c != '-' && c != '_')
+        {
+            return None;
+        }
+        return Some(format!("</{inner}>"));
+    }
+    None
+}
+
+/// Collector for deduped, filtered user-prompt snippets. Dedup is line-level so
+/// a recurring multi-line preamble embedded in different surrounding text is
+/// collapsed to one occurrence. Caps at 40 unique lines (≤ 200 chars each).
 #[derive(Debug, Default)]
 pub struct PromptCollector {
-    seen: std::collections::HashSet<String>,
+    seen_lines: std::collections::HashSet<String>,
     snippets: Vec<String>,
 }
 
+const MAX_SNIPPETS: usize = 40;
+
 impl PromptCollector {
-    /// Add a raw user-typed text. It will be filtered, deduped, truncated.
+    /// Add a raw user-typed text. It is split into lines, each line is
+    /// filtered, deduped against all prior lines, and truncated.
     pub fn add(&mut self, raw: &str) {
-        if self.snippets.len() >= 15 {
-            return;
+        let stripped = strip_preamble(raw);
+        for line in stripped.lines() {
+            if self.snippets.len() >= MAX_SNIPPETS {
+                return;
+            }
+            if !is_keepable_prompt(line) {
+                continue;
+            }
+            let norm = normalize_text(line);
+            if self.seen_lines.contains(&norm) {
+                continue;
+            }
+            self.seen_lines.insert(norm);
+            self.snippets.push(truncate_str(line.trim(), 200));
         }
-        if !is_keepable_prompt(raw) {
-            return;
-        }
-        let norm = normalize_text(raw);
-        if self.seen.contains(&norm) {
-            return;
-        }
-        self.seen.insert(norm);
-        self.snippets.push(truncate_str(raw.trim(), 200));
     }
 
-    /// Returns true if the collector is full (15 snippets).
+    /// Returns true if the collector is full.
     pub fn is_full(&self) -> bool {
-        self.snippets.len() >= 15
+        self.snippets.len() >= MAX_SNIPPETS
     }
 
     /// Render the collected snippets as a markdown CONTEXT block.
@@ -446,14 +520,36 @@ mod tests {
     }
 
     #[test]
-    fn prompt_collector_caps_at_fifteen() {
+    fn prompt_collector_caps_at_forty() {
         let mut pc = PromptCollector::default();
-        for i in 0..20 {
+        for i in 0..60 {
             pc.add(&format!("unique prompt number {i}"));
         }
-        assert_eq!(pc.snippets().len(), 15);
+        assert_eq!(pc.snippets().len(), 40);
         assert!(pc.is_full());
-        assert_eq!(pc.snippets().last().unwrap(), "unique prompt number 14");
+        assert_eq!(pc.snippets().last().unwrap(), "unique prompt number 39");
+    }
+
+    #[test]
+    fn prompt_collector_dedups_across_snippets_at_line_level() {
+        let mut pc = PromptCollector::default();
+        pc.add("ESTABLISHED FACTS (do not re-derive, build on these):\n- Repo A: /tmp/a\n- Repo B: /tmp/b\nwrote the login redirect bug");
+        pc.add("ESTABLISHED FACTS (do not re-derive, build on these):\n- Repo A: /tmp/a\n- Repo B: /tmp/b\nreviewed PR #42 for the auth module");
+        pc.add("ESTABLISHED FACTS (do not re-derive, build on these):\n- Repo A: /tmp/a\n- Repo B: /tmp/b\nwrote the login redirect bug");
+        let snips = pc.snippets();
+        assert_eq!(snips.len(), 2);
+        assert!(snips.iter().all(|s| !s.contains("ESTABLISHED FACTS")));
+        assert!(snips.iter().all(|s| !s.contains("Repo A")));
+    }
+
+    #[test]
+    fn prompt_collector_dedups_repeated_lines_across_adds() {
+        let mut pc = PromptCollector::default();
+        pc.add("wired the pipeline");
+        pc.add("wired the pipeline");
+        pc.add("wired the pipeline");
+        assert_eq!(pc.snippets().len(), 1);
+        assert_eq!(pc.snippets()[0], "wired the pipeline");
     }
 
     #[test]
