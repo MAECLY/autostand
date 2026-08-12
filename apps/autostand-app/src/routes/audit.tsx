@@ -63,7 +63,7 @@ function AuditPage() {
   const sidecar = useAuditSidecar(activePath);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="min-h-0 space-y-6 p-6">
       <div className="flex flex-wrap items-end gap-4">
         <div className="space-y-1.5">
           <Label htmlFor="audit-date">Filing date</Label>

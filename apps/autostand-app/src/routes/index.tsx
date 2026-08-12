@@ -23,6 +23,7 @@ import { CompileButton } from "@/components/standup/CompileButton";
 import { ManualEditor } from "@/components/standup/ManualEditor";
 import { PipelineCard } from "@/components/standup/PipelineCard";
 import { StandupPreview } from "@/components/standup/StandupPreview";
+import { TerminalViewer } from "@/components/standup/TerminalViewer";
 import { useHostSlug } from "@/hooks/use-config";
 import { useStandupFile } from "@/hooks/use-standup";
 import { toAppError } from "@/lib/error";
@@ -117,7 +118,7 @@ function DashboardPage() {
   const date = todayIso();
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="flex min-h-0 flex-col gap-6 p-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-lg font-semibold text-foreground">
@@ -133,14 +134,15 @@ function DashboardPage() {
         <CompileButton />
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <div className="flex min-w-0 flex-col gap-6">
+      <div className="grid min-h-0 min-w-0 content-start gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <div className="flex min-h-0 min-w-0 flex-col gap-6">
           <TodayStandup date={date} />
           <ManualEditor date={date} />
         </div>
 
-        <div className="flex min-w-0 flex-col gap-6">
+        <div className="flex min-h-0 min-w-0 flex-col gap-6">
           <PipelineCard />
+          <TerminalViewer />
         </div>
       </div>
     </div>

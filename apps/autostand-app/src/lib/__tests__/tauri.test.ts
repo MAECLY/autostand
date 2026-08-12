@@ -23,6 +23,7 @@ import {
 import {
   onPipelineDone,
   onPipelineError,
+  onPipelineLog,
   onPipelineProgress,
   onPipelineStarted,
   onSchedulerTick,
@@ -106,6 +107,7 @@ const COMMANDS: CommandCase[] = [
   { command: "discover_repos", call: () => tauriApi.discoverRepos() },
   { command: "get_settings_paths", call: () => tauriApi.getSettingsPaths() },
   { command: "validate_paths", call: () => tauriApi.validatePaths() },
+  { command: "detect_cloud_folders", call: () => tauriApi.detectCloudFolders() },
   {
     command: "store_api_key",
     call: () => tauriApi.storeApiKey("claude", "sk-test-value"),
@@ -128,10 +130,10 @@ beforeEach(() => {
 });
 
 describe("tauriApi", () => {
-  it("exposes exactly the 25 documented commands", () => {
-    expect(COMMANDS).toHaveLength(25);
-    expect(Object.keys(tauriApi)).toHaveLength(25);
-    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(25);
+  it("exposes exactly the 26 documented commands", () => {
+    expect(COMMANDS).toHaveLength(26);
+    expect(Object.keys(tauriApi)).toHaveLength(26);
+    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(26);
   });
 
   it.each(COMMANDS)(
@@ -172,13 +174,14 @@ describe("event helpers", () => {
   const EVENTS: { name: string; subscribe: Subscribe }[] = [
     { name: "pipeline-started", subscribe: onPipelineStarted },
     { name: "pipeline-progress", subscribe: onPipelineProgress },
+    { name: "pipeline-log", subscribe: onPipelineLog },
     { name: "pipeline-done", subscribe: onPipelineDone },
     { name: "pipeline-error", subscribe: onPipelineError },
     { name: "scheduler-tick", subscribe: onSchedulerTick },
   ];
 
-  it("covers all 5 backend events", () => {
-    expect(EVENTS).toHaveLength(5);
+  it("covers all 6 backend events", () => {
+    expect(EVENTS).toHaveLength(6);
   });
 
   it.each(EVENTS)(

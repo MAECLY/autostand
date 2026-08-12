@@ -8,6 +8,7 @@
 // (dead code) and leak private types through public items.
 pub mod commands;
 pub mod error;
+pub mod format_presets;
 pub mod gather;
 pub mod git_ops;
 pub mod pipeline_runner;
@@ -34,6 +35,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(state::AppState::new())
         // The in-process scheduler must start with the app, not on first IPC
         // call: nothing in the UI is required for a cron boundary to come due.
@@ -64,6 +66,7 @@ pub fn run() {
             commands::standup::add_manual_item,
             commands::standup::list_audit_sidecars,
             commands::standup::read_audit_sidecar,
+            commands::sync::detect_cloud_folders,
             commands::repos::discover_repos,
             commands::settings::get_settings_paths,
             commands::settings::validate_paths,

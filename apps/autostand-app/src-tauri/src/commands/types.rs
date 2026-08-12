@@ -45,6 +45,9 @@ pub struct AppConfig {
     pub review: ReviewConfig,
     /// Secret-scrub configuration block.
     pub scrub: ScrubConfig,
+    /// Standup format configuration (LLM-only; ignored when `render_mode = Det`).
+    #[serde(default)]
+    pub format: StandupFormatConfig,
 }
 
 /// Render mode preference.
@@ -206,6 +209,91 @@ pub struct ScrubConfig {
     pub alias_scrub_min: u32,
     /// Extra meta to strip, or `null`.
     pub meta_extra: Option<String>,
+}
+
+/// Standup format configuration — molds the LLM prompt's `## OUTPUT` section.
+///
+/// Ignored when `render_mode = Det` (the deterministic renderer has a fixed
+/// format). Only affects the LLM render path.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandupFormatConfig {
+    /// Which preset template to use.
+    pub preset: StandupPreset,
+    /// Output verbosity.
+    pub verbosity: Verbosity,
+    /// Include a `**PR Review**` trailing section.
+    pub include_pr_review: bool,
+    /// Include a confidence/health rating line.
+    pub include_confidence: bool,
+    /// Include an explicit risks section.
+    pub include_risks: bool,
+    /// Conventional-commits style (scoped bullets).
+    pub conventional: bool,
+}
+
+impl Default for StandupFormatConfig {
+    fn default() -> Self {
+        Self {
+            preset: StandupPreset::ClassicScrum,
+            verbosity: Verbosity::Standard,
+            include_pr_review: true,
+            include_confidence: false,
+            include_risks: false,
+            conventional: false,
+        }
+    }
+}
+
+/// Standup format preset.
+///
+/// Wire values are `kebab-case` (`"classic-scrum"`, `"spotify-4q"`, …).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StandupPreset {
+    /// Classic Scrum 3 Questions (Yesterday / Today / Blockers).
+    #[default]
+    ClassicScrum,
+    /// Scrum 4 Questions (+ help needed).
+    FourQuestion,
+    /// Mad / Sad / Glad emotional check-in.
+    MadSadGlad,
+    /// Start / Stop / Continue.
+    StartStopContinue,
+    /// Keep / Drop / Create.
+    KeepDropCreate,
+    /// 5 Questions (+ confidence / team health).
+    FiveQuestion,
+    /// Spotify-style 4 Questions (Did / Doing / Blocking / Need).
+    #[serde(rename = "spotify-4q")]
+    Spotify4q,
+    /// Async status-block (Done / Doing / Blockers / FYI).
+    AsyncStatus,
+    /// Walking / 15-min timebox (same as classic but terse).
+    WalkingTimebox,
+    /// Walk-the-Board / Kanban (board-driven).
+    WalkTheBoard,
+    /// Yesterday / Today / Blockers / Risks.
+    Ytbr,
+    /// Decisions & Commitments.
+    DecisionsCommitments,
+    /// OKR-tied standup.
+    OkrTied,
+}
+
+/// Output verbosity level.
+///
+/// Wire values: `"terse" | "standard" | "detailed"`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Verbosity {
+    /// One-liner per section.
+    Terse,
+    /// Standard bullet-list depth.
+    #[default]
+    Standard,
+    /// Detailed multi-bullet with context.
+    Detailed,
 }
 
 // ── Data sources list ────────────────────────────────────────────────────
@@ -657,6 +745,45 @@ pub struct PipelineProgress {
     pub percent: u8,
 }
 
+/// Payload for the `pipeline-log` event — one structured line of the terminal
+/// viewer. Emitted alongside `pipeline-progress` to give the dashboard a
+/// read-the-board view of what the compile actually did (git, sources, LLM).
+///
+/// Wire values: `"info" | "warn" | "error" | "done"` for `level`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineLogLine {
+    /// Filing date (`YYYY-MM-DD`).
+    pub date: String,
+    /// Host slug.
+    pub host: String,
+    /// Step label this log line belongs to (e.g. `gather`, `render_llm`).
+    pub step: String,
+    /// Severity.
+    pub level: PipelineLogLevel,
+    /// Human-readable line text.
+    pub message: String,
+    /// Optional structured detail (provider, model, source name, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Log severity for a [`PipelineLogLine`].
+///
+/// Wire values: `"info" | "warn" | "error" | "done"`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PipelineLogLevel {
+    /// Informational step start / progress.
+    #[default]
+    Info,
+    /// Non-fatal warning (source failure, fallback).
+    Warn,
+    /// Error.
+    Error,
+    /// Step completed.
+    Done,
+}
+
 /// Per-path validation result returned by `validate_paths`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PathValidation {
@@ -675,8 +802,9 @@ pub struct PathValidation {
 mod tests {
     use super::{
         ApiKeyMode, ApiKeyStatus, AppConfig, AuditData, AuditRenderMode, AuditSidecar,
-        CompileResult, CompileStatus, LastTrigger, ProviderMode, RenderMode, RenderUsed,
-        SchedulerSource, SchedulerStatus,
+        CompileResult, CompileStatus, LastTrigger, PipelineLogLevel, PipelineLogLine, ProviderMode,
+        RenderMode, RenderUsed, SchedulerSource, SchedulerStatus, StandupFormatConfig,
+        StandupPreset, Verbosity,
     };
     use serde::{de::DeserializeOwned, Serialize};
     use serde_json::json;
@@ -879,6 +1007,7 @@ mod tests {
             [
                 "dailies_dir",
                 "data_sources",
+                "format",
                 "git_refs",
                 "github_dir",
                 "host_slug_override",
@@ -902,5 +1031,88 @@ mod tests {
         assert_eq!(RenderMode::default(), RenderMode::Auto);
         assert_eq!(ProviderMode::default(), ProviderMode::CliFirst);
         assert_eq!(AuditRenderMode::default(), AuditRenderMode::Auto);
+        assert_eq!(StandupPreset::default(), StandupPreset::ClassicScrum);
+        assert_eq!(Verbosity::default(), Verbosity::Standard);
+    }
+
+    #[test]
+    fn standup_preset_wire_values_are_kebab_case() {
+        assert_wire(&StandupPreset::ClassicScrum, "classic-scrum");
+        assert_wire(&StandupPreset::FourQuestion, "four-question");
+        assert_wire(&StandupPreset::MadSadGlad, "mad-sad-glad");
+        assert_wire(&StandupPreset::StartStopContinue, "start-stop-continue");
+        assert_wire(&StandupPreset::KeepDropCreate, "keep-drop-create");
+        assert_wire(&StandupPreset::FiveQuestion, "five-question");
+        assert_wire(&StandupPreset::Spotify4q, "spotify-4q");
+        assert_wire(&StandupPreset::AsyncStatus, "async-status");
+        assert_wire(&StandupPreset::WalkingTimebox, "walking-timebox");
+        assert_wire(&StandupPreset::WalkTheBoard, "walk-the-board");
+        assert_wire(&StandupPreset::Ytbr, "ytbr");
+        assert_wire(
+            &StandupPreset::DecisionsCommitments,
+            "decisions-commitments",
+        );
+        assert_wire(&StandupPreset::OkrTied, "okr-tied");
+    }
+
+    #[test]
+    fn verbosity_wire_values_are_lowercase() {
+        assert_wire(&Verbosity::Terse, "terse");
+        assert_wire(&Verbosity::Standard, "standard");
+        assert_wire(&Verbosity::Detailed, "detailed");
+    }
+
+    #[test]
+    fn standup_format_config_defaults_match_docs() {
+        let value = serde_json::to_value(StandupFormatConfig::default()).unwrap();
+        assert_eq!(value["preset"], json!("classic-scrum"));
+        assert_eq!(value["verbosity"], json!("standard"));
+        assert_eq!(value["include_pr_review"], json!(true));
+        assert_eq!(value["include_confidence"], json!(false));
+        assert_eq!(value["include_risks"], json!(false));
+        assert_eq!(value["conventional"], json!(false));
+    }
+
+    #[test]
+    fn app_config_default_includes_format_block() {
+        let value = serde_json::to_value(AppConfig::default()).unwrap();
+        assert_eq!(value["format"]["preset"], json!("classic-scrum"));
+    }
+
+    #[test]
+    fn pipeline_log_level_is_lowercase() {
+        assert_wire(&PipelineLogLevel::Info, "info");
+        assert_wire(&PipelineLogLevel::Warn, "warn");
+        assert_wire(&PipelineLogLevel::Error, "error");
+        assert_wire(&PipelineLogLevel::Done, "done");
+    }
+
+    #[test]
+    fn pipeline_log_line_serializes_the_documented_shape() {
+        let line = PipelineLogLine {
+            date: "2026-08-03".into(),
+            host: "mbp-miguel".into(),
+            step: "gather".into(),
+            level: PipelineLogLevel::Info,
+            message: "gathering data sources".into(),
+            detail: None,
+        };
+        let value = serde_json::to_value(&line).unwrap();
+        assert_eq!(value["date"], json!("2026-08-03"));
+        assert_eq!(value["host"], json!("mbp-miguel"));
+        assert_eq!(value["step"], json!("gather"));
+        assert_eq!(value["level"], json!("info"));
+        assert_eq!(value["message"], json!("gathering data sources"));
+        // `detail` is `None` and marked `skip_serializing_if = "Option::is_none"`.
+        assert!(value.get("detail").is_none() || !value["detail"].is_null());
+        assert!(!value.as_object().unwrap().contains_key("detail"));
+
+        // With `Some(detail)` it appears in the payload.
+        let with_detail = PipelineLogLine {
+            detail: Some("provider=claude,model=sonnet".into()),
+            ..line
+        };
+        let value = serde_json::to_value(&with_detail).unwrap();
+        assert_eq!(value["detail"], json!("provider=claude,model=sonnet"));
     }
 }

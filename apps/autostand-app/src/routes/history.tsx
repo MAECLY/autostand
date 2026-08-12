@@ -66,8 +66,8 @@ function HistoryPage() {
   const settled = probes.every((probe) => !probe.isPending);
 
   return (
-    <div className="grid gap-6 p-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
-      <aside className="space-y-3">
+    <div className="grid min-h-0 min-w-0 gap-6 p-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
+      <aside className="min-h-0 space-y-3 lg:overflow-y-auto">
         <div className="space-y-1">
           <h2 className="text-sm font-semibold text-foreground">
             Last {WINDOW_DAYS} days

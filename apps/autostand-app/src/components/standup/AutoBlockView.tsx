@@ -16,6 +16,7 @@ import {
 } from "@autostand/ui/components/card";
 import { Textarea } from "@autostand/ui/components/textarea";
 
+import { CopyButton } from "@/components/common/CopyButton";
 import { StandupMarkdown } from "@/components/standup/StandupPreview";
 import type { AutoBlock } from "@/lib/types";
 
@@ -79,6 +80,14 @@ export function AutoBlockView({
               </>
             )}
           </Button>
+        )}
+        {!isEditing && (
+          <CopyButton
+            text={draft}
+            label={`Copy AUTO block for ${block.host}`}
+            tooltip="Copy this block"
+            size="sm"
+          />
         )}
       </CardHeader>
       <CardContent>

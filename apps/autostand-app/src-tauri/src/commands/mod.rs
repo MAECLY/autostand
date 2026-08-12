@@ -10,6 +10,7 @@ pub mod pipeline;
 pub mod repos;
 pub mod settings;
 pub mod standup;
+pub mod sync;
 pub mod types;
 
 use std::path::{Path, PathBuf};

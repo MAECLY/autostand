@@ -34,10 +34,12 @@ import {
 } from "@autostand/ui/components/tabs";
 
 import { DataSourceToggle } from "@/components/settings/DataSourceToggle";
+import { FormatTab } from "@/components/settings/FormatTab";
 import { PathInput } from "@/components/settings/PathInput";
 import { ProviderCard } from "@/components/settings/ProviderCard";
 import { RepoTable } from "@/components/settings/RepoTable";
 import { SchedulerForm } from "@/components/settings/SchedulerForm";
+import { SyncTab } from "@/components/settings/SyncTab";
 import { useConfig, useSetConfig } from "@/hooks/use-config";
 import { useDataSources } from "@/hooks/use-data-sources";
 import {
@@ -353,11 +355,11 @@ function PathsTab() {
 
 function SettingsPage() {
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="flex min-h-0 flex-col gap-6 p-6">
       <header className="min-w-0">
         <h2 className="text-lg font-semibold text-foreground">Settings</h2>
         <p className="text-sm text-muted-foreground">
-          Providers, data sources, paths and the compile schedule.
+          Providers, data sources, paths, cloud sync and the compile schedule.
         </p>
       </header>
 
@@ -365,7 +367,9 @@ function SettingsPage() {
         <TabsList>
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="data-sources">Data Sources</TabsTrigger>
+          <TabsTrigger value="format">Standup Format</TabsTrigger>
           <TabsTrigger value="paths">Paths</TabsTrigger>
+          <TabsTrigger value="sync">Sync</TabsTrigger>
           <TabsTrigger value="scheduler">Scheduler</TabsTrigger>
         </TabsList>
 
@@ -377,8 +381,16 @@ function SettingsPage() {
           <DataSourcesTab />
         </TabsContent>
 
+        <TabsContent value="format">
+          <FormatTab />
+        </TabsContent>
+
         <TabsContent value="paths">
           <PathsTab />
+        </TabsContent>
+
+        <TabsContent value="sync">
+          <SyncTab />
         </TabsContent>
 
         <TabsContent value="scheduler">

@@ -200,7 +200,7 @@ function DebugPage() {
   const gathered = sources.reduce((total, source) => total + source.count, 0);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="min-h-0 space-y-6 p-6">
       <div className="flex flex-wrap items-end gap-4">
         <div className="space-y-1.5">
           <Label htmlFor="debug-date">Filing date</Label>

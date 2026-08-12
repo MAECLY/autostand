@@ -30,7 +30,9 @@ use autostand_adapters::llm::traits::{
 };
 use autostand_core::provenance::extract_tickets;
 
-use crate::commands::types::{AppConfig, ProviderConfig, ProviderMode, RenderMode};
+use crate::commands::types::{
+    AppConfig, ProviderConfig, ProviderMode, RenderMode, StandupFormatConfig,
+};
 
 // ── Canonical prompt ──────────────────────────────────────────────────────
 
@@ -120,6 +122,10 @@ pub struct PromptInputs<'a> {
     ///
     /// Shown to the model so it does not restate bullets `accumulate` will re-inject anyway.
     pub prev_auto: Option<&'a str>,
+    /// Standup format configuration (presets mold the `## OUTPUT` section).
+    ///
+    /// When `None`, the default fixed output block is used (Det mode or legacy).
+    pub format: Option<&'a StandupFormatConfig>,
 }
 
 /// Heading used for the previous-render section.
@@ -156,11 +162,15 @@ pub fn build_prompt(inputs: &PromptInputs<'_>) -> String {
     push_section(&mut out, "## NOTES", Some(inputs.notes));
     push_section(&mut out, PREV_RENDER_HEADING, inputs.prev_auto);
 
-    out.push_str("\n## OUTPUT\n");
-    out.push_str(
-        "Return only the standup Markdown body: section headers and `- ` bullets. \
-         No preamble, no closing commentary, no code fences.\n",
-    );
+    if let Some(format) = inputs.format {
+        out.push_str(&crate::format_presets::output_section(format));
+    } else {
+        out.push_str("\n## OUTPUT\n");
+        out.push_str(
+            "Return only the standup Markdown body: section headers and `- ` bullets. \
+             No preamble, no closing commentary, no code fences.\n",
+        );
+    }
     out
 }
 
@@ -724,6 +734,7 @@ mod tests {
             title: "Daily Standup — August 03, 2026",
             subtitle: "_Work completed August 01–02, 2026._",
             prev_auto: Some("- Refactored the queue processor"),
+            format: None,
         }
     }
 

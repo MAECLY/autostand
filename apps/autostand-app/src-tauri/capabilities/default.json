@@ -12,6 +12,7 @@
     "dialog:default",
     "fs:default",
     "opener:default",
+    "clipboard-manager:allow-write-text",
     "shell:default",
     "store:default"
   ]

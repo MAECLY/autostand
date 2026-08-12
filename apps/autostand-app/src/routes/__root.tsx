@@ -20,7 +20,7 @@ function RootLayout() {
   return (
     <div className="grid h-full grid-cols-[auto_1fr] overflow-hidden bg-background text-foreground">
       <Sidebar />
-      <div className="grid min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
+      <div className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
         <TopBar />
         {/* The only scroll container in the shell. */}
         <main className="min-h-0 overflow-y-auto">

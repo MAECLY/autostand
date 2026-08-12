@@ -63,6 +63,7 @@ export interface AppConfig {
   scheduler: SchedulerConfig;
   review: ReviewConfig;
   scrub: ScrubConfig;
+  format: StandupFormatConfig;
 }
 
 export interface LlmConfig {
@@ -113,6 +114,34 @@ export interface ScrubConfig {
   alias_scrub: boolean;
   alias_scrub_min: number;
   meta_extra: string | null;
+}
+
+/** Standup format preset — kebab-case wire values. */
+export type StandupPreset =
+  | "classic-scrum"
+  | "four-question"
+  | "mad-sad-glad"
+  | "start-stop-continue"
+  | "keep-drop-create"
+  | "five-question"
+  | "spotify-4q"
+  | "async-status"
+  | "walking-timebox"
+  | "walk-the-board"
+  | "ytbr"
+  | "decisions-commitments"
+  | "okr-tied";
+
+/** Output verbosity — lowercase wire values. */
+export type Verbosity = "terse" | "standard" | "detailed";
+
+export interface StandupFormatConfig {
+  preset: StandupPreset;
+  verbosity: Verbosity;
+  include_pr_review: boolean;
+  include_confidence: boolean;
+  include_risks: boolean;
+  conventional: boolean;
 }
 
 // ── Data sources ──────────────────────────────────────────────────────────
@@ -343,6 +372,20 @@ export interface PathValidation {
   message: string | null;
 }
 
+/** One detected cloud-sync folder the user may point `dailies_dir` at. */
+export interface CloudFolder {
+  /** Stable id, e.g. `icloud-drive`, `onedrive`, `syncthing`. */
+  id: string;
+  /** Human-readable label, e.g. `iCloud Drive`. */
+  label: string;
+  /** Absolute path to the folder root. */
+  path: string;
+  /** Whether the folder exists on this machine. */
+  exists: boolean;
+  /** Cloud provider name, e.g. `iCloud`, `OneDrive`, `Syncthing`. */
+  provider: string;
+}
+
 // ── Errors ────────────────────────────────────────────────────────────────
 
 /**
@@ -370,6 +413,19 @@ export interface PipelineProgressEvent {
   step: string;
   /** 0..=100. */
   percent: number;
+}
+
+/** `pipeline-log` severity. */
+export type PipelineLogLevel = "info" | "warn" | "error" | "done";
+
+/** `pipeline-log` — one structured line for the terminal viewer. */
+export interface PipelineLogEvent {
+  date: string;
+  host: string;
+  step: string;
+  level: PipelineLogLevel;
+  message: string;
+  detail: string | null;
 }
 
 /** `pipeline-done` — the completed run's result. */

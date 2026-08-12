@@ -16,6 +16,7 @@ import type {
   AuditData,
   AuditSidecar,
   CliDetection,
+  CloudFolder,
   CompileResult,
   DataSourceConfig,
   GatherPreview,
@@ -23,6 +24,7 @@ import type {
   PathValidation,
   PipelineDoneEvent,
   PipelineErrorEvent,
+  PipelineLogEvent,
   PipelineProgressEvent,
   PipelineStartedEvent,
   PipelineStatus,
@@ -79,6 +81,8 @@ export const tauriApi = {
   getSettingsPaths: () => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths: () => invoke<PathValidation[]>("validate_paths"),
 
+  detectCloudFolders: () => invoke<CloudFolder[]>("detect_cloud_folders"),
+
   storeApiKey: (provider: string, key: string) =>
     invoke<void>("store_api_key", { provider, key }),
   getApiKeyStatus: (provider: string) =>
@@ -100,6 +104,9 @@ export const onPipelineStarted =
 
 export const onPipelineProgress =
   eventHelper<PipelineProgressEvent>("pipeline-progress");
+
+export const onPipelineLog =
+  eventHelper<PipelineLogEvent>("pipeline-log");
 
 export const onPipelineDone = eventHelper<PipelineDoneEvent>("pipeline-done");
 

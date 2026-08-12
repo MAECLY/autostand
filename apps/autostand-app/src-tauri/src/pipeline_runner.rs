@@ -42,7 +42,8 @@ use autostand_scheduler::triggers::TriggerSource;
 use crate::commands::pipeline::{PipelineError, PipelineStarted};
 use crate::commands::types::{
     AppConfig, CommitDto, CompileResult, CompileStatus, DateRangeDto, GatherPreview, LastTrigger,
-    NoteRef, PipelineProgress, RenderMode, RenderUsed, RepoFacts, SkewRecord,
+    NoteRef, PipelineLogLevel, PipelineLogLine, PipelineProgress, RenderMode, RenderUsed,
+    RepoFacts, SkewRecord,
 };
 use crate::error::AppError;
 use crate::gather::{self, Gathered};
@@ -1037,6 +1038,33 @@ fn fail(
     warn_event(app, date, step, code, message);
 }
 
+/// Emit a single `pipeline-log` line for the terminal viewer.
+///
+/// `None` app (headless) drops the line. The viewer never shows token streaming;
+/// each call is one completed sub-step or a summary.
+fn emit_log(
+    app: Option<&AppHandle>,
+    date: &str,
+    host: &str,
+    step: Step,
+    level: PipelineLogLevel,
+    message: impl Into<String>,
+    detail: Option<String>,
+) {
+    emit(
+        app,
+        "pipeline-log",
+        PipelineLogLine {
+            date: date.to_string(),
+            host: host.to_string(),
+            step: step.label().to_string(),
+            level,
+            message: message.into(),
+            detail,
+        },
+    );
+}
+
 // ── the pipeline ──────────────────────────────────────────────────────────
 
 /// Steps 1–5 of `docs/specs/pipeline.md`: lock, sync, compute targets, compile
@@ -1073,6 +1101,7 @@ pub async fn trigger_headless(
 }
 
 /// The run itself, shared by both front ends.
+#[allow(clippy::too_many_lines)]
 #[tracing::instrument(skip_all, fields(trigger = source.label(), only_date = ?only_date, headless = app.is_none()))]
 async fn run(
     app: Option<&AppHandle>,
@@ -1098,16 +1127,53 @@ async fn run(
         app,
         "pipeline-started",
         PipelineStarted {
-            date: primary_str,
+            date: primary_str.clone(),
             host: env.host.clone(),
             trigger: last_trigger(source),
         },
     );
+    emit_log(
+        app,
+        &primary_str,
+        &env.host,
+        Step::Gather,
+        PipelineLogLevel::Info,
+        format!("git pull — {}", env.repo_dir.display()),
+        None,
+    );
     if let Err(err) = crate::git_ops::sync_pull(&env.repo_dir).await {
         tracing::warn!(error = %err, "dailies sync skipped; continuing with the local copy");
+        emit_log(
+            app,
+            &primary_str,
+            &env.host,
+            Step::Gather,
+            PipelineLogLevel::Warn,
+            format!("git pull skipped — {err}"),
+            None,
+        );
+    } else {
+        emit_log(
+            app,
+            &primary_str,
+            &env.host,
+            Step::Gather,
+            PipelineLogLevel::Done,
+            "git pull ok",
+            None,
+        );
     }
     if let Err(err) = crate::git_ops::ensure_gitattributes(&env.repo_dir) {
         tracing::warn!(error = %err, "could not install the union merge driver rule");
+        emit_log(
+            app,
+            &primary_str,
+            &env.host,
+            Step::Gather,
+            PipelineLogLevel::Warn,
+            format!(".gitattributes not installed — {err}"),
+            None,
+        );
     }
 
     // 3-5. Compile each target; the second one is the self-heal slot.
@@ -1141,13 +1207,42 @@ async fn run(
 
     // 6. Commit + push (warn-only), then announce every result.
     match crate::git_ops::commit_push(&env.repo_dir, &touched).await {
-        Ok(outcome) => tracing::info!(
-            committed = outcome.committed,
-            pushed = outcome.pushed,
-            message = %outcome.message,
-            "commit_push finished"
-        ),
-        Err(err) => tracing::warn!(error = %err, "commit_push skipped"),
+        Ok(outcome) => {
+            tracing::info!(
+                committed = outcome.committed,
+                pushed = outcome.pushed,
+                message = %outcome.message,
+                "commit_push finished"
+            );
+            emit_log(
+                app,
+                &primary_str,
+                &env.host,
+                Step::Done,
+                if outcome.committed || outcome.pushed {
+                    PipelineLogLevel::Done
+                } else {
+                    PipelineLogLevel::Info
+                },
+                outcome.message.clone(),
+                Some(format!(
+                    "committed={}, pushed={}",
+                    outcome.committed, outcome.pushed
+                )),
+            );
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "commit_push skipped");
+            emit_log(
+                app,
+                &primary_str,
+                &env.host,
+                Step::Done,
+                PipelineLogLevel::Warn,
+                format!("commit_push skipped — {err}"),
+                None,
+            );
+        }
     }
 
     // `SchedulerStatus.last_run_at` means "when did this machine last compile",
@@ -1210,9 +1305,31 @@ pub async fn compile_one(
     // (a) window
     progress(app, state, &date_str, &env.host, Step::Window);
     let window = dates::compute_window(date);
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Window,
+        PipelineLogLevel::Done,
+        format!(
+            "window {} → {}",
+            window.range_start.format(DATE_FORMAT),
+            window.range_end.format(DATE_FORMAT)
+        ),
+        None,
+    );
 
     // (b, c, e) gather — never fatal; failures are recorded on `Gathered`.
     progress(app, state, &date_str, &env.host, Step::Gather);
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Gather,
+        PipelineLogLevel::Info,
+        "gathering data sources",
+        None,
+    );
     let gathered = gather::gather_all(
         &gather::to_date_window(&window),
         &env.config,
@@ -1220,6 +1337,34 @@ pub async fn compile_one(
     )
     .await;
     let (facts, all_git_tickets) = split_ticket_days(&gathered.facts);
+    let repo_count = parse_repo_facts(&facts).len();
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Gather,
+        PipelineLogLevel::Done,
+        format!(
+            "gathered — {} repo(s), {} note(s), github={}, conv={}, claude_files={}",
+            repo_count,
+            parse_note_refs(&gathered.notes).len(),
+            gathered.github.is_some(),
+            gathered.conv.is_some(),
+            gathered.claude_files.len(),
+        ),
+        None,
+    );
+    for (source, error) in &gathered.failures {
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Gather,
+            PipelineLogLevel::Warn,
+            format!("source {source} failed — {error}"),
+            None,
+        );
+    }
 
     // (d) anti-regression guard
     progress(app, state, &date_str, &env.host, Step::AntiRegression);
@@ -1235,10 +1380,28 @@ pub async fn compile_one(
             "anti_regression",
             &message,
         );
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::AntiRegression,
+            PipelineLogLevel::Warn,
+            &message,
+            None,
+        );
         let result = skip_result(date, &env.host, &file_path, message);
         state.set_done(result.clone());
         return Ok(result);
     }
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::AntiRegression,
+        PipelineLogLevel::Done,
+        "anti-regression ok",
+        None,
+    );
 
     // (f) provenance
     progress(app, state, &date_str, &env.host, Step::Provenance);
@@ -1275,7 +1438,56 @@ pub async fn compile_one(
         Step::RenderLlm.label().to_string(),
     );
     progress(app, state, &date_str, &env.host, Step::RenderLlm);
+    if env.config.render_mode == RenderMode::Det {
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::RenderLlm,
+            PipelineLogLevel::Info,
+            "render mode = Det — skipping LLM",
+            None,
+        );
+    } else {
+        let provider = env.config.llm.preferred_provider.clone();
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::RenderLlm,
+            PipelineLogLevel::Info,
+            format!("LLM render — provider: {provider}"),
+            Some(format!("provider={provider}")),
+        );
+    }
     let rendered = render_body(env, &facts, &gathered, &prov, &window, date, &prev_auto).await;
+    match &rendered {
+        Some(body) => {
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::RenderLlm,
+                PipelineLogLevel::Done,
+                format!("LLM ok — {} ({})", body.provider, body.model),
+                Some(format!(
+                    "provider={}, model={}, api={}",
+                    body.provider, body.model, body.used_api
+                )),
+            );
+        }
+        None => {
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::RenderLlm,
+                PipelineLogLevel::Warn,
+                "no LLM body — deterministic fallback",
+                None,
+            );
+        }
+    }
 
     // (n) validate
     progress(app, state, &date_str, &env.host, Step::Validate);
@@ -1288,14 +1500,55 @@ pub async fn compile_one(
     if let RenderDecision::Rejected { code, message } = &decision {
         tracing::warn!(code, "{message}");
         warn_event(app, &date_str, Step::RenderLlm, "llm", message);
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Validate,
+            PipelineLogLevel::Warn,
+            format!("LLM rejected ({code}) — {message}"),
+            Some(format!("code={code}")),
+        );
     } else if decision == RenderDecision::Missing {
         let message = "no LLM body produced; using the deterministic render";
         tracing::warn!("{message}");
         warn_event(app, &date_str, Step::RenderLlm, "llm", message);
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Validate,
+            PipelineLogLevel::Warn,
+            message,
+            None,
+        );
+    } else {
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Validate,
+            PipelineLogLevel::Done,
+            match &decision {
+                RenderDecision::Accepted(_) => "LLM body accepted",
+                RenderDecision::Deterministic => "deterministic render",
+                _ => "validated",
+            },
+            None,
+        );
     }
 
     // (l, o, p, r) deterministic render, accumulate, redact, atomic write.
     progress(app, state, &date_str, &env.host, Step::Write);
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Write,
+        PipelineLogLevel::Info,
+        format!("write {}", file_path.display()),
+        None,
+    );
     std::fs::create_dir_all(&env.dailies_dir)?;
     let inputs = CompileInputs {
         facts: facts.clone(),
@@ -1321,6 +1574,18 @@ pub async fn compile_one(
     };
     let outputs = autostand_core::pipeline::compile_file(&inputs)
         .map_err(|e| AppError::Io(format!("write {}: {e}", file_path.display())))?;
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Write,
+        PipelineLogLevel::Done,
+        format!(
+            "written — accumulated {} bullet(s)",
+            outputs.accumulated_count
+        ),
+        None,
+    );
 
     // (q) audit sidecar: patch in what the pure core could not know.
     progress(app, state, &date_str, &env.host, Step::Audit);
@@ -1335,6 +1600,25 @@ pub async fn compile_one(
         );
         if let Err(err) = enrich_sidecar(path, &overlay) {
             tracing::warn!(error = %err, "could not enrich the audit sidecar");
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::Audit,
+                PipelineLogLevel::Warn,
+                format!("audit sidecar not enriched — {err}"),
+                None,
+            );
+        } else {
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::Audit,
+                PipelineLogLevel::Done,
+                format!("audit sidecar — {}", path.display()),
+                None,
+            );
         }
     }
 
@@ -1345,6 +1629,15 @@ pub async fn compile_one(
             tracing::warn!(error = %err, "could not persist the inputs hash");
         }
     }
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Done,
+        PipelineLogLevel::Done,
+        outcome_message(&decision, rendered.as_ref()),
+        None,
+    );
 
     let result = ok_result(
         date,
@@ -1423,6 +1716,7 @@ async fn render_body(
         title: &title,
         subtitle: &subtitle,
         prev_auto: Some(prev_auto).filter(|body| !body.trim().is_empty()),
+        format: Some(&env.config.format),
     };
     render::render_llm(&inputs, &env.config).await
 }

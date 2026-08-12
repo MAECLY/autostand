@@ -17,6 +17,7 @@ import { vi } from "vitest";
 import type {
   AppConfig,
   AuditData,
+  CloudFolder,
   CompileResult,
   DataSourceConfig,
   DataSourceConfigs,
@@ -198,6 +199,14 @@ export function makeAppConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       include_self_reviews: false,
     },
     scrub: { alias_scrub: true, alias_scrub_min: 4, meta_extra: null },
+    format: {
+      preset: "classic-scrum",
+      verbosity: "standard",
+      include_pr_review: true,
+      include_confidence: false,
+      include_risks: false,
+      conventional: false,
+    },
     ...overrides,
   };
 }
@@ -310,6 +319,19 @@ export function makeAuditData(overrides: Partial<AuditData> = {}): AuditData {
     fellback: false,
     hash: "sha256:deadbeef",
     accumulated_count: 0,
+    ...overrides,
+  };
+}
+
+export function makeCloudFolder(
+  overrides: Partial<CloudFolder> = {},
+): CloudFolder {
+  return {
+    id: "icloud-drive",
+    label: "iCloud Drive",
+    path: "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs",
+    exists: true,
+    provider: "iCloud",
     ...overrides,
   };
 }
