@@ -19,7 +19,7 @@ use tauri::AppHandle;
 
 use crate::commands::types::{
     ApiKeyMode, ApiKeyStatus, AppConfig, CliDetection, LlmProviderConfig, ProviderConfig,
-    ProviderMode, TestProviderResult,
+    TestProviderResult,
 };
 use crate::error::AppError;
 
@@ -124,11 +124,17 @@ fn resolve_api_key_status(provider: &str) -> ApiKeyStatus {
 
 /// List the 5 providers with CLI/API-key status.
 #[tauri::command]
-pub async fn list_llm_providers(
-    _app_handle: AppHandle,
-) -> Result<Vec<LlmProviderConfig>, AppError> {
+pub async fn list_llm_providers(app_handle: AppHandle) -> Result<Vec<LlmProviderConfig>, AppError> {
+    let config = crate::commands::load_config(&app_handle).ok();
     let mut out = Vec::with_capacity(PROVIDERS.len());
     for def in PROVIDERS {
+        let stored = config.as_ref().map_or_else(
+            || ProviderConfig {
+                id: def.id.to_string(),
+                ..ProviderConfig::default()
+            },
+            |c| stored_entry(c, def.id),
+        );
         let cli = autostand_adapters::llm::detect_cli_binary(def.binary)
             .await
             .map(|info| CliDetection {
@@ -140,9 +146,9 @@ pub async fn list_llm_providers(
         out.push(LlmProviderConfig {
             id: def.id.to_string(),
             label: def.label.to_string(),
-            enabled: false,
-            mode: ProviderMode::CliFirst,
-            model: String::new(),
+            enabled: stored.enabled,
+            mode: stored.mode,
+            model: stored.model,
             cli,
             api_key: resolve_api_key_status(def.id),
         });
@@ -331,8 +337,9 @@ pub async fn detect_cli(
 mod tests {
     use super::{
         binary_for, env_var_for, is_local_only, probe_failure, probe_mode, stored_entry,
-        AdapterMode, AppConfig, LlmError, ProviderConfig, ProviderMode, PROVIDERS,
+        AdapterMode, AppConfig, LlmError, ProviderConfig, PROVIDERS,
     };
+    use crate::commands::types::ProviderMode;
 
     #[test]
     fn exposes_the_five_documented_providers() {
