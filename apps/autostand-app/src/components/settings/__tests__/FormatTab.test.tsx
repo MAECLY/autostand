@@ -70,7 +70,7 @@ describe("FormatTab", () => {
     fireEvent.click(screen.getByText("Mad / Sad / Glad"));
 
     await waitFor(() => {
-      expect(queryClient.isFetching(configKey)).toBe(0);
+      expect(queryClient.isFetching({ queryKey: configKey })).toBe(0);
     });
   });
 

@@ -1,13 +1,10 @@
 /**
- * Terminal-style viewer for pipeline-log lines. Shown on the dashboard below
- * `PipelineCard`. No copy button (per spec). Auto-scrolls to the bottom while
- * the pipeline is running; stops auto-scrolling if the user scrolls up.
+ * Terminal-style log body for the bottom panel. Renders the pipeline-log
+ * lines with step + level coloring and auto-scrolls while pinned. No header
+ * chrome here — the owning `TerminalPanel` provides the VSCode-style header.
  */
 
 import { useEffect, useRef } from "react";
-import { Terminal } from "lucide-react";
-
-import { Button } from "@autostand/ui/components/button";
 
 import { usePipelineLog } from "@/hooks/use-pipeline-log";
 import { cn } from "@/lib/utils";
@@ -55,63 +52,52 @@ export function TerminalViewer({ className }: TerminalViewerProps) {
     pinned.current = atBottom;
   }
 
-  if (lines.length === 0) {
-    return null;
-  }
-
   return (
-    <div
-      className={cn(
-        "rounded-lg border bg-inset/50 font-mono text-xs",
-        className,
-      )}
-    >
-      <header className="flex items-center justify-between border-b px-3 py-2">
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <Terminal className="size-3.5" />
-          <span className="font-medium">Pipeline log</span>
-          <span className="text-subtle">{lines.length} line(s)</span>
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={clear}
-          className="h-6 px-2 text-xs"
-        >
-          Clear
-        </Button>
-      </header>
+    <div className={cn("flex min-h-0 flex-col bg-inset/50", className)}>
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="max-h-80 overflow-y-auto px-3 py-2"
+        className="flex-1 overflow-y-auto px-3 py-2"
       >
-        <pre className="whitespace-pre-wrap break-words leading-relaxed">
-          {lines.map((line, i) => (
-            <div key={i} className="flex gap-2">
-              <span
-                className={cn(
-                  "shrink-0",
-                  STEP_COLOR[line.step] ?? "text-muted-foreground",
+        {lines.length === 0 ? (
+          <p className="text-subtle">No log output yet — run a compile to see pipeline steps.</p>
+        ) : (
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
+            {lines.map((line, i) => (
+              <div key={i} className="flex gap-2">
+                <span
+                  className={cn(
+                    "min-w-0 shrink-0",
+                    STEP_COLOR[line.step] ?? "text-muted-foreground",
+                  )}
+                >
+                  {line.step}
+                </span>
+                <span
+                  className={cn(
+                    "min-w-0 flex-1",
+                    LEVEL_CLASS[line.level] ?? "text-foreground",
+                  )}
+                >
+                  {line.message}
+                </span>
+                {line.detail && (
+                  <span className="min-w-0 shrink-0 text-subtle">{line.detail}</span>
                 )}
-              >
-                {line.step}
-              </span>
-              <span
-                className={cn(
-                  "flex-1",
-                  LEVEL_CLASS[line.level] ?? "text-foreground",
-                )}
-              >
-                {line.message}
-              </span>
-              {line.detail && (
-                <span className="shrink-0 text-subtle">{line.detail}</span>
-              )}
-            </div>
-          ))}
-        </pre>
+              </div>
+            ))}
+          </pre>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center justify-end border-t border-border px-2 py-1">
+        <button
+          type="button"
+          onClick={clear}
+          disabled={lines.length === 0}
+          className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+        >
+          Clear
+        </button>
       </div>
     </div>
   );

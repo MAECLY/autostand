@@ -5,6 +5,7 @@ import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { TopBar } from "@/components/layout/TopBar";
+import { TerminalPanel } from "@/components/standup/TerminalPanel";
 import { usePipelineEvents } from "@/hooks/use-pipeline-status";
 import { applyTheme, useUiStore } from "@/lib/store";
 
@@ -13,19 +14,30 @@ export const Route = createRootRoute({
 });
 
 function RootLayout() {
-  // Mounted once for the whole app: the backend event stream feeds the cache.
   usePipelineEvents();
   useAppliedTheme();
+  const panel = useUiStore((s) => s.terminalPanel);
+  const panelHeight = useUiStore((s) => s.terminalPanelHeight);
+
+  const gridRows =
+    panel === "open"
+      ? `auto minmax(0,1fr) ${panelHeight}px auto`
+      : panel === "minimized"
+        ? "auto minmax(0,1fr) 2rem auto"
+        : "auto minmax(0,1fr) auto";
 
   return (
     <div className="grid h-full grid-cols-[auto_1fr] overflow-hidden bg-background text-foreground">
       <Sidebar />
-      <div className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
+      <div
+        className="grid min-h-0 min-w-0 overflow-hidden"
+        style={{ gridTemplateRows: gridRows }}
+      >
         <TopBar />
-        {/* The only scroll container in the shell. */}
         <main className="min-h-0 overflow-y-auto">
           <Outlet />
         </main>
+        <TerminalPanel />
         <StatusBar />
       </div>
     </div>

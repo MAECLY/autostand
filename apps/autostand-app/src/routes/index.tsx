@@ -23,7 +23,6 @@ import { CompileButton } from "@/components/standup/CompileButton";
 import { ManualEditor } from "@/components/standup/ManualEditor";
 import { PipelineCard } from "@/components/standup/PipelineCard";
 import { StandupPreview } from "@/components/standup/StandupPreview";
-import { TerminalViewer } from "@/components/standup/TerminalViewer";
 import { useHostSlug } from "@/hooks/use-config";
 import { useStandupFile } from "@/hooks/use-standup";
 import { toAppError } from "@/lib/error";
@@ -142,7 +141,6 @@ function DashboardPage() {
 
         <div className="flex min-h-0 min-w-0 flex-col gap-6">
           <PipelineCard />
-          <TerminalViewer />
         </div>
       </div>
     </div>
