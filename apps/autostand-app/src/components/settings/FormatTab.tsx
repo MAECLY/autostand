@@ -34,6 +34,8 @@ import type {
   StandupPreset,
   Verbosity,
 } from "@/lib/types";
+import { StandupMarkdown } from "@/components/standup/StandupPreview";
+import { presetExample } from "./preset-examples";
 
 const PRESETS: Array<{
   id: StandupPreset;
@@ -301,14 +303,35 @@ export function FormatTab() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="rounded-md border border-border bg-inset p-4">
+          <div
+            className={`rounded-md border border-border bg-inset p-4 ${
+              isDet ? "opacity-50" : ""
+            }`}
+          >
             <div className="mb-2 flex items-center gap-2">
               <Badge variant="secondary">{previewEntry?.label ?? "—"}</Badge>
               <Badge variant="outline">{format.verbosity}</Badge>
+              {format.conventional && (
+                <Badge variant="outline">conventional</Badge>
+              )}
             </div>
-            <p className="text-sm text-muted-foreground">
+            <p className="mb-3 text-sm text-muted-foreground">
               {previewEntry?.description ?? "Select a preset to see its description."}
             </p>
+            {isDet ? (
+              <p className="text-xs italic text-muted-foreground">
+                Det renderer uses a fixed format — preset preview is for the LLM path only.
+              </p>
+            ) : (
+              <>
+                <StandupMarkdown className="text-sm">
+                  {presetExample(previewPreset, format.verbosity, format.conventional)}
+                </StandupMarkdown>
+                <p className="mt-3 border-t border-border pt-2 text-xs italic text-muted-foreground">
+                  Example — not a real standup
+                </p>
+              </>
+            )}
           </div>
           <div className="mt-4 flex justify-end">
             <Button

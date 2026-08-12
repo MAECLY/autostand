@@ -12,8 +12,6 @@ import { writeText as tauriWriteText } from "@tauri-apps/plugin-clipboard-manage
 
 import { useClipboard } from "@/hooks/use-clipboard";
 
-const originalClipboard = navigator.clipboard;
-
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
@@ -23,14 +21,6 @@ beforeEach(() => {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
   });
 });
-
-function flushPromises() {
-  return new Promise((resolve) => {
-    vi.realTimers();
-    setTimeout(resolve, 0);
-    vi.useFakeTimers();
-  });
-}
 
 describe("useClipboard", () => {
   it("uses the Tauri clipboard plugin when available", async () => {
