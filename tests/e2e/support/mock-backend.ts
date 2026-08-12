@@ -188,6 +188,8 @@ export function installMockBackend(scenario: Scenario): void {
         return state.settingsPaths;
       case "validate_paths":
         return state.pathValidations;
+      case "detect_cloud_folders":
+        return state.cloudFolders;
 
       case "store_api_key": {
         const provider = findProvider(String(args.provider));
