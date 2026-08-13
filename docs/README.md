@@ -106,6 +106,7 @@ paths inside them are relative to the `autostand-ui` root unless stated otherwis
 | [specs/pipeline.md](specs/pipeline.md) | Canonical pipeline step list + invariants. |
 | [specs/anti-backdating.md](specs/anti-backdating.md) | FORBIDDEN/COVERED/SKEW/CLAIM rules. |
 | [specs/audit.md](specs/audit.md) | Audit sidecar JSON schema + phantom detector. |
+| [specs/provider-usage.md](specs/provider-usage.md) | Subscription quota probes, normalized usage model, cache, and health-aware fallback. |
 
 ---
 
