@@ -33,11 +33,18 @@ Downloads begin only after a user action in Settings → Local AI. The command a
 
 `builtin-local` implements `LlmAdapter` as a CLI-only provider. An empty configured model uses the selection in `local-models.json`; a catalog id selects that model directly. An explicit absolute `.gguf` path is also accepted only when it already exists. A missing selection/file produces `model_not_installed` and lets the ordered provider chain continue.
 
-The adapter starts `autostand-local-llm` as a process-isolated sidecar, sends one JSONL protocol-v1 request on stdin, and reads the ready/result response from stdout. The sidecar delegates generation to a sibling `llama-cli` (or the test/development override `AUTOSTAND_LLAMA_CLI`) with bounded context, output tokens, and temperature. Each request is one-shot and both child processes receive `AUTOSTAND_RENDER=1`.
+The adapter starts `autostand-local-llm` as a process-isolated sidecar, sends one JSONL protocol-v1 request on stdin, and reads the ready/result response from stdout. The sidecar delegates generation to `llama-completion` when a newer llama.cpp installation provides it, or to the compatible bundled/pinned `llama-cli` (the test/development override remains `AUTOSTAND_LLAMA_CLI`) with bounded context, output tokens, and temperature. Each request is one-shot and both child processes receive `AUTOSTAND_RENDER=1`.
+
+`llm.local_runtime_policy` controls reusable runtime state for both Compile Now and scheduled/headless compiles:
+
+- `on_demand` (default) starts without a prompt cache and removes an earlier cache for the selected model before rendering.
+- `keep_ready` passes a model-scoped `--prompt-cache` file to `llama-cli`, allowing llama.cpp to reuse prompt/KV state across one-shot processes. It intentionally does not use `--prompt-cache-all`, so generated standup output is not retained.
+
+`keep_ready` is a disk cache, not a promise that weights stay resident in RAM or VRAM: the llama.cpp process still exits after each render. It can reduce repeated prompt evaluation for the stable prompt prefix, while model-loading time remains platform-dependent. Cache directories/files are restricted to `0700`/`0600` on Unix and deleting a model deletes its cache. A provider connection test performs a short real inference and requires non-empty output, rather than only pinging the sidecar, so it also detects a missing or broken llama.cpp runtime.
 
 Before generation, the adapter applies the catalog model's Gemma or Qwen chat template and neutralizes matching control markers in gathered user content. This prevents an activity note containing `<|im_end|>`/turn markers from breaking out of its prompt role.
 
-Runtime lookup expects `autostand-local-llm` and the platform-specific llama.cpp `llama-cli` beside the application executable. A configured `ProviderConfig.cli_path` may override only the sidecar path; the provider never falls back to an HTTP API.
+Runtime lookup expects `autostand-local-llm` plus either llama.cpp's `llama-completion` or the bundled `llama-cli` beside the application executable or on `PATH`. A configured `ProviderConfig.cli_path` may override only the sidecar path; the provider never falls back to an HTTP API.
 
 Release builds use `tauri.release.conf.json`: the release workflow compiles the Rust sidecar for the exact target, builds the pinned llama.cpp `llama-cli`, copies both into Tauri's target-suffixed `binaries/` layout, and enables them as `externalBin` entries. Ordinary source/development runs do not invoke that release-only build step; place both binaries as siblings (or put the sidecar on `PATH` and set `AUTOSTAND_LLAMA_CLI`).
 
@@ -48,8 +55,20 @@ Release builds use `tauri.release.conf.json`: the release workflow compiles the 
 - Inference uses stdin/stdout JSONL and opens no port.
 - `AUTOSTAND_RENDER=1` prevents local generation from triggering a recursive standup run.
 - stderr from llama.cpp is converted to a stable sidecar error code before provider telemetry; it is not copied into notifications or audit health fields.
-- Model weights and license acceptance remain outside the repository in the platform state directory and are never committed.
+- Model weights, prompt caches, and license acceptance remain outside the repository in the platform state directory and are never committed.
 
 ## Settings behavior
 
-The Local AI tab shows tier, quality, GGUF size, context, license, status, progress, and selection. Actions are Download/Resume, Cancel, Use model, and Delete. Gemma displays the required terms action before download. Models are never downloaded or selected automatically.
+The Local AI tab shows tier, quality, GGUF size, context, license, status,
+progress, selection, and the two lifecycle choices described above. Actions are
+Download/Resume, Cancel, Use model, and Delete. Gemma displays the required
+terms action before download. Models are never downloaded or selected
+automatically. Selecting an installed model atomically synchronizes Providers:
+`builtin-local` becomes enabled, preferred, first in failover order, and points
+to the same catalog id. Deleting that selected model disables the provider and
+advances preferred selection to the next configured provider.
+
+The Built-in Local AI provider card intentionally has no API Mode or Store key
+controls. Its **Test local AI** action performs a real short inference with the
+selected model and reports failure if either sidecar, llama.cpp runtime, model,
+or generated response is unavailable.

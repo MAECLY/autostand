@@ -52,6 +52,8 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `send_test_notification` | — | `boolean` | Send a content-free test alert; respects master opt-in and dedup policy | `notifications` |
 | `compile_standup` | `{ date?: string }` | `CompileResult` | Run full pipeline for one date (default: today) | `autostand-core::pipeline::trigger` |
 | `compile_all` | — | `CompileResult[]` | Recompile F_TODAY + F_PREV (business-day aware) | `autostand-core::pipeline::trigger_all` |
+| `preview_regeneration` | `{ date?: string }` | `RegenerationPreview` | Generate a fresh, isolated F_TODAY candidate and return current/candidate AUTO bodies without writing the live standup | `autostand-app::pipeline_runner::compile_one(Preview)` |
+| `apply_regeneration` | `{ token: string, resolution: "keep_current" \| "use_candidate" \| "merge", mergedAuto?: string }` | `RegenerationApplied` | Apply an explicit resolution after expiry/base-hash checks; replaces only this host's AUTO block | `autostand-core::fileops::set_auto` |
 | `read_standup_file` | `{ date: string }` | `StandupFileContent` | Parse `dailies/<date>.md` → AUTO blocks per host, MANUAL region, title, subtitle | `autostand-core::format::parse_file` |
 | `add_manual_item` | `{ date: string, item: string }` | `void` | Append line to MANUAL region of `<date>.md` (atomic) | `autostand-core::format::append_manual` |
 | `list_standup_dates` | `{ since: string, until: string }` | `string[]` | One `read_dir` of `dailies_dir`; `YYYY-MM-DD.md` stems in the inclusive range | `std::fs::read_dir` |
@@ -93,6 +95,8 @@ export interface AppConfig {
   scrub: ScrubConfig;
   format: StandupFormatConfig;
   notifications: NotificationConfig;
+  sync: { cloud_root: string | null; repo_enabled: boolean };
+  regeneration: { replace_immediately: boolean };
 }
 
 export interface LlmConfig {
@@ -101,6 +105,7 @@ export interface LlmConfig {
   fallback_enabled: boolean;
   provider_order: string[];
   fallback_policy: ProviderFallbackPolicy;
+  local_runtime_policy: "on_demand" | "keep_ready";
 }
 
 export interface ProviderFallbackPolicy {
@@ -259,6 +264,32 @@ export interface CompileResult {
   audit_path: string | null;
   file_path: string;
   accumulated_count: number;    // bullets re-injected from PREV
+  message: string;
+}
+
+export interface RegenerationPreview {
+  token: string;                // opaque; expires after 30 minutes
+  date: string;
+  host: string;
+  current_auto: string;
+  candidate_auto: string;
+  base_hash: string;            // exact live-file SHA-256 used for TOCTOU protection
+  expires_at: string;
+  render_used: "llm" | "det" | "llm_fallback";
+  fellback: boolean;
+  message: string;
+}
+
+export type RegenerationResolution = "keep_current" | "use_candidate" | "merge";
+
+export interface RegenerationApplied {
+  date: string;
+  host: string;
+  file_path: string;
+  resolution: RegenerationResolution;
+  auto_body: string;
+  committed: boolean;
+  pushed: boolean;
   message: string;
 }
 
@@ -448,10 +479,17 @@ export const tauriApi = {
   previewGather:       (date: string)               => invoke<GatherPreview>("preview_gather", { date }),
   getSchedulerStatus:  ()                          => invoke<SchedulerStatus>("get_scheduler_status"),
   setSchedulerSchedule:(cron: string)              => invoke<void>("set_scheduler_schedule", { cron }),
+  setSchedulerEnabled:(enabled: boolean)            => invoke<void>("set_scheduler_enabled", { enabled }),
   triggerRunNow:       ()                          => invoke<CompileResult>("trigger_run_now"),
+  previewRegeneration:(date?: string)               => invoke<RegenerationPreview>("preview_regeneration", { date }),
+  applyRegeneration:  (token, resolution, mergedAuto?) => invoke<RegenerationApplied>("apply_regeneration", { token, resolution, mergedAuto }),
   discoverRepos:       ()                          => invoke<RepoInfo[]>("discover_repos"),
   getSettingsPaths:    ()                          => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths:       ()                          => invoke<PathValidation[]>("validate_paths"),
+  detectCloudFolders:  ()                          => invoke<CloudFolder[]>("detect_cloud_folders"),
+  configureCloudSync: (rootPath: string)            => invoke<CloudSyncSelection>("configure_cloud_sync", { rootPath }),
+  getRepoSyncStatus:  ()                           => invoke<RepoSyncStatus>("get_repo_sync_status"),
+  setupRepoSync:      (repoName?: string)           => invoke<RepoSyncStatus>("setup_repo_sync", { repoName }),
   storeApiKey:         (provider: string, key: string) =>
                           invoke<void>("store_api_key", { provider, key }),
   getApiKeyStatus:     (provider: string) =>

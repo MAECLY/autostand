@@ -66,6 +66,8 @@ pub struct LlmConfig {
     pub provider_order: Vec<String>,    // explicit priority, first provider is preferred
     #[serde(default)]
     pub fallback_policy: ProviderFallbackPolicy,
+    #[serde(default)]
+    pub local_runtime_policy: LocalRuntimePolicy, // on_demand | keep_ready
 }
 
 pub struct ProviderFallbackPolicy {
@@ -165,6 +167,7 @@ export interface LlmConfig {
     retry_rate_limits: boolean;
     max_retry_after_secs: number;
   };
+  local_runtime_policy: "on_demand" | "keep_ready";
 }
 
 export interface NotificationConfig {
@@ -283,6 +286,7 @@ This prevents a render CLI from re-invoking `autostand` and recursing.
 | `llm.provider_order` | `[]` | Empty preserves legacy order: preferred provider, then stored providers |
 | `llm.fallback_policy.retry_rate_limits` | `true` | Retry one rate-limited transport when it reports a bounded reset |
 | `llm.fallback_policy.max_retry_after_secs` | `30` | Maximum reported delay to wait before advancing |
+| `llm.local_runtime_policy` | `on_demand` | Built-in local runtime lifecycle; `keep_ready` reuses a model-scoped llama.cpp prompt/KV cache for manual and scheduled renders |
 | `provider.enabled` | `true` for `claude`, `false` for others | Whether a provider appears in the rotation |
 | `provider.mode` | `CliFirst` | Try CLI first, fall back to API |
 | `provider.model` | `sonnet` (claude), blank/account default (Codex CLI), `gpt-5` (OpenAI API), `grok-4.5` (grok), `gemini-2.5-pro` (gemini), `llama3.3` (ollama) | Model identifier |
@@ -335,10 +339,10 @@ The Settings page (`routes/settings.tsx`) exposes these tabs (see `docs/tauri/04
 - Providers — connection settings, ordered failover, and provider usage.
 - Data Sources — enablement for the eight read-only activity sources.
 - Standup Format — preset and output options.
-- Paths and Sync — local paths and cloud-folder behavior.
-- Scheduler — cron and self-heal controls.
+- Paths and Sync — Cloud Sync creates `<provider-root>/autostand`; optional Repo Sync versions that same directory in a private GitHub repository when `git`, `gh`, and GitHub authentication are available.
+- Scheduler — a human schedule builder (time, days, once/hourly) with cron kept under Advanced, plus self-heal controls.
 - Notifications — OS permission, master opt-in, thresholds, and alert categories.
-- Local AI — curated model downloads and selection.
+- Local AI — curated model downloads, selection, and on-demand/reusable-cache runtime policy. Selecting a model also enables and prefers `builtin-local` in Providers.
 
 ### Native notifications
 

@@ -279,6 +279,33 @@ impl Cache {
 
 ---
 
+## Compile Now regeneration
+
+An interactive regeneration is a two-phase operation. The preview phase runs
+the same single-date gather/render/validation pipeline with an empty previous
+AUTO body, but points both dailies and audit state at an isolated temporary
+directory. It never modifies the live standup, commits, pushes, sends a
+completion notification, or runs the self-heal target.
+
+The backend returns only this host's `current_auto` and `candidate_auto`, plus an
+opaque 30-minute token and a SHA-256 of the exact live file. Apply accepts
+`keep_current`, `use_candidate`, or an edited `merge`. Before an atomic write it
+rechecks the token, expiry, host and base hash; a concurrent edit invalidates the
+preview. Apply uses `set_auto`, so other hosts and the MANUAL region remain
+verbatim. User-edited merged text cannot contain AUTO/MANUAL control markers and
+passes the normal secret-redaction boundary before write.
+
+Dashboard defaults to **Review changes first** and opens a three-part resolver:
+current AUTO, fresh candidate, and an editable combined result. The nearby
+**Replace immediately** preference still uses the isolated preview and safety
+checks, but applies the candidate automatically after it validates. Both modes
+preserve MANUAL content; scheduler compiles continue using the normal
+accumulate-never-delete pipeline rather than an unattended conflict dialog.
+
+The LLM validator rejects prompt/context dumps such as `## CONTEXT` +
+`prompts:`, raw unified diffs, or repeated internal prompt-envelope sections.
+Such output falls back deterministically instead of being filed as a standup.
+
 ## Concurrency
 
 A single-run lock prevents two compiles from racing on the same machine.
