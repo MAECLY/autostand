@@ -66,6 +66,7 @@ export function invalidateCompiled(
 ): Promise<void> {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: standupKey(date) }),
+    queryClient.invalidateQueries({ queryKey: ["standup-dates"] }),
     queryClient.invalidateQueries({ queryKey: auditSidecarsKey(date) }),
     queryClient.invalidateQueries({ queryKey: pipelineStatusKey }),
   ]).then(() => undefined);

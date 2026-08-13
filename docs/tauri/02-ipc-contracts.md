@@ -43,6 +43,7 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `compile_all` | — | `CompileResult[]` | Recompile F_TODAY + F_PREV (business-day aware) | `autostand-core::pipeline::trigger_all` |
 | `read_standup_file` | `{ date: string }` | `StandupFileContent` | Parse `dailies/<date>.md` → AUTO blocks per host, MANUAL region, title, subtitle | `autostand-core::format::parse_file` |
 | `add_manual_item` | `{ date: string, item: string }` | `void` | Append line to MANUAL region of `<date>.md` (atomic) | `autostand-core::format::append_manual` |
+| `list_standup_dates` | `{ since: string, until: string }` | `string[]` | One `read_dir` of `dailies_dir`; `YYYY-MM-DD.md` stems in the inclusive range | `std::fs::read_dir` |
 | `list_audit_sidecars` | `{ date: string }` | `AuditSidecar[]` | List `state/audit/<date>-*.json` files | `autostand-core::audit::list_for_date` |
 | `read_audit_sidecar` | `{ path: string }` | `AuditData` | Parse one sidecar JSON | `autostand-core::audit::read` |
 | `get_pipeline_status` | — | `PipelineStatus` | Current run state (idle/gathering/rendering/done/error) + last run info | `autostand-app::state::status` |
@@ -325,6 +326,8 @@ export const tauriApi = {
   compileAll:          ()                          => invoke<CompileResult[]>("compile_all"),
   readStandupFile:      (date: string)              => invoke<StandupFileContent>("read_standup_file", { date }),
   addManualItem:       (date: string, item: string) => invoke<void>("add_manual_item", { date, item }),
+  listStandupDates:    (since: string, until: string) =>
+                          invoke<string[]>("list_standup_dates", { since, until }),
   listAuditSidecars:   (date: string)               => invoke<AuditSidecar[]>("list_audit_sidecars", { date }),
   readAuditSidecar:    (path: string)               => invoke<AuditData>("read_audit_sidecar", { path }),
   getPipelineStatus:   ()                          => invoke<PipelineStatus>("get_pipeline_status"),

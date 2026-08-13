@@ -7,7 +7,7 @@
  * type-only (erased at transpile time).
  *
  * It routes `invoke` through the real `mockIPC` from `@tauri-apps/api/mocks`
- * — loaded by the preceding init script — and answers each of the 27 IPC
+ * — loaded by the preceding init script — and answers each of the 28 IPC
  * commands from a mutable state object. Commands are dispatched by their exact
  * contract names; anything unlisted rejects loudly rather than resolving
  * `undefined`, so a renamed command fails a spec instead of quietly emptying
@@ -147,6 +147,13 @@ export function installMockBackend(scenario: Scenario): void {
         // The dashboard's empty state keys off exactly this code.
         if (file === undefined) reject("not_found", `no standup file for ${date}`);
         return file;
+      }
+      case "list_standup_dates": {
+        const since = String(args.since);
+        const until = String(args.until);
+        return Object.keys(state.standups)
+          .filter((date) => date >= since && date <= until)
+          .sort();
       }
       case "add_manual_item": {
         const date = String(args.date);

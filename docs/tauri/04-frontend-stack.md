@@ -406,9 +406,9 @@ Tabbed configuration UI. Tabs:
 
 Browse past standups.
 
-- Calendar picker (left) listing dates that have a `<date>.md` file in `dailies_dir`.
-- File list (right) per selected date — one row per host (from AUTO blocks) + the MANUAL region.
-- Reader pane renders the selected file via `StandupPreview`.
+- View toggle (list / month / week / day / agenda) over `list_standup_dates(since, until)`.
+- List rail keeps the 14-day probe-style rows (host-count Badge via `read_standup_file` cache).
+- Calendar grids mark filed days; the reader pane still renders the selected file via `StandupPreview`.
 
 ### Audit (`routes/audit.tsx`)
 

@@ -1,5 +1,5 @@
 /**
- * Typed wrappers over the 27 Tauri IPC commands and the 6 backend events.
+ * Typed wrappers over the 28 Tauri IPC commands and the 6 backend events.
  *
  * This is the only module in the app allowed to import from
  * `@tauri-apps/api` — everything else goes through `tauriApi` and the
@@ -64,6 +64,8 @@ export const tauriApi = {
     invoke<StandupFileContent>("read_standup_file", { date }),
   addManualItem: (date: string, item: string) =>
     invoke<void>("add_manual_item", { date, item }),
+  listStandupDates: (since: string, until: string) =>
+    invoke<string[]>("list_standup_dates", { since, until }),
 
   listAuditSidecars: (date: string) =>
     invoke<AuditSidecar[]>("list_audit_sidecars", { date }),

@@ -88,6 +88,11 @@ const COMMANDS: CommandCase[] = [
     args: { date: "2026-08-03", item: "- paired on FIF-136" },
   },
   {
+    command: "list_standup_dates",
+    call: () => tauriApi.listStandupDates("2026-08-01", "2026-08-31"),
+    args: { since: "2026-08-01", until: "2026-08-31" },
+  },
+  {
     command: "list_audit_sidecars",
     call: () => tauriApi.listAuditSidecars("2026-08-03"),
     args: { date: "2026-08-03" },
@@ -135,10 +140,10 @@ beforeEach(() => {
 });
 
 describe("tauriApi", () => {
-  it("exposes exactly the 27 documented commands", () => {
-    expect(COMMANDS).toHaveLength(27);
-    expect(Object.keys(tauriApi)).toHaveLength(27);
-    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(27);
+  it("exposes exactly the 28 documented commands", () => {
+    expect(COMMANDS).toHaveLength(28);
+    expect(Object.keys(tauriApi)).toHaveLength(28);
+    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(28);
   });
 
   it.each(COMMANDS)(

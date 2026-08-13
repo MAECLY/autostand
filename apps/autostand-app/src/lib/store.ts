@@ -25,11 +25,16 @@ export function applyTheme(theme: Theme): void {
 
 export type TerminalPanelState = "open" | "closed" | "minimized";
 
+export type HistoryView = "list" | "month" | "week" | "day" | "agenda";
+
 export interface UiState {
   theme: Theme;
   sidebarCollapsed: boolean;
   /** Filing date the UI is focused on, `YYYY-MM-DD`. */
   selectedDate: string;
+  /** Visible History range is built around this filing date. */
+  historyAnchor: string;
+  historyView: HistoryView;
   /** VSCode-style bottom panel state for the pipeline log viewer. */
   terminalPanel: TerminalPanelState;
   /** Bottom panel height in px when open. */
@@ -38,6 +43,8 @@ export interface UiState {
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setSelectedDate: (date: string) => void;
+  setHistoryAnchor: (date: string) => void;
+  setHistoryView: (view: HistoryView) => void;
   setTerminalPanel: (state: TerminalPanelState) => void;
   setTerminalPanelHeight: (height: number) => void;
 }
@@ -48,6 +55,8 @@ export const useUiStore = create<UiState>()((set) => ({
   theme: "system",
   sidebarCollapsed: false,
   selectedDate: todayIso(),
+  historyAnchor: todayIso(),
+  historyView: "list",
   terminalPanel: "closed",
   terminalPanelHeight: DEFAULT_PANEL_HEIGHT,
   setTheme: (theme) => {
@@ -58,6 +67,8 @@ export const useUiStore = create<UiState>()((set) => ({
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
   setSelectedDate: (selectedDate) => set({ selectedDate }),
+  setHistoryAnchor: (historyAnchor) => set({ historyAnchor }),
+  setHistoryView: (historyView) => set({ historyView }),
   setTerminalPanel: (terminalPanel) => set({ terminalPanel }),
   setTerminalPanelHeight: (terminalPanelHeight) => set({ terminalPanelHeight }),
 }));

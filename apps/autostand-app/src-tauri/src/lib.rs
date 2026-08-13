@@ -65,6 +65,7 @@ pub fn run() {
             commands::pipeline::set_scheduler_schedule,
             commands::standup::read_standup_file,
             commands::standup::add_manual_item,
+            commands::standup::list_standup_dates,
             commands::standup::list_audit_sidecars,
             commands::standup::read_audit_sidecar,
             commands::sync::detect_cloud_folders,
