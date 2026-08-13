@@ -82,7 +82,10 @@ pub fn is_render_prompt_echo(raw: &str) -> bool {
         }
     }
     for prefix in SCAFFOLDING_PREFIXES {
-        if lower.lines().any(|line| line.trim_start().starts_with(prefix)) {
+        if lower
+            .lines()
+            .any(|line| line.trim_start().starts_with(prefix))
+        {
             hits += 1;
         }
     }

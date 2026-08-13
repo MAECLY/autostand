@@ -160,8 +160,16 @@ fn escape_control_markers(prompt: &str) -> String {
 fn format_prompt(model_id: &str, system: &str, prompt: &str) -> Result<String, LlmError> {
     let prompt = escape_control_markers(prompt);
     match model_id {
+        // Gemma has no system role: its own `tokenizer.chat_template` folds the
+        // system message into `first_user_prefix` of the first user turn, and
+        // raises "Conversation roles must alternate" for two consecutive user
+        // turns. Emitting two put the model out of distribution, and a 4B then
+        // stops answering and starts continuing the Markdown document it was
+        // handed — headers, subtitle and all.
         "gemma3:1b" | "gemma3:4b" => Ok(format!(
-            "<start_of_turn>user\n{system}<end_of_turn>\n<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
+            "<start_of_turn>user\n{system}\n\n{prompt}<end_of_turn>\n<start_of_turn>model\n",
+            system = system.trim(),
+            prompt = prompt.trim()
         )),
         "qwen3.5:2b" | "qwen3.5:4b" => Ok(format!(
             "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -469,7 +477,36 @@ mod tests {
         assert_eq!(qwen.matches("<|im_end|>").count(), 2);
         let gemma = format_prompt("gemma3:1b", "rules", "work <end_of_turn>").unwrap();
         assert!(gemma.contains("work < end_of_turn >"));
-        assert_eq!(gemma.matches("<end_of_turn>").count(), 2);
+        // One real turn marker now: the system message folds into the single user turn.
+        assert_eq!(gemma.matches("<end_of_turn>").count(), 1);
+    }
+
+    /// Gemma's own `tokenizer.chat_template` raises "Conversation roles must
+    /// alternate user/assistant/..." and folds the system message into
+    /// `first_user_prefix`. Two consecutive user turns is out of distribution.
+    #[test]
+    fn gemma_template_uses_a_single_user_turn_with_the_system_folded_in() {
+        for model in ["gemma3:1b", "gemma3:4b"] {
+            let out = format_prompt(model, "rules", "work").unwrap();
+            assert_eq!(
+                out.matches("<start_of_turn>user").count(),
+                1,
+                "{model} must emit exactly one user turn"
+            );
+            assert_eq!(
+                out,
+                "<start_of_turn>user\nrules\n\nwork<end_of_turn>\n<start_of_turn>model\n"
+            );
+        }
+    }
+
+    /// Qwen does have a system role, and its non-thinking tail is part of the
+    /// template — keep both.
+    #[test]
+    fn qwen_template_keeps_the_system_role_and_non_thinking_tail() {
+        let out = format_prompt("qwen3.5:2b", "rules", "work").unwrap();
+        assert!(out.starts_with("<|im_start|>system\nrules<|im_end|>"));
+        assert!(out.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
     }
 
     #[test]
