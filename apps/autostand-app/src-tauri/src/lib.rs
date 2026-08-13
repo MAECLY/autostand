@@ -11,6 +11,7 @@ pub mod error;
 pub mod format_presets;
 pub mod gather;
 pub mod git_ops;
+pub mod notifications;
 pub mod pipeline_runner;
 pub mod render;
 pub mod scheduler_runtime;
@@ -36,6 +37,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(state::AppState::new())
         // The in-process scheduler must start with the app, not on first IPC
         // call: nothing in the UI is required for a cron boundary to come due.
@@ -52,10 +54,18 @@ pub fn run() {
             commands::data_sources::toggle_data_source,
             commands::llm::list_llm_providers,
             commands::llm::test_llm_provider,
+            commands::llm::get_provider_health,
+            commands::llm::refresh_provider_health,
             commands::llm::store_api_key,
             commands::llm::get_api_key_status,
             commands::llm::detect_cli,
             commands::llm::list_provider_models,
+            commands::local_models::list_local_models,
+            commands::local_models::download_local_model,
+            commands::local_models::cancel_local_model_download,
+            commands::local_models::delete_local_model,
+            commands::local_models::select_local_model,
+            commands::local_models::accept_local_model_terms,
             commands::pipeline::compile_standup,
             commands::pipeline::compile_all,
             commands::pipeline::trigger_run_now,
@@ -72,6 +82,9 @@ pub fn run() {
             commands::repos::discover_repos,
             commands::settings::get_settings_paths,
             commands::settings::validate_paths,
+            notifications::get_notification_status,
+            notifications::request_notification_permission,
+            notifications::send_test_notification,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -47,7 +47,7 @@ use crate::commands::types::{
 };
 use crate::error::AppError;
 use crate::gather::{self, Gathered};
-use crate::render::{self, PromptInputs, RenderedBody};
+use crate::render::{self, LlmRenderOutcome, PromptInputs, ProviderAttempt, RenderedBody};
 use crate::state::{AppState, PipelineStateKind};
 
 /// Date format used by every `date` argument and DTO field in the IPC contract.
@@ -441,11 +441,10 @@ impl RenderDecision {
 ///
 /// Pure. `rendered` is whatever `render::render_llm` returned (`None` when the
 /// LLM was unavailable or every attempt failed) and validation is the pure
-/// `render::validate_render`. A rejected or missing body is never an error: per
-/// `docs/specs/pipeline.md` § Error recovery the compile continues with the
-/// deterministic body and reports `fellback = true`. That holds for
-/// `render_mode = Llm` too — a configured preference must not be able to leave
-/// a working day without a standup.
+/// `render::validate_render`. This pure decision keeps representing a missing
+/// candidate as deterministic fallback; [`compile_one`] converts that decision
+/// into an explicit error when the user selected strict `render_mode = Llm`.
+/// `Auto` continues with the deterministic body and reports `fellback = true`.
 pub fn decide_render(
     mode: RenderMode,
     rendered: Option<&RenderedBody>,
@@ -480,6 +479,22 @@ pub fn outcome_message(decision: &RenderDecision, rendered: Option<&RenderedBody
             format!("llm render rejected ({message}); deterministic fallback")
         }
     }
+}
+
+/// `Llm` is a strict user request: unlike `Auto`, it must surface exhaustion or
+/// validation failure instead of silently reporting a deterministic success.
+fn required_llm_failure(
+    mode: RenderMode,
+    decision: &RenderDecision,
+    outcome: &LlmRenderOutcome,
+) -> Option<String> {
+    if mode != RenderMode::Llm || matches!(decision, RenderDecision::Accepted(_)) {
+        return None;
+    }
+    Some(match decision {
+        RenderDecision::Rejected { code, .. } => format!("LLM render rejected ({code})"),
+        _ => outcome.failure_summary(),
+    })
 }
 
 // ── title + subtitle ──────────────────────────────────────────────────────
@@ -811,6 +826,7 @@ pub fn audit_patch(
     gathered: &Gathered,
     decision: &RenderDecision,
     rendered: Option<&RenderedBody>,
+    provider_attempts: &[ProviderAttempt],
     hash: &str,
 ) -> serde_json::Value {
     let render_used = match decision.render_used() {
@@ -845,6 +861,7 @@ pub fn audit_patch(
         "fellback": decision.fellback(),
         "provider": rendered.map(|body| body.provider.clone()),
         "model": rendered.map(|body| body.model.clone()),
+        "provider_attempts": provider_attempts,
         "hash": hash,
         "gather_failures": failures,
         "validation_failure": validation,
@@ -1083,7 +1100,24 @@ pub async fn trigger(
     source: TriggerSource,
     only_date: Option<NaiveDate>,
 ) -> Result<Vec<CompileResult>, AppError> {
-    run(Some(app), state, source, only_date).await
+    let outcome = run(Some(app), state, source, only_date).await;
+    if let Ok(config) = crate::commands::load_config(app) {
+        for notification in crate::commands::llm::scheduled_low_usage_notifications(&config).await {
+            if let Err(err) =
+                crate::notifications::notify_gui(app, &config.notifications, &notification)
+            {
+                tracing::warn!(error = %err, "could not deliver low-usage notification");
+            }
+        }
+        if let Some(notification) = crate::notifications::compile_notification(outcome.as_deref()) {
+            if let Err(err) =
+                crate::notifications::notify_gui(app, &config.notifications, &notification)
+            {
+                tracing::warn!(error = %err, "could not deliver system notification");
+            }
+        }
+    }
+    outcome
 }
 
 /// [`trigger`] with no window: the `autostand-app --compile` entry point.
@@ -1097,7 +1131,24 @@ pub async fn trigger_headless(
     source: TriggerSource,
     only_date: Option<NaiveDate>,
 ) -> Result<Vec<CompileResult>, AppError> {
-    run(None, state, source, only_date).await
+    let outcome = run(None, state, source, only_date).await;
+    if let Ok(config) = load_config_from_disk(dirs::data_dir().as_deref()) {
+        for notification in crate::commands::llm::scheduled_low_usage_notifications(&config).await {
+            if let Err(err) =
+                crate::notifications::notify_headless(&config.notifications, &notification)
+            {
+                tracing::warn!(error = %err, "could not deliver headless low-usage notification");
+            }
+        }
+        if let Some(notification) = crate::notifications::compile_notification(outcome.as_deref()) {
+            if let Err(err) =
+                crate::notifications::notify_headless(&config.notifications, &notification)
+            {
+                tracing::warn!(error = %err, "could not deliver headless system notification");
+            }
+        }
+    }
+    outcome
 }
 
 /// The run itself, shared by both front ends.
@@ -1279,9 +1330,9 @@ fn self_heal_gate(
 
 /// Step 3 (a…s) of `docs/specs/pipeline.md`: compile one filing date.
 ///
-/// Returns `Err` only when the file could not be written — every other failure
-/// (a dead data source, an absent LLM, a rejected render) degrades to the
-/// deterministic body and still produces a `status: "ok"` result.
+/// Returns `Err` when the file could not be written or strict `render_mode = Llm`
+/// exhausted/rejected every provider. In `Auto`, dead providers and rejected
+/// renders degrade to the deterministic body and produce `status: "ok"`.
 // The step list *is* the function: splitting it would hide the ordering the
 // spec pins. Each step's decision already lives in its own tested free function.
 #[allow(clippy::too_many_lines)]
@@ -1460,7 +1511,7 @@ pub async fn compile_one(
             Some(format!("provider={provider}")),
         );
     }
-    let rendered = render_body(
+    let render_outcome = render_body(
         env,
         &facts,
         &gathered,
@@ -1468,6 +1519,8 @@ pub async fn compile_one(
         &window,
         date,
         &prev_auto,
+        &prov.range_tickets,
+        &prov.forbidden_tickets,
         |message| {
             emit_log(
                 app,
@@ -1481,6 +1534,25 @@ pub async fn compile_one(
         },
     )
     .await;
+    crate::commands::llm::record_provider_attempts(&render_outcome.attempts);
+    for notification in crate::notifications::provider_notifications(
+        &render_outcome.attempts,
+        render_outcome
+            .rendered
+            .as_ref()
+            .map(|body| body.provider.as_str()),
+    ) {
+        let delivered = match app {
+            Some(app) => {
+                crate::notifications::notify_gui(app, &env.config.notifications, &notification)
+            }
+            None => crate::notifications::notify_headless(&env.config.notifications, &notification),
+        };
+        if let Err(err) = delivered {
+            tracing::warn!(error = %err, "could not deliver provider notification");
+        }
+    }
+    let rendered = render_outcome.rendered.clone();
     match &rendered {
         Some(body) => {
             emit_log(
@@ -1517,6 +1589,19 @@ pub async fn compile_one(
         &prov.range_tickets,
         &prov.forbidden_tickets,
     );
+    if let Some(message) = required_llm_failure(env.config.render_mode, &decision, &render_outcome)
+    {
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Validate,
+            PipelineLogLevel::Error,
+            &message,
+            Some("render_mode=Llm".to_string()),
+        );
+        return Err(AppError::Llm(message));
+    }
     if let RenderDecision::Rejected { code, message } = &decision {
         tracing::warn!(code, "{message}");
         warn_event(app, &date_str, Step::RenderLlm, "llm", message);
@@ -1616,6 +1701,7 @@ pub async fn compile_one(
             &gathered,
             &decision,
             rendered.as_ref(),
+            &render_outcome.attempts,
             &hash,
         );
         if let Err(err) = enrich_sidecar(path, &overlay) {
@@ -1691,10 +1777,12 @@ async fn render_body(
     window: &Window,
     date: NaiveDate,
     prev_auto: &str,
+    range_tickets: &[String],
+    forbidden_tickets: &[String],
     log: impl FnMut(&str),
-) -> Option<RenderedBody> {
+) -> LlmRenderOutcome {
     if env.config.render_mode == RenderMode::Det {
-        return None;
+        return LlmRenderOutcome::default();
     }
     let meta_extra = env.config.scrub.meta_extra.as_deref();
     let facts_clean = redact::redact(facts);
@@ -1740,7 +1828,14 @@ async fn render_body(
         prev_auto: Some(prev_auto).filter(|body| !body.trim().is_empty()),
         format: Some(&env.config.format),
     };
-    render::render_llm_logged(&inputs, &env.config, log).await
+    render::render_llm_outcome_validated_logged(
+        &inputs,
+        &env.config,
+        range_tickets,
+        forbidden_tickets,
+        log,
+    )
+    .await
 }
 
 /// Gather-only debug path (`preview_gather`): steps (a), (b), (c), (e) and (f).
@@ -1791,8 +1886,8 @@ mod tests {
         audit_patch, base_result, config_from_store_bytes, config_store_path, decide_render,
         error_result, git_root_for, inputs_hash, is_regression, last_trigger,
         load_config_from_disk, ok_result, outcome_message, parse_note_refs, parse_repo_facts,
-        should_skip_unchanged, sidecar_repo_count, skip_result, split_ticket_days, subtitle_for,
-        targets, title_for, RenderDecision, Step, STEPS,
+        required_llm_failure, should_skip_unchanged, sidecar_repo_count, skip_result,
+        split_ticket_days, subtitle_for, targets, title_for, RenderDecision, Step, STEPS,
     };
     use crate::commands::types::{
         AppConfig, CompileStatus, LastTrigger, RenderMode, RenderUsed, SchedulerConfig,
@@ -2063,12 +2158,26 @@ mod tests {
     }
 
     #[test]
-    fn llm_mode_also_falls_back_rather_than_writing_nothing() {
-        // A configured preference must not leave a working day without a standup.
+    fn llm_mode_surfaces_missing_provider_while_auto_can_fallback() {
         let decision = decide_render(RenderMode::Llm, None, &tickets(), &[]);
         assert_eq!(decision.core_mode(), CoreMode::Det);
         assert_eq!(decision.render_used(), RenderUsed::LlmFallback);
         assert!(decision.fellback());
+        let failure = required_llm_failure(
+            RenderMode::Llm,
+            &decision,
+            &crate::render::LlmRenderOutcome::default(),
+        );
+        assert_eq!(
+            failure.as_deref(),
+            Some("no enabled LLM provider was available")
+        );
+        assert!(required_llm_failure(
+            RenderMode::Auto,
+            &decision,
+            &crate::render::LlmRenderOutcome::default()
+        )
+        .is_none());
     }
 
     #[test]
@@ -2488,6 +2597,7 @@ mod tests {
             &gathered,
             &RenderDecision::Accepted(GOOD_BODY.into()),
             Some(&body),
+            &[],
             "deadbeef",
         );
         // `start` / `end` are core's key names — commands::standup reads them.
@@ -2518,6 +2628,7 @@ mod tests {
                 message: "render invents ticket FIF-999".into(),
             },
             None,
+            &[],
             "cafe",
         );
         assert_eq!(patch["render_used"], serde_json::json!("llm_fallback"));

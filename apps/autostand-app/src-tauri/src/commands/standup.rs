@@ -301,6 +301,11 @@ fn audit_data_from_json(value: &Value) -> AuditData {
         ),
         provider: opt_str_field(value, "provider"),
         model: opt_str_field(value, "model"),
+        provider_attempts: value
+            .get("provider_attempts")
+            .cloned()
+            .and_then(|attempts| serde_json::from_value(attempts).ok())
+            .unwrap_or_default(),
         fellback: value
             .get("fellback")
             .and_then(Value::as_bool)

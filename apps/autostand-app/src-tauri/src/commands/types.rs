@@ -16,6 +16,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::notifications::NotificationConfig;
+
 // ── AppConfig + nested config ─────────────────────────────────────────────
 
 /// Full app configuration persisted to the Tauri Store.
@@ -48,6 +50,9 @@ pub struct AppConfig {
     /// Standup format configuration (LLM-only; ignored when `render_mode = Det`).
     #[serde(default)]
     pub format: StandupFormatConfig,
+    /// Native system-notification preferences.
+    #[serde(default)]
+    pub notifications: NotificationConfig,
 }
 
 /// Render mode preference.
@@ -66,12 +71,65 @@ pub enum RenderMode {
 }
 
 /// LLM configuration block.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     /// Preferred provider id (`claude` | `ollama` | `openai` | `gemini` | `grok`).
     pub preferred_provider: String,
     /// Per-provider configuration.
     pub providers: Vec<ProviderConfig>,
+    /// Whether an unavailable provider should yield to the next configured provider.
+    #[serde(default = "default_fallback_enabled")]
+    pub fallback_enabled: bool,
+    /// Explicit provider priority. An empty list preserves the legacy preferred/provider order.
+    #[serde(default)]
+    pub provider_order: Vec<String>,
+    /// Bounded retry behaviour before advancing to the next provider.
+    #[serde(default)]
+    pub fallback_policy: ProviderFallbackPolicy,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            preferred_provider: String::new(),
+            providers: Vec::new(),
+            fallback_enabled: true,
+            provider_order: Vec::new(),
+            fallback_policy: ProviderFallbackPolicy::default(),
+        }
+    }
+}
+
+const fn default_fallback_enabled() -> bool {
+    true
+}
+
+/// Retry behaviour within one provider before failover advances the chain.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderFallbackPolicy {
+    /// Retry one provider attempt when it returns a rate-limit reset.
+    #[serde(default = "default_retry_rate_limits")]
+    pub retry_rate_limits: bool,
+    /// Maximum reset delay Autostand waits before advancing to the next provider.
+    #[serde(default = "default_max_retry_after_secs")]
+    pub max_retry_after_secs: u64,
+}
+
+impl Default for ProviderFallbackPolicy {
+    fn default() -> Self {
+        Self {
+            retry_rate_limits: true,
+            max_retry_after_secs: default_max_retry_after_secs(),
+        }
+    }
+}
+
+const fn default_retry_rate_limits() -> bool {
+    true
+}
+
+const fn default_max_retry_after_secs() -> u64 {
+    30
 }
 
 /// Per-provider configuration stored in `AppConfig.llm.providers`.
@@ -378,6 +436,66 @@ pub struct TestProviderResult {
     pub latency_ms: u64,
 }
 
+/// Source of a provider usage reading. Values are intentionally explicit so the
+/// UI never presents an inferred failure as an authoritative quota percentage.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSource {
+    /// Structured data emitted by the provider's supported client protocol.
+    ProviderReported,
+    /// Standard rate-limit headers from an API response.
+    ResponseHeaders,
+    /// A separately authenticated organisation/management API.
+    ManagementApi,
+    /// Availability inferred from a safe, classified provider failure.
+    FailureInferred,
+    /// No supported programmatic usage signal is available.
+    #[default]
+    Unknown,
+}
+
+/// Current provider availability, independent of whether exact quota is known.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAvailability {
+    Available,
+    Low,
+    Exhausted,
+    RateLimited,
+    AuthRequired,
+    ModelUnavailable,
+    Unavailable,
+    #[default]
+    Unknown,
+}
+
+/// One provider-defined quota window such as Codex's five-hour or weekly limit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageWindow {
+    /// Stable provider-defined label (`five_hour`, `weekly`, ...).
+    pub id: String,
+    /// Percentage already consumed, when the provider reports it.
+    pub used_percent: Option<f64>,
+    /// Percentage remaining, when the provider reports it or it can be derived exactly.
+    pub remaining_percent: Option<f64>,
+    /// RFC 3339 reset timestamp, when supplied by the provider.
+    pub resets_at: Option<String>,
+}
+
+/// Secret-free provider health returned by Settings IPC commands.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderHealth {
+    pub provider: String,
+    pub availability: ProviderAvailability,
+    pub source: UsageSource,
+    #[serde(default)]
+    pub windows: Vec<UsageWindow>,
+    /// Stable reason code; never raw stderr/API bodies.
+    pub reason: Option<String>,
+    /// RFC 3339 observation timestamp.
+    pub checked_at: String,
+}
+
 // ── Compile + pipeline ───────────────────────────────────────────────────
 
 /// Result of a compile run.
@@ -520,6 +638,9 @@ pub struct AuditData {
     pub provider: Option<String>,
     /// Model id used, if any.
     pub model: Option<String>,
+    /// Secret-free provider and transport attempts made during this render.
+    #[serde(default)]
+    pub provider_attempts: Vec<crate::render::ProviderAttempt>,
     /// Whether the run fell back to deterministic.
     pub fellback: bool,
     /// Audit hash.
@@ -1013,6 +1134,7 @@ mod tests {
                 "host_slug_override",
                 "jira_base",
                 "llm",
+                "notifications",
                 "render_mode",
                 "review",
                 "scheduler",

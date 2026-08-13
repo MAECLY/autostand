@@ -9,8 +9,9 @@
 //!
 //! Three invariants shape the code:
 //!
-//! 1. **A failed LLM never fails the compile.** Every error path in [`render_llm`] ends in
-//!    `None`, and the caller falls back to the deterministic renderer (`render_det`).
+//! 1. **Fallback is explicit.** [`render_llm`] preserves its `Option` compatibility API,
+//!    while [`render_llm_outcome_logged`] retains every safe failure so `Auto` can fall back
+//!    deterministically and strict `Llm` mode can report an actionable error.
 //! 2. **Anti-recursion.** A rendering CLI session must not be picked up as a data source on
 //!    the next run, so every CLI subprocess carries `AUTOSTAND_RENDER=1` (set by
 //!    `autostand_adapters::llm::helpers::run_cli`), and [`render_llm`] refuses to render at
@@ -22,6 +23,7 @@
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use autostand_adapters::llm::helpers;
 use autostand_adapters::llm::traits::{
@@ -31,7 +33,8 @@ use autostand_adapters::llm::traits::{
 use autostand_core::provenance::extract_tickets;
 
 use crate::commands::types::{
-    AppConfig, ProviderConfig, ProviderMode, RenderMode, StandupFormatConfig,
+    AppConfig, ProviderConfig, ProviderFallbackPolicy, ProviderMode, RenderMode,
+    StandupFormatConfig,
 };
 
 // ── Canonical prompt ──────────────────────────────────────────────────────
@@ -55,10 +58,9 @@ const RENDER_PROMPT: &str = r#"You are a daily standup compiler. Given structure
 
 ## Rules
 - Past tense, concrete, English.
-- One section per repo: `**<repo-name> — [TICKET](<jira_base>/TICKET) — <title>**` followed by `- ` bullets.
-- Jira key is the only link. Repo name is plain text.
-- Non-repo work goes under `**General — <topic>**` or `**<Spike name>**`.
-- Trailing `**PR Review**` section (one bullet per PR reviewed): `repo #num — "title" (by author) — State`. Omit if empty.
+- The OUTPUT block below is the sole authority for headings and section order. Do not use a legacy repo-section layout when a preset is present.
+- Place repo names, Jira keys, titles and PR-review facts inside the required preset bullets; the Jira key is the only link.
+- When a required forward-looking or evaluative section has no supported fact, write exactly `- None`; never ask a question, explain a conflict, or refuse the format.
 - NEVER claim work was committed/pushed/merged if it's only in notes.
 - NEVER include secrets, API keys, tokens, passwords.
 - NEVER attribute to AI. Write as if the human did the work.
@@ -245,16 +247,17 @@ fn default_model_for(provider_id: &str) -> &'static str {
         "gemini" => "gemini-2.5-flash",
         "grok" => "grok-4.5",
         // Codex accounts do not all expose the same model ids. Leaving OpenAI
-        // (and unknown providers) blank lets the CLI use the compatible model
-        // selected by the user's Codex configuration. The HTTP adapter owns
-        // its separate API default.
+        // blank lets the CLI use the compatible model selected by the user's
+        // Codex configuration. Built-in local uses the same blank value to
+        // resolve the model-manager selection; unknown providers stay blank.
+        // The HTTP adapter owns its separate API default.
         _ => "",
     }
 }
 
 /// Default timeout for a provider when config leaves `timeout_secs` at 0.
 fn default_timeout_for(provider_id: &str) -> u64 {
-    if provider_id == "ollama" {
+    if matches!(provider_id, "ollama" | "builtin-local") {
         OLLAMA_TIMEOUT_SECS
     } else {
         DEFAULT_TIMEOUT_SECS
@@ -291,6 +294,7 @@ fn parse_mode(raw: &str) -> Option<AdapterMode> {
 /// the Settings UI stores `""` for "not chosen yet", and sending that straight to a CLI's
 /// `--model` flag would fail every render.
 pub fn provider_config(cfg: &ProviderConfig, api_key: Option<String>) -> AdapterConfig {
+    let is_builtin_local = cfg.id == "builtin-local";
     let model = if cfg.model.trim().is_empty() {
         default_model_for(&cfg.id).to_string()
     } else {
@@ -302,7 +306,11 @@ pub fn provider_config(cfg: &ProviderConfig, api_key: Option<String>) -> Adapter
         cfg.timeout_secs
     };
     AdapterConfig {
-        mode: adapter_mode(cfg.mode),
+        mode: if is_builtin_local {
+            AdapterMode::CliOnly
+        } else {
+            adapter_mode(cfg.mode)
+        },
         model,
         cli_path: cfg
             .cli_path
@@ -310,26 +318,58 @@ pub fn provider_config(cfg: &ProviderConfig, api_key: Option<String>) -> Adapter
             .map(|p| p.trim())
             .filter(|p| !p.is_empty())
             .map(PathBuf::from),
-        api_key,
-        api_base_url: cfg
-            .api_base_url
-            .as_ref()
-            .map(|u| u.trim().to_string())
-            .filter(|u| !u.is_empty()),
+        api_key: if is_builtin_local { None } else { api_key },
+        api_base_url: if is_builtin_local {
+            None
+        } else {
+            cfg.api_base_url
+                .as_ref()
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty())
+        },
         timeout_secs,
     }
 }
 
-/// Resolve the provider id from an env override and the config, in that precedence.
+/// Resolve the provider failover chain, preserving legacy configurations.
 ///
-/// Returns an empty string when neither is set — the caller treats that as "no LLM
-/// configured" and renders deterministically.
-fn resolve_provider_id(config: &AppConfig, env_override: Option<&str>) -> String {
-    env_override
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| config.llm.preferred_provider.trim())
-        .to_string()
+/// An environment override is an explicit single-provider request and therefore
+/// never silently fans out to configured alternatives. Without it, an explicit
+/// `provider_order` wins; legacy configs start with `preferred_provider` and
+/// then append configured providers in storage order. Duplicate/blank ids are
+/// removed without reordering the remaining entries.
+fn provider_chain(config: &AppConfig, env_override: Option<&str>) -> Vec<String> {
+    if let Some(provider) = env_override.map(str::trim).filter(|id| !id.is_empty()) {
+        return vec![provider.to_string()];
+    }
+
+    let mut candidates = if config.llm.provider_order.is_empty() {
+        let mut legacy = Vec::with_capacity(config.llm.providers.len() + 1);
+        legacy.push(config.llm.preferred_provider.clone());
+        legacy.extend(
+            config
+                .llm
+                .providers
+                .iter()
+                .map(|provider| provider.id.clone()),
+        );
+        legacy
+    } else {
+        config.llm.provider_order.clone()
+    };
+    candidates.retain(|id| !id.trim().is_empty());
+
+    let mut ordered = Vec::with_capacity(candidates.len());
+    for id in candidates {
+        let id = id.trim().to_string();
+        if !ordered.contains(&id) {
+            ordered.push(id);
+        }
+    }
+    if !config.llm.fallback_enabled {
+        ordered.truncate(1);
+    }
+    ordered
 }
 
 /// Synthesize the provider entry for `provider_id`, defaulting when config has none.
@@ -397,8 +437,12 @@ fn error_kind(err: &LlmError) -> &'static str {
         LlmError::Timeout { .. } => "timeout",
         LlmError::CliNotFound { .. } => "cli_not_found",
         LlmError::CliExitError { stderr, .. } => safe_provider_error(stderr, "cli_exit_error"),
+        LlmError::ApiError { status: 402, body } => safe_provider_error(body, "payment_required"),
+        LlmError::ApiError {
+            status: 401 | 403, ..
+        }
+        | LlmError::AuthError => "auth_error",
         LlmError::ApiError { body, .. } => safe_provider_error(body, "api_error"),
-        LlmError::AuthError => "auth_error",
         LlmError::ParseError { .. } => "parse_error",
         LlmError::RateLimit { .. } => "rate_limit",
     }
@@ -411,7 +455,10 @@ fn error_kind(err: &LlmError) -> &'static str {
 /// of several common failures observed in the supported CLIs.
 fn safe_provider_error(message: &str, fallback: &'static str) -> &'static str {
     let lower = message.to_ascii_lowercase();
-    if lower.contains("usage balance exhausted") {
+    if lower.contains("usage balance exhausted")
+        || lower.contains("quota exhausted")
+        || lower.contains("quota exceeded")
+    {
         "usage_balance_exhausted"
     } else if lower.contains("payment required") {
         "payment_required"
@@ -419,8 +466,13 @@ fn safe_provider_error(message: &str, fallback: &'static str) -> &'static str {
         "not_logged_in"
     } else if lower.contains("model is not supported")
         || (lower.contains("model") && lower.contains("not supported"))
+        || lower.contains("unsupported_model")
     {
         "unsupported_model"
+    } else if lower.contains("model_not_installed") || lower.contains("invalid_model") {
+        "model_not_installed"
+    } else if lower.contains("runtime_missing") {
+        "runtime_missing"
     } else {
         fallback
     }
@@ -439,6 +491,71 @@ pub struct RenderedBody {
     pub model: String,
     /// True when the HTTP API produced it, false when a local CLI did.
     pub used_api: bool,
+}
+
+/// Transport used by one provider attempt.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAttemptChannel {
+    Cli,
+    Api,
+}
+
+/// Result of one secret-free provider/transport attempt.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAttemptStatus {
+    Succeeded,
+    Failed,
+    Empty,
+    Skipped,
+}
+
+/// Structured render telemetry safe for logs, events and audit sidecars.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ProviderAttempt {
+    pub provider: String,
+    pub channel: Option<ProviderAttemptChannel>,
+    pub model: String,
+    pub status: ProviderAttemptStatus,
+    /// Stable classifier only; raw provider output must never be stored here.
+    pub reason: Option<String>,
+    pub latency_ms: Option<u64>,
+}
+
+/// Detailed result of a provider chain. The compatibility APIs project this to
+/// `Option<RenderedBody>`, while the pipeline keeps the attempts for auditing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LlmRenderOutcome {
+    pub rendered: Option<RenderedBody>,
+    pub attempts: Vec<ProviderAttempt>,
+}
+
+impl LlmRenderOutcome {
+    /// A stable, secret-free summary suitable for `AppError::Llm`.
+    pub fn failure_summary(&self) -> String {
+        let failures: Vec<String> = self
+            .attempts
+            .iter()
+            .filter_map(|attempt| {
+                attempt
+                    .reason
+                    .as_ref()
+                    .map(|reason| format!("{}:{reason}", attempt.provider))
+            })
+            .collect();
+        if failures.is_empty() {
+            "no enabled LLM provider was available".to_string()
+        } else {
+            format!("all LLM providers failed ({})", failures.join(", "))
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BackendRenderOutcome {
+    output: Option<RenderOutput>,
+    attempts: Vec<ProviderAttempt>,
 }
 
 /// The slice of `LlmAdapter` the orchestrator actually needs.
@@ -484,17 +601,16 @@ impl RenderBackend for AdapterBackend<'_> {
     }
 }
 
-/// Run the attempt plan for `config.mode` against `backend`, returning the first success.
-///
-/// Never returns an error: an exhausted plan is `None`, and the caller falls back to the
-/// deterministic renderer.
+/// Run one provider's transport plan, returning its structured attempts.
 async fn render_via_backend<B: RenderBackend>(
     backend: &B,
+    provider: &str,
     prompt: &str,
     system: &str,
     config: &AdapterConfig,
+    policy: ProviderFallbackPolicy,
     mut log: impl FnMut(&str),
-) -> Option<RenderOutput> {
+) -> BackendRenderOutcome {
     // Only `ApiFallback` branches on CLI availability; probing for the other modes would
     // spawn a pointless `--version` subprocess on every render.
     let cli_available = if config.mode == AdapterMode::ApiFallback {
@@ -503,10 +619,15 @@ async fn render_via_backend<B: RenderBackend>(
         false
     };
 
+    let mut attempts = Vec::new();
     for &step in attempt_plan(config.mode, cli_available) {
         let channel = match step {
             AdapterMode::CliOnly | AdapterMode::CliFirst => "CLI",
             AdapterMode::ApiOnly | AdapterMode::ApiFallback => "API",
+        };
+        let channel_kind = match step {
+            AdapterMode::CliOnly | AdapterMode::CliFirst => ProviderAttemptChannel::Cli,
+            AdapterMode::ApiOnly | AdapterMode::ApiFallback => ProviderAttemptChannel::Api,
         };
         log(&format!(
             "trying {channel} — model {} (timeout {}s)",
@@ -519,26 +640,75 @@ async fn render_via_backend<B: RenderBackend>(
         ));
         let mut attempt = config.clone();
         attempt.mode = step;
-        match backend.render(prompt, system, &attempt).await {
-            Ok(output) if output.body.trim().is_empty() => {
-                tracing::warn!(mode = ?step, "LLM returned an empty body");
-                log(&format!("{channel} returned an empty body"));
-            }
-            Ok(output) => {
-                log(&format!(
-                    "{channel} ok — {} ({} ms)",
-                    output.model, output.latency_ms
-                ));
-                return Some(output);
-            }
-            Err(err) => {
-                let kind = error_kind(&err);
-                tracing::warn!(mode = ?step, kind, "LLM render attempt failed");
-                log(&format!("{channel} failed — {kind}"));
+        let mut retried_rate_limit = false;
+        loop {
+            match backend.render(prompt, system, &attempt).await {
+                Ok(output) if output.body.trim().is_empty() => {
+                    tracing::warn!(mode = ?step, "LLM returned an empty body");
+                    log(&format!("{channel} returned an empty body"));
+                    attempts.push(ProviderAttempt {
+                        provider: provider.to_string(),
+                        channel: Some(channel_kind),
+                        model: config.model.clone(),
+                        status: ProviderAttemptStatus::Empty,
+                        reason: Some("empty_body".to_string()),
+                        latency_ms: Some(output.latency_ms),
+                    });
+                    break;
+                }
+                Ok(output) => {
+                    log(&format!(
+                        "{channel} ok — {} ({} ms)",
+                        output.model, output.latency_ms
+                    ));
+                    attempts.push(ProviderAttempt {
+                        provider: provider.to_string(),
+                        channel: Some(channel_kind),
+                        model: output.model.clone(),
+                        status: ProviderAttemptStatus::Succeeded,
+                        reason: None,
+                        latency_ms: Some(output.latency_ms),
+                    });
+                    return BackendRenderOutcome {
+                        output: Some(output),
+                        attempts,
+                    };
+                }
+                Err(err) => {
+                    let kind = error_kind(&err);
+                    tracing::warn!(mode = ?step, kind, "LLM render attempt failed");
+                    log(&format!("{channel} failed — {kind}"));
+                    attempts.push(ProviderAttempt {
+                        provider: provider.to_string(),
+                        channel: Some(channel_kind),
+                        model: config.model.clone(),
+                        status: ProviderAttemptStatus::Failed,
+                        reason: Some(kind.to_string()),
+                        latency_ms: None,
+                    });
+                    let retry_after = match err {
+                        LlmError::RateLimit { retry_after_secs } => retry_after_secs,
+                        _ => None,
+                    };
+                    if !retried_rate_limit
+                        && policy.retry_rate_limits
+                        && retry_after.is_some_and(|secs| secs <= policy.max_retry_after_secs)
+                    {
+                        let delay = retry_after.unwrap_or_default();
+                        retried_rate_limit = true;
+                        log(&format!("{channel} retrying after {delay}s"));
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        continue;
+                    }
+                    break;
+                }
             }
         }
     }
-    None
+    BackendRenderOutcome {
+        output: None,
+        attempts,
+    }
 }
 
 /// Strip a wrapping Markdown code fence, if the model added one.
@@ -560,12 +730,13 @@ fn strip_code_fence(body: &str) -> &str {
     }
 }
 
-/// Produce the LLM standup body, or `None` when the deterministic renderer should win.
+/// Produce the LLM standup body, or `None` when no provider in the chain succeeds.
 ///
 /// Step (m) of `docs/specs/pipeline.md`. `None` is returned — always after a
 /// `tracing::warn!` — when: the render mode is `Det`, no provider is configured, the provider
 /// id is unknown, the provider is disabled, this process is itself a render subprocess, or
-/// every attempt in the mode's plan failed. A failed LLM must never fail the compile.
+/// every attempt in the provider chain failed. The caller applies the selected
+/// `Auto` versus strict `Llm` policy.
 pub async fn render_llm(inputs: &PromptInputs<'_>, config: &AppConfig) -> Option<RenderedBody> {
     render_llm_logged(inputs, config, |_| {}).await
 }
@@ -576,76 +747,175 @@ pub async fn render_llm(inputs: &PromptInputs<'_>, config: &AppConfig) -> Option
 pub async fn render_llm_logged(
     inputs: &PromptInputs<'_>,
     config: &AppConfig,
-    mut log: impl FnMut(&str),
+    log: impl FnMut(&str),
 ) -> Option<RenderedBody> {
+    render_llm_outcome_logged(inputs, config, log)
+        .await
+        .rendered
+}
+
+/// Render through the configured provider chain and retain every safe attempt.
+#[tracing::instrument(skip_all, fields(provider, mode))]
+#[allow(clippy::too_many_lines)]
+pub async fn render_llm_outcome_logged(
+    inputs: &PromptInputs<'_>,
+    config: &AppConfig,
+    log: impl FnMut(&str),
+) -> LlmRenderOutcome {
+    render_llm_outcome_inner(inputs, config, None, log).await
+}
+
+/// Pipeline variant that rejects a provider's invalid body and continues the
+/// failover chain. This keeps provenance validation inside the same sequence as
+/// transport failures instead of accepting the first syntactically successful response.
+pub async fn render_llm_outcome_validated_logged(
+    inputs: &PromptInputs<'_>,
+    config: &AppConfig,
+    range_tickets: &[String],
+    forbidden_tickets: &[String],
+    log: impl FnMut(&str),
+) -> LlmRenderOutcome {
+    render_llm_outcome_inner(
+        inputs,
+        config,
+        Some((range_tickets, forbidden_tickets)),
+        log,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn render_llm_outcome_inner(
+    inputs: &PromptInputs<'_>,
+    config: &AppConfig,
+    validation: Option<(&[String], &[String])>,
+    mut log: impl FnMut(&str),
+) -> LlmRenderOutcome {
     if config.render_mode == RenderMode::Det {
         tracing::info!("render_mode=Det: skipping the LLM");
         log("render mode = Det — skipping LLM");
-        return None;
+        return LlmRenderOutcome::default();
     }
     if is_render_subprocess(std::env::var(RENDER_ENV).ok().as_deref()) {
         tracing::warn!("{RENDER_ENV} is set: refusing to render from inside a render subprocess");
         log("refusing to render: AUTOSTAND_RENDER is set");
-        return None;
+        return LlmRenderOutcome::default();
     }
 
-    let provider_id = resolve_provider_id(config, std::env::var(PROVIDER_ENV).ok().as_deref());
-    if provider_id.is_empty() {
+    let env_provider = std::env::var(PROVIDER_ENV).ok();
+    let providers = provider_chain(config, env_provider.as_deref());
+    if providers.is_empty() {
         tracing::warn!("no LLM provider configured; using the deterministic renderer");
         log("no preferred provider configured");
-        return None;
+        return LlmRenderOutcome::default();
     }
-    tracing::Span::current().record("provider", provider_id.as_str());
-
-    let entry = provider_entry(config, &provider_id);
-    if !entry.enabled {
-        tracing::warn!(provider = %provider_id, "preferred provider is disabled");
-        log(&format!("provider {provider_id} is disabled"));
-        return None;
-    }
-    let Some(adapter) = adapter_for(&provider_id) else {
-        tracing::warn!(provider = %provider_id, "unknown LLM provider id");
-        log(&format!("unknown provider id: {provider_id}"));
-        return None;
-    };
-
-    let mode = std::env::var(MODE_ENV)
-        .ok()
-        .and_then(|raw| parse_mode(&raw))
-        .unwrap_or_else(|| adapter_mode(entry.mode));
-    tracing::Span::current().record("mode", tracing::field::debug(mode));
-
-    // A CLI-only provider must never unlock the keychain.
-    let api_key = if mode == AdapterMode::CliOnly {
-        None
-    } else {
-        helpers::load_api_key(&provider_id, env_vars_for(&provider_id))
-    };
-    let mut adapter_cfg = provider_config(&entry, api_key);
-    adapter_cfg.mode = mode;
 
     let system = system_prompt_for(inputs.jira_base);
     let prompt = build_prompt(inputs);
-    log(&format!(
-        "prompt ready — {} chars, provider {provider_id}, mode {mode:?}",
-        prompt.len()
-    ));
+    let mut attempts = Vec::new();
 
-    let backend = AdapterBackend(adapter.as_ref());
-    let output = render_via_backend(&backend, &prompt, &system, &adapter_cfg, &mut log).await?;
+    for provider_id in providers {
+        tracing::Span::current().record("provider", provider_id.as_str());
+        let entry = provider_entry(config, &provider_id);
+        if !entry.enabled {
+            tracing::warn!(provider = %provider_id, "provider is disabled");
+            log(&format!("provider {provider_id} skipped — disabled"));
+            attempts.push(ProviderAttempt {
+                provider: provider_id,
+                channel: None,
+                model: entry.model,
+                status: ProviderAttemptStatus::Skipped,
+                reason: Some("disabled".to_string()),
+                latency_ms: None,
+            });
+            continue;
+        }
+        let Some(adapter) = adapter_for(&provider_id) else {
+            tracing::warn!(provider = %provider_id, "unknown LLM provider id");
+            log(&format!(
+                "provider {provider_id} skipped — unknown provider"
+            ));
+            attempts.push(ProviderAttempt {
+                provider: provider_id,
+                channel: None,
+                model: entry.model,
+                status: ProviderAttemptStatus::Skipped,
+                reason: Some("unknown_provider".to_string()),
+                latency_ms: None,
+            });
+            continue;
+        };
 
-    tracing::info!(
-        provider = %provider_id,
-        model = %output.model,
-        latency_ms = output.latency_ms,
-        "LLM render succeeded"
-    );
-    Some(RenderedBody {
-        body: strip_code_fence(&output.body).to_string(),
-        provider: provider_id,
-        model: output.model,
-        used_api: output.mode_used == RenderModeUsed::Api,
-    })
+        let mode = if provider_id == "builtin-local" {
+            AdapterMode::CliOnly
+        } else {
+            std::env::var(MODE_ENV)
+                .ok()
+                .and_then(|raw| parse_mode(&raw))
+                .unwrap_or_else(|| adapter_mode(entry.mode))
+        };
+        tracing::Span::current().record("mode", tracing::field::debug(mode));
+        let api_key = if mode == AdapterMode::CliOnly {
+            None
+        } else {
+            helpers::load_api_key(&provider_id, env_vars_for(&provider_id))
+        };
+        let mut adapter_cfg = provider_config(&entry, api_key);
+        adapter_cfg.mode = mode;
+        log(&format!(
+            "prompt ready — {} chars, provider {provider_id}, mode {mode:?}",
+            prompt.len()
+        ));
+
+        let backend = AdapterBackend(adapter.as_ref());
+        let provider_outcome = render_via_backend(
+            &backend,
+            &provider_id,
+            &prompt,
+            &system,
+            &adapter_cfg,
+            config.llm.fallback_policy,
+            &mut log,
+        )
+        .await;
+        attempts.extend(provider_outcome.attempts);
+        if let Some(output) = provider_outcome.output {
+            let body = strip_code_fence(&output.body).to_string();
+            if let Some((range_tickets, forbidden_tickets)) = validation {
+                if let Err(failure) = validate_render(&body, range_tickets, forbidden_tickets) {
+                    let code = format!("validation_{}", failure.code());
+                    tracing::warn!(provider = %provider_id, code, "LLM render failed validation");
+                    log(&format!("provider {provider_id} rejected — {code}"));
+                    if let Some(attempt) = attempts.last_mut() {
+                        attempt.status = ProviderAttemptStatus::Failed;
+                        attempt.reason = Some(code);
+                    }
+                    continue;
+                }
+            }
+            tracing::info!(
+                provider = %provider_id,
+                model = %output.model,
+                latency_ms = output.latency_ms,
+                "LLM render succeeded"
+            );
+            return LlmRenderOutcome {
+                rendered: Some(RenderedBody {
+                    body,
+                    provider: provider_id,
+                    model: output.model,
+                    used_api: output.mode_used == RenderModeUsed::Api,
+                }),
+                attempts,
+            };
+        }
+        log(&format!("provider {provider_id} exhausted — trying next"));
+    }
+
+    LlmRenderOutcome {
+        rendered: None,
+        attempts,
+    }
 }
 
 // ── Validation ────────────────────────────────────────────────────────────
@@ -775,12 +1045,14 @@ pub fn validate_render(
 mod tests {
     use super::{
         adapter_for, attempt_plan, build_prompt, error_kind, is_render_subprocess, parse_mode,
-        provider_config, render_via_backend, resolve_provider_id, strip_code_fence, system_prompt,
+        provider_chain, provider_config, render_via_backend, strip_code_fence, system_prompt,
         system_prompt_for, validate_render, AdapterConfig, AdapterMode, LlmError, PromptInputs,
-        ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed, RenderOutput,
-        MAX_RENDER_CHARS, PROVIDER_ENV,
+        ProviderAttemptStatus, ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed,
+        RenderOutput, MAX_RENDER_CHARS, PROVIDER_ENV,
     };
-    use crate::commands::types::{AppConfig, LlmConfig, StandupFormatConfig};
+    use crate::commands::types::{
+        AppConfig, LlmConfig, ProviderFallbackPolicy, StandupFormatConfig,
+    };
     use std::future::Future;
     use std::sync::Mutex;
 
@@ -1037,6 +1309,7 @@ mod tests {
             llm: LlmConfig {
                 preferred_provider: preferred.to_string(),
                 providers,
+                ..LlmConfig::default()
             },
             ..AppConfig::default()
         }
@@ -1056,8 +1329,15 @@ mod tests {
     }
 
     #[test]
-    fn adapter_for_resolves_the_five_providers_and_rejects_others() {
-        for id in ["claude", "ollama", "openai", "gemini", "grok"] {
+    fn adapter_for_resolves_all_providers_and_rejects_others() {
+        for id in [
+            "builtin-local",
+            "claude",
+            "ollama",
+            "openai",
+            "gemini",
+            "grok",
+        ] {
             let adapter = adapter_for(id).expect("provider is registered");
             assert_eq!(adapter.id(), id);
         }
@@ -1066,12 +1346,39 @@ mod tests {
     }
 
     #[test]
-    fn resolve_provider_id_prefers_the_env_override() {
-        let config = cfg_with("claude", vec![]);
-        assert_eq!(resolve_provider_id(&config, Some("gemini")), "gemini");
-        assert_eq!(resolve_provider_id(&config, Some("  ")), "claude");
-        assert_eq!(resolve_provider_id(&config, None), "claude");
-        assert_eq!(resolve_provider_id(&cfg_with("", vec![]), None), "");
+    fn provider_chain_migrates_legacy_order_and_deduplicates() {
+        let config = cfg_with(
+            "grok",
+            vec![
+                provider("claude", ProviderMode::CliOnly),
+                provider("grok", ProviderMode::CliOnly),
+                provider("openai", ProviderMode::CliOnly),
+            ],
+        );
+        assert_eq!(provider_chain(&config, None), ["grok", "claude", "openai"]);
+    }
+
+    #[test]
+    fn explicit_provider_order_and_fallback_switch_are_respected() {
+        let mut config = cfg_with("grok", vec![]);
+        config.llm.provider_order = vec![" openai ".into(), "claude".into(), "openai".into()];
+        assert_eq!(provider_chain(&config, None), ["openai", "claude"]);
+        config.llm.fallback_enabled = false;
+        assert_eq!(provider_chain(&config, None), ["openai"]);
+        assert_eq!(provider_chain(&config, Some("grok")), ["grok"]);
+    }
+
+    #[test]
+    fn legacy_llm_json_enables_safe_fallback_defaults() {
+        let config: LlmConfig = serde_json::from_value(serde_json::json!({
+            "preferred_provider": "grok",
+            "providers": []
+        }))
+        .expect("legacy LlmConfig");
+        assert!(config.fallback_enabled);
+        assert!(config.provider_order.is_empty());
+        assert!(config.fallback_policy.retry_rate_limits);
+        assert_eq!(config.fallback_policy.max_retry_after_secs, 30);
     }
 
     #[test]
@@ -1081,9 +1388,9 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::env::set_var(PROVIDER_ENV, "grok");
         let read = std::env::var(PROVIDER_ENV).ok();
-        let resolved = resolve_provider_id(&cfg_with("claude", vec![]), read.as_deref());
+        let resolved = provider_chain(&cfg_with("claude", vec![]), read.as_deref());
         std::env::remove_var(PROVIDER_ENV);
-        assert_eq!(resolved, "grok");
+        assert_eq!(resolved, ["grok"]);
     }
 
     #[test]
@@ -1102,6 +1409,12 @@ mod tests {
         let codex = provider_config(&provider("openai", ProviderMode::CliFirst), None);
         assert_eq!(codex.model, "");
         assert_eq!(codex.timeout_secs, 180);
+
+        let local = provider_config(&provider("builtin-local", ProviderMode::ApiOnly), None);
+        assert_eq!(local.model, "");
+        assert_eq!(local.mode, AdapterMode::CliOnly);
+        assert_eq!(local.timeout_secs, 300);
+        assert!(local.api_key.is_none());
     }
 
     #[test]
@@ -1166,6 +1479,20 @@ mod tests {
                 stderr: "Not logged in · Please run /login".into(),
             }),
             "not_logged_in"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: -1,
+                stderr: "model_not_installed".into(),
+            }),
+            "model_not_installed"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: -1,
+                stderr: "runtime_missing".into(),
+            }),
+            "runtime_missing"
         );
         assert_eq!(
             error_kind(&LlmError::CliExitError {
@@ -1279,7 +1606,17 @@ mod tests {
     }
 
     async fn run(backend: &FakeBackend, mode: AdapterMode) -> Option<RenderOutput> {
-        render_via_backend(backend, "prompt", "system", &adapter_cfg(mode), |_| {}).await
+        render_via_backend(
+            backend,
+            "test",
+            "prompt",
+            "system",
+            &adapter_cfg(mode),
+            ProviderFallbackPolicy::default(),
+            |_| {},
+        )
+        .await
+        .output
     }
 
     #[tokio::test]
@@ -1347,5 +1684,28 @@ mod tests {
             backend.attempts(),
             [AdapterMode::CliOnly, AdapterMode::ApiOnly]
         );
+    }
+
+    #[tokio::test]
+    async fn exhausted_provider_plan_retains_safe_attempt_telemetry() {
+        let backend = FakeBackend::new(false, false, false);
+        let outcome = render_via_backend(
+            &backend,
+            "grok",
+            "prompt",
+            "system",
+            &adapter_cfg(AdapterMode::CliFirst),
+            ProviderFallbackPolicy::default(),
+            |_| {},
+        )
+        .await;
+        assert!(outcome.output.is_none());
+        assert_eq!(outcome.attempts.len(), 2);
+        assert!(outcome
+            .attempts
+            .iter()
+            .all(|attempt| attempt.provider == "grok"
+                && attempt.status == ProviderAttemptStatus::Failed
+                && attempt.reason.as_deref() == Some("cli_not_found")));
     }
 }

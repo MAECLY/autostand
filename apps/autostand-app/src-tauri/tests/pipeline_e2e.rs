@@ -454,7 +454,7 @@ async fn compile_headless(fx: &Fixture, date: NaiveDate, source: TriggerSource) 
     // (q) patch in what the pure core could not know.
     if let Some(path) = outputs.audit_path.as_ref() {
         let overlay =
-            pipeline_runner::audit_patch(&window, &facts, &gathered, &decision, None, &hash);
+            pipeline_runner::audit_patch(&window, &facts, &gathered, &decision, None, &[], &hash);
         merge_json(path, &overlay);
     }
 

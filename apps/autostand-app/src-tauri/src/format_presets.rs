@@ -32,6 +32,10 @@ pub fn output_section(config: &StandupFormatConfig) -> String {
     out.push_str("## OUTPUT\n");
     out.push_str("Return only the standup Markdown body: section headers and `- ` bullets. ");
     out.push_str("No preamble, no closing commentary, no code fences.\n\n");
+    out.push_str(
+        "Every bold section header shown in the selected structure is REQUIRED, in the exact order shown. \
+Never omit an empty section: write `- None` beneath it. Every section must contain at least one `- ` bullet.\n\n",
+    );
     out.push_str("Format your output using this structure:\n\n");
     out.push_str(preset);
     out.push_str("\n\n");
@@ -344,6 +348,20 @@ mod tests {
                     "{preset:?} is missing {marker}:\n{section}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_preset_requires_all_headers_and_a_bullet_for_empty_sections() {
+        for preset in all_presets() {
+            let section = output_section(&StandupFormatConfig {
+                preset,
+                ..StandupFormatConfig::default()
+            });
+            assert!(section.contains("Every bold section header"));
+            assert!(section.contains("Never omit an empty section"));
+            assert!(section.contains("`- None`"));
+            assert!(section.contains("at least one `- ` bullet"));
         }
     }
 

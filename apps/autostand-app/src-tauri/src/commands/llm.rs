@@ -13,16 +13,22 @@
 //! Nothing in this module ever puts an API key into a return value, an error or
 //! a log line: keys move keychain/env → adapter and stop there.
 
-use std::time::Instant;
+use std::collections::HashMap;
+use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use autostand_adapters::llm::{LlmError, ProviderMode as AdapterMode};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
 
 use crate::commands::types::{
-    ApiKeyMode, ApiKeyStatus, AppConfig, CliDetection, LlmProviderConfig, ProviderConfig,
-    TestProviderResult,
+    ApiKeyMode, ApiKeyStatus, AppConfig, CliDetection, LlmProviderConfig, ProviderAvailability,
+    ProviderConfig, ProviderHealth, TestProviderResult, UsageSource, UsageWindow,
 };
 use crate::error::AppError;
+use crate::render::{ProviderAttempt, ProviderAttemptStatus};
 
 /// Provider descriptor used by `list_llm_providers`.
 struct ProviderDef {
@@ -33,8 +39,15 @@ struct ProviderDef {
     local_only: bool,
 }
 
-/// The 5 providers per `docs/llm-adapters/`.
+/// Providers exposed to Settings and the failover chain.
 const PROVIDERS: &[ProviderDef] = &[
+    ProviderDef {
+        id: "builtin-local",
+        label: "Built-in Local AI",
+        binary: "autostand-local-llm",
+        env_var: None,
+        local_only: true,
+    },
     ProviderDef {
         id: "claude",
         label: "Claude (Anthropic)",
@@ -71,6 +84,14 @@ const PROVIDERS: &[ProviderDef] = &[
         local_only: false,
     },
 ];
+
+const CODEX_HEALTH_TIMEOUT: Duration = Duration::from_secs(8);
+
+static INFERRED_HEALTH: OnceLock<Mutex<HashMap<String, ProviderHealth>>> = OnceLock::new();
+
+fn inferred_health() -> &'static Mutex<HashMap<String, ProviderHealth>> {
+    INFERRED_HEALTH.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Map a provider id to its binary name (or `None` if unknown).
 fn binary_for(provider: &str) -> Option<&'static str> {
@@ -123,27 +144,33 @@ fn resolve_api_key_status(provider: &str) -> ApiKeyStatus {
     ApiKeyStatus::default()
 }
 
-/// List the 5 providers with CLI/API-key status.
+/// List providers with CLI/API-key status.
 #[tauri::command]
 pub async fn list_llm_providers(app_handle: AppHandle) -> Result<Vec<LlmProviderConfig>, AppError> {
     let config = crate::commands::load_config(&app_handle).ok();
     let mut out = Vec::with_capacity(PROVIDERS.len());
     for def in PROVIDERS {
-        let stored = config.as_ref().map_or_else(
+        let mut stored = config.as_ref().map_or_else(
             || ProviderConfig {
                 id: def.id.to_string(),
                 ..ProviderConfig::default()
             },
             |c| stored_entry(c, def.id),
         );
-        let cli = autostand_adapters::llm::detect_cli_binary(def.binary)
-            .await
-            .map(|info| CliDetection {
-                found: true,
-                path: info.path.to_string_lossy().to_string(),
-                version: info.version,
-            })
-            .unwrap_or_default();
+        if def.id == "builtin-local" {
+            stored.mode = crate::commands::types::ProviderMode::CliOnly;
+        }
+        let cli = if let Some(adapter) = crate::render::adapter_for(def.id) {
+            adapter.detect_cli().await
+        } else {
+            None
+        }
+        .map(|info| CliDetection {
+            found: true,
+            path: info.path.to_string_lossy().to_string(),
+            version: info.version,
+        })
+        .unwrap_or_default();
         out.push(LlmProviderConfig {
             id: def.id.to_string(),
             label: def.label.to_string(),
@@ -243,6 +270,13 @@ pub async fn test_llm_provider(
             latency_ms: elapsed_ms(start),
         });
     };
+    if is_local_only(&provider) && probe == AdapterMode::ApiOnly {
+        return Ok(TestProviderResult {
+            ok: false,
+            message: "This provider is local-only and has no API transport".to_string(),
+            latency_ms: elapsed_ms(start),
+        });
+    }
     // `binary_for` already accepted the id, so the registry must know it too;
     // treat a mismatch as the same invalid-provider error rather than panicking.
     let adapter = crate::render::adapter_for(&provider)
@@ -279,6 +313,314 @@ pub async fn test_llm_provider(
 /// Milliseconds since `start`, saturating instead of wrapping.
 fn elapsed_ms(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn unknown_health(provider: &str, reason: &str) -> ProviderHealth {
+    ProviderHealth {
+        provider: provider.to_string(),
+        availability: ProviderAvailability::Unknown,
+        source: UsageSource::Unknown,
+        windows: Vec::new(),
+        reason: Some(reason.to_string()),
+        checked_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+/// Retain a short-lived, secret-free availability inference from render attempts.
+/// Exact quota windows are never synthesized from failures.
+pub fn record_provider_attempts(attempts: &[ProviderAttempt]) {
+    let mut cache = inferred_health()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for attempt in attempts {
+        if attempt.status == ProviderAttemptStatus::Succeeded {
+            cache.remove(&attempt.provider);
+            continue;
+        }
+        let Some(reason) = attempt.reason.as_deref() else {
+            continue;
+        };
+        let availability = match reason {
+            "usage_balance_exhausted" | "payment_required" => ProviderAvailability::Exhausted,
+            "rate_limit" => ProviderAvailability::RateLimited,
+            "auth_error" | "not_logged_in" => ProviderAvailability::AuthRequired,
+            "unsupported_model" => ProviderAvailability::ModelUnavailable,
+            _ => ProviderAvailability::Unavailable,
+        };
+        cache.insert(
+            attempt.provider.clone(),
+            ProviderHealth {
+                provider: attempt.provider.clone(),
+                availability,
+                source: UsageSource::FailureInferred,
+                windows: Vec::new(),
+                reason: Some(reason.to_string()),
+                checked_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+    }
+}
+
+fn codex_window_id(duration_mins: Option<u64>, fallback: &str) -> String {
+    match duration_mins {
+        Some(300) => "five_hour".to_string(),
+        Some(10_080) => "weekly".to_string(),
+        _ => fallback.to_string(),
+    }
+}
+
+fn parse_codex_window(id: &str, value: &serde_json::Value) -> Option<UsageWindow> {
+    let used = value
+        .get("usedPercent")
+        .or_else(|| value.get("used_percent"))
+        .and_then(serde_json::Value::as_f64)?;
+    let duration = value
+        .get("windowDurationMins")
+        .or_else(|| value.get("window_duration_mins"))
+        .and_then(serde_json::Value::as_u64);
+    let resets_at = value
+        .get("resetsAt")
+        .or_else(|| value.get("resets_at"))
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map(|timestamp| timestamp.to_rfc3339());
+    Some(UsageWindow {
+        id: codex_window_id(duration, id),
+        used_percent: Some(used),
+        remaining_percent: Some((100.0 - used).clamp(0.0, 100.0)),
+        resets_at,
+    })
+}
+
+/// Parse only the documented rate-limit fields from a Codex app-server result.
+/// Unknown fields are deliberately ignored so protocol additions do not break Settings.
+fn parse_codex_health(result: &serde_json::Value) -> Option<ProviderHealth> {
+    let selected = result
+        .get("rateLimitsByLimitId")
+        .and_then(|limits| limits.get("codex"))
+        .or_else(|| result.get("rateLimits"))?;
+    let mut windows = Vec::new();
+    for (fallback, key) in [("primary", "primary"), ("secondary", "secondary")] {
+        if let Some(window) = selected
+            .get(key)
+            .filter(|window| !window.is_null())
+            .and_then(|window| parse_codex_window(fallback, window))
+        {
+            windows.push(window);
+        }
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    let minimum = windows
+        .iter()
+        .filter_map(|window| window.remaining_percent)
+        .fold(100.0_f64, f64::min);
+    let availability = if minimum <= 0.0 {
+        ProviderAvailability::Exhausted
+    } else if minimum <= 20.0 {
+        ProviderAvailability::Low
+    } else {
+        ProviderAvailability::Available
+    };
+    Some(ProviderHealth {
+        provider: "openai".to_string(),
+        availability,
+        source: UsageSource::ProviderReported,
+        windows,
+        reason: None,
+        checked_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+async fn read_rpc_response(
+    lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    id: i64,
+) -> Result<serde_json::Value, ()> {
+    loop {
+        let line = tokio::time::timeout(CODEX_HEALTH_TIMEOUT, lines.next_line())
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?
+            .ok_or(())?;
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if message.get("id").and_then(serde_json::Value::as_i64) == Some(id) {
+            return message.get("result").cloned().ok_or(());
+        }
+    }
+}
+
+async fn codex_health(config: &AppConfig) -> ProviderHealth {
+    let entry = stored_entry(config, "openai");
+    let binary = entry.cli_path.unwrap_or_else(|| "codex".into());
+    let Ok(mut child) = Command::new(binary)
+        .args(["app-server", "--stdio"])
+        .env("AUTOSTAND_RENDER", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+    else {
+        return unknown_health("openai", "cli_not_found");
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        return unknown_health("openai", "usage_probe_failed");
+    };
+    let Some(stdout) = child.stdout.take() else {
+        return unknown_health("openai", "usage_probe_failed");
+    };
+    let initialize = serde_json::json!({
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": { "name": "autostand", "title": "Autostand", "version": env!("CARGO_PKG_VERSION") },
+            "capabilities": {}
+        }
+    });
+    let initialized = serde_json::json!({ "method": "initialized", "params": {} });
+    let request = serde_json::json!({ "id": 2, "method": "account/rateLimits/read", "params": {} });
+    let mut lines = BufReader::new(stdout).lines();
+    let outcome = async {
+        stdin
+            .write_all(format!("{initialize}\n").as_bytes())
+            .await
+            .map_err(|_| ())?;
+        stdin.flush().await.map_err(|_| ())?;
+        let _ = read_rpc_response(&mut lines, 1).await?;
+        stdin
+            .write_all(format!("{initialized}\n{request}\n").as_bytes())
+            .await
+            .map_err(|_| ())?;
+        stdin.flush().await.map_err(|_| ())?;
+        read_rpc_response(&mut lines, 2).await
+    }
+    .await;
+    let _ = child.kill().await;
+    match outcome.ok().and_then(|result| parse_codex_health(&result)) {
+        Some(health) => health,
+        None => unknown_health("openai", "usage_unavailable"),
+    }
+}
+
+async fn provider_health(config: &AppConfig, provider: &str) -> ProviderHealth {
+    let reported = match provider {
+        "openai" => codex_health(config).await,
+        "claude" | "grok" => unknown_health(provider, "usage_not_programmatically_available"),
+        _ => unknown_health(provider, "usage_not_supported"),
+    };
+    if reported.source != UsageSource::Unknown {
+        return reported;
+    }
+    inferred_health()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(provider)
+        .cloned()
+        .unwrap_or(reported)
+}
+
+fn low_usage_notifications(
+    config: &AppConfig,
+    health: &[ProviderHealth],
+) -> Vec<crate::notifications::SystemNotification> {
+    let mut notifications = Vec::new();
+    for item in health {
+        for window in &item.windows {
+            let Some(remaining) = window.remaining_percent else {
+                continue;
+            };
+            if remaining > f64::from(config.notifications.low_usage_threshold_percent) {
+                continue;
+            }
+            let remaining = remaining.clamp(0.0, 100.0).round();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let remaining = remaining as u8;
+            let window_key = window.resets_at.as_deref().unwrap_or(window.id.as_str());
+            notifications.push(crate::notifications::SystemNotification::low_usage(
+                &item.provider,
+                remaining,
+                window_key,
+            ));
+        }
+    }
+    notifications
+}
+
+fn provider_is_configured(config: &AppConfig, provider: &str) -> bool {
+    config.llm.preferred_provider == provider
+        || config
+            .llm
+            .provider_order
+            .iter()
+            .any(|candidate| candidate == provider)
+        || config
+            .llm
+            .providers
+            .iter()
+            .any(|entry| entry.id == provider && entry.enabled)
+}
+
+/// Probe programmatically reported usage for providers participating in scheduled runs.
+/// Claude and Grok consumer plans intentionally remain failure-inferred because neither
+/// exposes a supported headless quota contract.
+pub(crate) async fn scheduled_low_usage_notifications(
+    config: &AppConfig,
+) -> Vec<crate::notifications::SystemNotification> {
+    if !config.notifications.enabled || !config.notifications.low_usage {
+        return Vec::new();
+    }
+    let mut health = Vec::new();
+    if provider_is_configured(config, "openai") {
+        health.push(provider_health(config, "openai").await);
+    }
+    low_usage_notifications(config, &health)
+}
+
+/// Read health for all providers. Exact percentages are returned only when an
+/// official programmatic contract supplies them.
+#[tauri::command]
+pub async fn get_provider_health(app_handle: AppHandle) -> Result<Vec<ProviderHealth>, AppError> {
+    refresh_provider_health(app_handle, None).await
+}
+
+/// Refresh one provider, or all providers when `provider` is omitted.
+#[tauri::command]
+pub async fn refresh_provider_health(
+    app_handle: AppHandle,
+    provider: Option<String>,
+) -> Result<Vec<ProviderHealth>, AppError> {
+    if provider
+        .as_deref()
+        .is_some_and(|id| binary_for(id).is_none())
+    {
+        return Err(AppError::Invalid(format!(
+            "unknown provider: {}",
+            provider.as_deref().unwrap_or_default()
+        )));
+    }
+    let config = crate::commands::load_config(&app_handle)?;
+    let ids: Vec<&str> = provider.as_deref().map_or_else(
+        || PROVIDERS.iter().map(|definition| definition.id).collect(),
+        |id| vec![id],
+    );
+    let mut health = Vec::with_capacity(ids.len());
+    for id in ids {
+        health.push(provider_health(&config, id).await);
+    }
+    for notification in low_usage_notifications(&config, &health) {
+        if let Err(err) =
+            crate::notifications::notify_gui(&app_handle, &config.notifications, &notification)
+        {
+            tracing::warn!(error = %err, "could not deliver low-usage notification");
+        }
+    }
+    app_handle
+        .emit("provider-health-updated", &health)
+        .map_err(|err| AppError::Config(format!("emit provider health: {err}")))?;
+    Ok(health)
 }
 
 /// Store an API key in the OS keychain under `autostand.<provider>`.
@@ -441,6 +783,11 @@ pub async fn list_provider_models(
     if binary_for(&provider).is_none() {
         return Err(AppError::Invalid(format!("unknown provider: {provider}")));
     }
+    if provider == "builtin-local" {
+        return Ok(crate::commands::local_models::available_model_ids(
+            &app_handle,
+        ));
+    }
     let config = crate::commands::load_config(&app_handle)?;
     let stored = stored_entry(&config, &provider);
     let base = api_base_for(&provider, &stored);
@@ -525,22 +872,38 @@ pub async fn list_provider_models(
 #[cfg(test)]
 mod tests {
     use super::{
-        api_base_for, binary_for, env_var_for, is_local_only, parse_gemini_models,
-        parse_ollama_models, parse_openai_models, probe_failure, probe_mode, stored_entry,
-        AdapterMode, AppConfig, LlmError, ProviderConfig, PROVIDERS,
+        api_base_for, binary_for, env_var_for, inferred_health, is_local_only,
+        low_usage_notifications, parse_codex_health, parse_gemini_models, parse_ollama_models,
+        parse_openai_models, probe_failure, probe_mode, provider_is_configured,
+        record_provider_attempts, stored_entry, AdapterMode, AppConfig, LlmError, ProviderConfig,
+        PROVIDERS,
     };
-    use crate::commands::types::ProviderMode;
+    use crate::commands::types::{
+        ProviderAvailability, ProviderHealth, ProviderMode, UsageSource, UsageWindow,
+    };
+    use crate::render::{ProviderAttempt, ProviderAttemptChannel, ProviderAttemptStatus};
 
     #[test]
-    fn exposes_the_five_documented_providers() {
+    fn exposes_all_documented_providers() {
         let ids: Vec<&str> = PROVIDERS.iter().map(|p| p.id).collect();
-        assert_eq!(ids, ["claude", "ollama", "openai", "gemini", "grok"]);
+        assert_eq!(
+            ids,
+            [
+                "builtin-local",
+                "claude",
+                "ollama",
+                "openai",
+                "gemini",
+                "grok"
+            ]
+        );
     }
 
     #[test]
     fn maps_provider_ids_to_cli_binaries() {
         assert_eq!(binary_for("claude"), Some("claude"));
         assert_eq!(binary_for("openai"), Some("codex"));
+        assert_eq!(binary_for("builtin-local"), Some("autostand-local-llm"));
         assert_eq!(binary_for("nope"), None);
     }
 
@@ -553,8 +916,9 @@ mod tests {
     }
 
     #[test]
-    fn only_ollama_is_local_only() {
+    fn built_in_and_ollama_are_local_only() {
         assert!(is_local_only("ollama"));
+        assert!(is_local_only("builtin-local"));
         for provider in ["claude", "openai", "gemini", "grok"] {
             assert!(!is_local_only(provider), "{provider} needs an API key");
         }
@@ -568,7 +932,47 @@ mod tests {
         assert_eq!(env_var_for("gemini"), Some("GEMINI_API_KEY"));
         assert_eq!(env_var_for("grok"), Some("XAI_API_KEY"));
         assert_eq!(env_var_for("ollama"), None);
+        assert_eq!(env_var_for("builtin-local"), None);
         assert_eq!(env_var_for("nope"), None);
+    }
+
+    #[test]
+    fn scheduled_usage_probe_only_runs_for_configured_codex() {
+        let mut config = AppConfig::default();
+        assert!(!provider_is_configured(&config, "openai"));
+        config.llm.provider_order = vec!["grok".to_string(), "openai".to_string()];
+        assert!(provider_is_configured(&config, "openai"));
+    }
+
+    #[test]
+    fn low_usage_notifications_respect_threshold_without_inventing_unknown_values() {
+        let mut config = AppConfig::default();
+        config.notifications.low_usage_threshold_percent = 20;
+        let known = ProviderHealth {
+            provider: "openai".to_string(),
+            availability: ProviderAvailability::Low,
+            source: UsageSource::ProviderReported,
+            windows: vec![UsageWindow {
+                id: "weekly".to_string(),
+                used_percent: Some(85.0),
+                remaining_percent: Some(15.0),
+                resets_at: Some("2030-01-01T00:00:00Z".to_string()),
+            }],
+            reason: None,
+            checked_at: "2026-08-13T00:00:00Z".to_string(),
+        };
+        let unknown = ProviderHealth {
+            provider: "grok".to_string(),
+            availability: ProviderAvailability::Unknown,
+            source: UsageSource::Unknown,
+            windows: Vec::new(),
+            reason: Some("usage_not_programmatically_available".to_string()),
+            checked_at: "2026-08-13T00:00:00Z".to_string(),
+        };
+
+        let notifications = low_usage_notifications(&config, &[known, unknown]);
+        assert_eq!(notifications.len(), 1);
+        assert!(notifications[0].body.contains("15% remaining"));
     }
 
     // ---- connection probe -------------------------------------------------
@@ -770,5 +1174,71 @@ mod tests {
         let object = value.as_object().expect("object");
         assert!(!object.contains_key("api_key"), "{object:?}");
         assert_eq!(object["api_key_ref"], serde_json::json!("autostand.claude"));
+    }
+
+    #[test]
+    fn codex_health_prefers_the_named_codex_limit_and_maps_windows() {
+        let result = serde_json::json!({
+            "rateLimits": {
+                "primary": { "usedPercent": 99.0, "windowDurationMins": 300 }
+            },
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": {
+                        "usedPercent": 20.0,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1_786_560_000_i64
+                    },
+                    "secondary": null
+                }
+            }
+        });
+        let health = parse_codex_health(&result).expect("Codex rate limit");
+        assert_eq!(health.source, UsageSource::ProviderReported);
+        assert_eq!(health.availability, ProviderAvailability::Available);
+        assert_eq!(health.windows.len(), 1);
+        assert_eq!(health.windows[0].id, "weekly");
+        assert_eq!(health.windows[0].used_percent, Some(20.0));
+        assert_eq!(health.windows[0].remaining_percent, Some(80.0));
+        assert!(health.windows[0].resets_at.is_some());
+    }
+
+    #[test]
+    fn codex_health_marks_a_low_or_exhausted_window_without_inventing_values() {
+        for (used, expected) in [
+            (80.0, ProviderAvailability::Low),
+            (100.0, ProviderAvailability::Exhausted),
+        ] {
+            let result = serde_json::json!({
+                "rateLimits": {
+                    "primary": { "usedPercent": used, "windowDurationMins": 300 }
+                }
+            });
+            let health = parse_codex_health(&result).expect("Codex rate limit");
+            assert_eq!(health.availability, expected);
+            assert_eq!(health.windows[0].id, "five_hour");
+        }
+        assert!(parse_codex_health(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn exhausted_failures_are_exposed_as_inferred_health_without_a_fake_percentage() {
+        record_provider_attempts(&[ProviderAttempt {
+            provider: "grok".to_string(),
+            channel: Some(ProviderAttemptChannel::Cli),
+            model: "grok-4".to_string(),
+            status: ProviderAttemptStatus::Failed,
+            reason: Some("usage_balance_exhausted".to_string()),
+            latency_ms: None,
+        }]);
+        let health = inferred_health()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove("grok")
+            .expect("inferred Grok health");
+        assert_eq!(health.availability, ProviderAvailability::Exhausted);
+        assert_eq!(health.source, UsageSource::FailureInferred);
+        assert!(health.windows.is_empty());
+        assert_eq!(health.reason.as_deref(), Some("usage_balance_exhausted"));
     }
 }
