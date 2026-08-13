@@ -32,6 +32,8 @@ Discovery runs `<path> --version` to populate `CliInfo.version`.
 
 Claude CLI manages its own auth, stored at `~/.claude/.credentials.json` (OAuth token from `claude login` or an `ANTHROPIC_API_KEY` env var). autostand does **not** read, write, or manage this file. If the CLI is authenticated, CLI-mode rendering just works.
 
+Claude Code exposes usage interactively and to its own statusline, but Autostand does not alter the user's statusline configuration or scrape interactive output. Settings therefore reports Claude usage as `unknown` unless an actual render provides a safe classified availability failure. An inferred exhausted/auth/rate-limit state never includes a fabricated percentage or reset time.
+
 ## API mode
 
 **Endpoint:** `POST https://api.anthropic.com/v1/messages`

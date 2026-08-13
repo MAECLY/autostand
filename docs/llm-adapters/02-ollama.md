@@ -1,6 +1,8 @@
 # Ollama Adapter
 
-Ollama runs models locally, so it is the privacy-friendly provider: no data leaves the machine. It is exposed both as a CLI (`ollama run`) and an HTTP API on localhost.
+Ollama runs models locally, so it is the privacy-friendly provider: no data leaves the machine when the default localhost endpoint is used. It is exposed both as a CLI (`ollama run`) and an HTTP API on localhost.
+
+Ollama is distinct from Autostand's built-in GGUF model manager. Ollama installation, service lifecycle, and `ollama pull` remain user-managed; Settings → Local AI manages a separate curated catalog under Autostand's state directory. See `06-built-in-local.md`.
 
 ## CLI mode
 

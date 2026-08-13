@@ -82,6 +82,12 @@ All configurable. Default:
 
 Reasoning settings for CLI mode remain owned by the user's `~/.codex/config.toml`.
 
+## Usage reporting
+
+Settings queries the installed Codex CLI through an isolated `codex app-server --stdio` process. After JSON-RPC initialization it calls `account/rateLimits/read` and parses only the documented rate-limit fields. `usedPercent`, window duration, and reset epoch are converted into `UsageWindow` values; exact remaining percentage is derived as `100 - usedPercent`.
+
+Autostand never reads or copies `~/.codex/auth.json` during this probe. Missing CLI, unavailable rate limits, protocol errors, or timeouts produce an honest `unknown` health result instead of a synthetic percentage. API-request token usage and ChatGPT subscription quota are not conflated.
+
 ## Anti-recursion
 
 `AUTOSTAND_RENDER=1` is set on the `codex` subprocess. (Codex CLI may emit its own session-end telemetry; the guard prevents re-entry into autostand's hook.)

@@ -15,7 +15,7 @@ Legend: `[x]` done and verified · `[~]` partially done (detail in the note) · 
 | --- | --- | --- |
 | F0 | Documentation (48 files under `docs/`) | done |
 | F1 | Scaffolding: monorepo, Tauri v2 shell, design-system skeleton | done |
-| F2 | Core domain + adapters (8 data sources, 5 LLM providers, pipeline, renderer, audit) | done |
+| F2 | Core domain + adapters (8 data sources, 5 external LLM providers, pipeline, renderer, audit) | done |
 | F3 | Frontend + IPC contract (25 commands, 23 base components, 9 hooks, 5 pages) | done |
 | F4 | Wiring: gather → compile → render → write → commit, config store, scheduler runtime | done |
 | F5 | Brand assets + landing page composition | done |
@@ -57,7 +57,7 @@ tree are the synthetic fixtures in `core::redact`'s own tests.
 
 - [x] Architecture (overview, monorepo, data flow, state machine, security)
 - [x] Tauri (setup, IPC contracts, platform targets, frontend stack)
-- [x] LLM adapters (5 providers, trait, render prompt)
+- [x] LLM adapters (5 external providers + built-in local, trait, render prompt)
 - [x] Data sources (8 sources, trait)
 - [x] Specs (file format, configuration, pipeline, anti-backdating, audit)
 - [x] Dev + user guides, design system
@@ -77,7 +77,7 @@ tree are the synthetic fixtures in `core::redact`'s own tests.
 - [x] Deterministic renderer (`deterministic`), accumulate (`accumulate`), audit sidecar (`audit`)
 - [x] Pure-sync `pipeline::compile_file` (scrub → render → accumulate → redact → write → audit)
 - [x] 8 data sources implementing `DataSource`
-- [x] 5 LLM providers implementing `LlmAdapter` (CLI + API)
+- [x] 5 external LLM providers plus built-in local implementing `LlmAdapter`
 - [x] Cron parser + `next_run` (5-field POSIX subset)
 
 ## F3 — Frontend + IPC
@@ -263,7 +263,7 @@ Nothing regressed; F0–F3 are as claimed:
 | 9 TanStack Query hooks | 9 files in `src/hooks/` | holds |
 | 5 pages | `index`, `settings`, `history`, `audit`, `debug` under `src/routes/` | holds |
 | 8 data sources | `local_git`, `github`, `claude_code`, `remember`, `opencode`, `codex`, `gemini_cli`, `grok_cli` | holds |
-| 5 LLM providers | `claude`, `ollama`, `openai`, `gemini`, `grok` | holds |
+| External + built-in LLM providers | `claude`, `ollama`, `openai`, `gemini`, `grok`, `builtin-local` | holds |
 | 97 frontend tests | 97 in 8 files | holds |
 | 47 docs files | **48** `.md` under `docs/` | corrected above |
 

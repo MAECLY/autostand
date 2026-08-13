@@ -83,6 +83,7 @@ pub struct AuditData {
     pub render_used: String,                // "llm" | "det" | "llm_fallback"
     pub provider: Option<String>,           // which LLM provider was used
     pub model: Option<String>,
+    pub provider_attempts: Vec<ProviderAttempt>, // safe provider/transport history
     pub fellback: bool,
     pub hash: String,                       // inputs hash
     pub accumulated_count: u32,             // bullets re-injected from PREV
@@ -123,6 +124,15 @@ pub struct SkewRecord {
     pub note_date: NaiveDate,
     pub commit_days: Vec<NaiveDate>,
 }
+
+pub struct ProviderAttempt {
+    pub provider: String,
+    pub channel: Option<String>,            // "cli" | "api"; null for skipped providers
+    pub model: String,
+    pub status: String,                     // "succeeded" | "failed" | "empty" | "skipped"
+    pub reason: Option<String>,             // stable classifier, never raw provider output
+    pub latency_ms: Option<u64>,
+}
 ```
 
 ### TypeScript mirror (`src/lib/types.ts`)
@@ -151,11 +161,23 @@ export interface AuditData {
   render_used: "llm" | "det" | "llm_fallback";
   provider: string | null;
   model: string | null;
+  provider_attempts: ProviderAttempt[];
   fellback: boolean;
   hash: string;
   accumulated_count: number;
 }
+
+export interface ProviderAttempt {
+  provider: string;
+  channel: "cli" | "api" | null;
+  model: string;
+  status: "succeeded" | "failed" | "empty" | "skipped";
+  reason: string | null;
+  latency_ms: number | null;
+}
 ```
+
+`provider_attempts` is deliberately secret-free. It preserves provider rotation and validation provenance without storing stderr, API response bodies, prompts, credentials, or model output.
 
 ---
 

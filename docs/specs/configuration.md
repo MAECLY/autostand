@@ -47,6 +47,9 @@ pub struct AppConfig {
     pub scheduler: SchedulerConfig,
     pub review: ReviewConfig,
     pub scrub: ScrubConfig,
+    pub format: StandupFormatConfig,
+    #[serde(default)]
+    pub notifications: NotificationConfig,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -55,8 +58,19 @@ pub enum RenderMode { Auto, Llm, Det }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    pub preferred_provider: String,     // "claude" | "ollama" | "openai" | "gemini" | "grok"
+    pub preferred_provider: String,     // cloud/CLI provider id or "builtin-local"
     pub providers: Vec<ProviderConfig>,
+    #[serde(default = "default_fallback_enabled")]
+    pub fallback_enabled: bool,         // default true
+    #[serde(default)]
+    pub provider_order: Vec<String>,    // explicit priority, first provider is preferred
+    #[serde(default)]
+    pub fallback_policy: ProviderFallbackPolicy,
+}
+
+pub struct ProviderFallbackPolicy {
+    pub retry_rate_limits: bool,        // default true
+    pub max_retry_after_secs: u64,      // default 30
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +88,17 @@ pub struct ProviderConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub enum ProviderMode { CliFirst, ApiFallback, CliOnly, ApiOnly }
+
+pub struct NotificationConfig {
+    pub enabled: bool,                  // default false; OS permission is separate
+    pub low_usage: bool,                // default true
+    pub low_usage_threshold_percent: u8,// default 20; normalized to 0..=100
+    pub provider_exhausted: bool,       // default true
+    pub provider_fallback: bool,        // default true
+    pub local_model_downloads: bool,    // default true
+    pub standup_complete: bool,         // default false
+    pub standup_failed: bool,           // default true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataSourceConfigs {
@@ -127,11 +152,30 @@ export interface AppConfig {
   scheduler: SchedulerConfig;
   review: ReviewConfig;
   scrub: ScrubConfig;
+  format: StandupFormatConfig;
+  notifications: NotificationConfig;
 }
 
 export interface LlmConfig {
   preferred_provider: string;
   providers: ProviderConfig[];
+  fallback_enabled: boolean;
+  provider_order: string[];
+  fallback_policy: {
+    retry_rate_limits: boolean;
+    max_retry_after_secs: number;
+  };
+}
+
+export interface NotificationConfig {
+  enabled: boolean;
+  low_usage: boolean;
+  low_usage_threshold_percent: number;
+  provider_exhausted: boolean;
+  provider_fallback: boolean;
+  local_model_downloads: boolean;
+  standup_complete: boolean;
+  standup_failed: boolean;
 }
 
 export interface ProviderConfig {
@@ -235,9 +279,21 @@ This prevents a render CLI from re-invoking `autostand` and recursing.
 | `host_slug_override` | `None` | Manual host slug override (else detected) |
 | `render_mode` | `Auto` | `Auto` = CLI-first with API fallback; `Llm` = force LLM; `Det` = deterministic only |
 | `llm.preferred_provider` | `claude` | Default provider id |
+| `llm.fallback_enabled` | `true` | Continue through the configured provider priority after a provider fails |
+| `llm.provider_order` | `[]` | Empty preserves legacy order: preferred provider, then stored providers |
+| `llm.fallback_policy.retry_rate_limits` | `true` | Retry one rate-limited transport when it reports a bounded reset |
+| `llm.fallback_policy.max_retry_after_secs` | `30` | Maximum reported delay to wait before advancing |
 | `provider.enabled` | `true` for `claude`, `false` for others | Whether a provider appears in the rotation |
 | `provider.mode` | `CliFirst` | Try CLI first, fall back to API |
 | `provider.model` | `sonnet` (claude), blank/account default (Codex CLI), `gpt-5` (OpenAI API), `grok-4.5` (grok), `gemini-2.5-pro` (gemini), `llama3.3` (ollama) | Model identifier |
+| `notifications.enabled` | `false` | Master opt-in; native permission alone does not enable alerts |
+| `notifications.low_usage` | `true` | Alert only when an exact remaining percentage is available |
+| `notifications.low_usage_threshold_percent` | `20` | Remaining percentage considered low |
+| `notifications.provider_exhausted` | `true` | Alert on quota or billing exhaustion |
+| `notifications.provider_fallback` | `true` | Alert when another provider wins the render |
+| `notifications.local_model_downloads` | `true` | Alert when a model download completes or fails |
+| `notifications.standup_complete` | `false` | Avoid a routine daily success alert |
+| `notifications.standup_failed` | `true` | Alert when a compile fails |
 | `provider.cli_path` | `None` (auto-detect) | Override binary path |
 | `provider.api_key_ref` | `None` | Keychain reference name (not the key) |
 | `provider.api_base_url` | `None` | Custom API base (e.g. self-hosted Ollama) |
@@ -264,20 +320,43 @@ This prevents a render CLI from re-invoking `autostand` and recursing.
 
 ---
 
+## Provider failover configuration
+
+`llm.provider_order` is the authoritative ordered list when it is non-empty. Blank and duplicate ids are removed while preserving the first occurrence. Providers with `enabled = false` are recorded as skipped and are not invoked. Turning off `fallback_enabled` truncates the resolved chain to its first provider.
+
+For existing config files without the new fields, serde defaults enable fallback and derive a legacy-compatible order from `preferred_provider` followed by `providers` in storage order. Setting `AUTOSTAND_LLM_PROVIDER` is an explicit single-provider override: it does not fan out to the saved rotation.
+
+The Settings Providers tab exposes the master fallback switch, provider enable switches, preferred-provider selection, and up/down priority controls. Making a provider preferred also moves it to the beginning of `provider_order`.
+
 ## Config UI
 
-The Settings page (`routes/settings.tsx`) exposes four tabs (see `docs/tauri/04-frontend-stack.md`):
+The Settings page (`routes/settings.tsx`) exposes these tabs (see `docs/tauri/04-frontend-stack.md`):
 
-1. **Providers** — per-provider card with CLI detect, API key status, mode, model, "Test" button.
-2. **Data Sources** — toggle list; `local_git` is always-on (disabled toggle).
-3. **Paths** — `github_dir`, `dailies_dir`, with `validate_paths` on blur.
-4. **Scheduler** — cron editor + `get_scheduler_status` display.
+- Providers — connection settings, ordered failover, and provider usage.
+- Data Sources — enablement for the eight read-only activity sources.
+- Standup Format — preset and output options.
+- Paths and Sync — local paths and cloud-folder behavior.
+- Scheduler — cron and self-heal controls.
+- Notifications — OS permission, master opt-in, thresholds, and alert categories.
+- Local AI — curated model downloads and selection.
+
+### Native notifications
+
+Notification delivery has two transports with one shared preference and deduplication policy:
+
+- When the Tauri runtime is active, Autostand uses `tauri-plugin-notification`; OS permission is requested only after the user presses **Allow notifications**.
+- Scheduled `--compile` processes use the platform-native service directly: `osascript` on macOS, `notify-send` on Linux, and Windows toast APIs through a fixed PowerShell script. Dynamic Windows title/body values are base64 environment data rather than executable script text.
+
+The master switch defaults off. Permission by itself never enables delivery. Category defaults are low usage, exhaustion, failover, local-model completion/failure, and standup failure on; routine standup success off. Notifications are deduplicated by transition key for six hours and history older than seven days is pruned from `state/notification-history.json`.
+
+Titles and bodies are single-line, bounded, content-free summaries. They must never contain standup text, prompts, model responses, raw provider failures, paths, API keys, or CLI credentials. Notification delivery errors are warnings and never change a compile result.
 
 ### Live validation
 
 - `validate_paths()` runs after every path edit. Each path shows a green/red badge with the missing-path message.
 - `detect_cli(provider)` runs after a `cli_path` change. Shows the resolved path + `--version` output.
 - `get_api_key_status(provider)` runs after the API key dialog closes.
+- `get_provider_health()` loads current usage state; `refresh_provider_health(provider?)` performs an explicit refresh.
 - The "Test provider" button calls `test_llm_provider` and displays `{ ok, message, latency_ms }` inline.
 
 ### Save semantics

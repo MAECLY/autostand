@@ -83,6 +83,10 @@ Default: `grok-4.5`.
 
 `AUTOSTAND_RENDER=1` is set on whichever Grok binary is spawned. The grokcli.dev variant in particular emits Claude-Code-style session events; the guard prevents re-entry into autostand's hook.
 
+## Usage reporting and exhaustion
+
+Grok Build exposes `/usage` in its interactive UI but no supported non-interactive remaining-quota payload used by Autostand. Settings shows `unknown` rather than scraping the TUI. When a real headless render returns the observed 402 text `usage balance exhausted`, the safe error classifier records `usage_balance_exhausted`, marks availability as `failure_inferred`/`exhausted`, optionally notifies the user, and advances to the next configured provider. Raw stderr is never persisted or displayed as health data.
+
 ## Timeout
 
 Default **180s**. Configurable via `ProviderConfig.timeout_secs`.
