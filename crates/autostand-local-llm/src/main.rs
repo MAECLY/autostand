@@ -152,7 +152,25 @@ fn generate(
         // chat template. Explicitly disable it so n-predict ends the process;
         // --single-turn would enable the chat UI and echo banners/prompts.
         .arg("--no-conversation")
-        .arg("--simple-io");
+        .arg("--simple-io")
+        // `--escape` defaults to true, so llama.cpp reinterprets `\n`, `\"` and
+        // `\\` inside the prompt. Gathered notes and code snippets contain those
+        // sequences literally; the prompt must reach the model byte-for-byte.
+        .arg("--no-escape")
+        // Greedy decoding (--temp 0) with penalties disabled makes small models
+        // loop a section verbatim — the observed `**Blockers**\n- None` twice.
+        // DRY breaks long repeats; `--dry-allowed-length 6` leaves short legitimate
+        // ones (a second `- None` under a different header) untouched. The
+        // deterministic dedupe in `render::sanitize_body` remains the real
+        // guarantee; this only makes it rarer for the sampler to get there.
+        .arg("--dry-multiplier")
+        .arg("0.8")
+        .arg("--dry-base")
+        .arg("1.75")
+        .arg("--dry-allowed-length")
+        .arg("6")
+        .arg("--dry-penalty-last-n")
+        .arg("512");
     if !dedicated_completion {
         // The legacy unified CLI writes its banner through the logger. The
         // dedicated completion program also writes generated tokens through
@@ -175,13 +193,59 @@ fn generate(
         secure_cache_permissions(cache_path);
     }
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(strip_runtime_markers(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     } else {
         Err(RuntimeError::Exit {
             code: output.status.code().unwrap_or(-1),
             message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         })
     }
+}
+
+/// Control tokens a chat-tuned GGUF can emit before the runtime stops it.
+const CONTROL_TOKENS: &[&str] = &[
+    "<end_of_turn>",
+    "<|im_end|>",
+    "<|endoftext|>",
+    "<|eot_id|>",
+    "</s>",
+    "<eos>",
+];
+
+/// Strip llama.cpp's own stdout decorations from a completion.
+///
+/// `llama-completion` prints a literal ` [end of text]` when generation stops at
+/// an end-of-generation token, and it does so on stdout — the same stream the
+/// tokens go to, so `--log-disable` cannot be used to suppress it without also
+/// silencing the completion itself. Trimming alone leaves the marker inside the
+/// body, which is how it reached committed standup files.
+fn strip_runtime_markers(stdout: &str) -> String {
+    let mut out = stdout.replace("[end of text]", "");
+    for token in CONTROL_TOKENS {
+        out = out.replace(token, "");
+    }
+    // The legacy unified `llama-cli` can still emit a boxed ASCII banner ahead of
+    // the completion. Its lines are pure box-drawing, so they are safe to drop.
+    let cleaned: Vec<&str> = out
+        .lines()
+        .filter(|line| !is_banner_line(line))
+        .map(str::trim_end)
+        .collect();
+    cleaned.join("\n").trim().to_string()
+}
+
+/// True for a line made only of box-drawing characters and whitespace.
+///
+/// Deliberately limited to box drawing: `---` and `===` are legitimate Markdown
+/// and must survive.
+fn is_banner_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty()
+        && trimmed
+            .chars()
+            .all(|c| matches!(c, '─' | '│' | '┌' | '┐' | '└' | '┘' | '├' | '┤' | '━' | ' '))
 }
 
 fn prepare_cache_parent(path: &Path) -> Result<(), std::io::Error> {
@@ -344,6 +408,80 @@ mod tests {
         let _ = generate(&model, "hello", 2_048, 1, 0.0, None).unwrap();
         let forwarded = std::fs::read_to_string(&args).unwrap();
         assert!(!forwarded.contains("--prompt-cache\n"));
+
+        std::env::remove_var("AUTOSTAND_LLAMA_CLI");
+        std::env::remove_var("AUTOSTAND_TEST_LLAMA_ARGS");
+    }
+
+    /// `llama-completion` prints ` [end of text]` on stdout, the same stream the
+    /// tokens go to. Trimming alone left it inside the body and it reached
+    /// committed standup files.
+    #[test]
+    fn strip_runtime_markers_removes_the_end_of_text_marker() {
+        assert_eq!(strip_runtime_markers("OK\n [end of text]\n\n\n"), "OK");
+        assert_eq!(
+            strip_runtime_markers("**Blockers**\n- None\n [end of text]\n"),
+            "**Blockers**\n- None"
+        );
+    }
+
+    #[test]
+    fn strip_runtime_markers_removes_leaked_control_tokens() {
+        assert_eq!(strip_runtime_markers("body<end_of_turn>"), "body");
+        assert_eq!(strip_runtime_markers("body<|im_end|>\n"), "body");
+        assert_eq!(strip_runtime_markers("body</s>"), "body");
+    }
+
+    #[test]
+    fn strip_runtime_markers_drops_a_box_drawing_banner_but_keeps_markdown_rules() {
+        assert_eq!(
+            strip_runtime_markers("┌────────┐\n│        │\nreal body\n"),
+            "real body"
+        );
+        assert_eq!(
+            strip_runtime_markers("above\n---\nbelow"),
+            "above\n---\nbelow"
+        );
+        assert_eq!(
+            strip_runtime_markers("above\n===\nbelow"),
+            "above\n===\nbelow"
+        );
+    }
+
+    #[test]
+    fn strip_runtime_markers_is_idempotent() {
+        let once = strip_runtime_markers("OK\n [end of text]\n");
+        assert_eq!(strip_runtime_markers(&once), once);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_args_disable_escapes_and_enable_anti_repetition() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("llama-cli");
+        let args = temp.path().join("args.txt");
+        let model = temp.path().join("model.gguf");
+        std::fs::write(
+            &runtime,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AUTOSTAND_TEST_LLAMA_ARGS\"\nprintf 'OK\\n'\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&runtime).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&runtime, permissions).unwrap();
+        std::fs::write(&model, b"GGUF").unwrap();
+        std::env::set_var("AUTOSTAND_LLAMA_CLI", &runtime);
+        std::env::set_var("AUTOSTAND_TEST_LLAMA_ARGS", &args);
+
+        let _ = generate(&model, "hello", 2_048, 1, 0.0, None).unwrap();
+        let forwarded = std::fs::read_to_string(&args).unwrap();
+        // `--escape` defaults to true and would reinterpret `\n` inside notes.
+        assert!(forwarded.contains("--no-escape\n"));
+        assert!(forwarded.contains("--dry-multiplier\n"));
+        assert!(forwarded.contains("--dry-allowed-length\n"));
 
         std::env::remove_var("AUTOSTAND_LLAMA_CLI");
         std::env::remove_var("AUTOSTAND_TEST_LLAMA_ARGS");
