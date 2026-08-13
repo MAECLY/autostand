@@ -730,6 +730,15 @@ pub fn parse_note_refs(notes: &str) -> Vec<NoteRef> {
 ///
 /// Covers every source listed in `docs/architecture/03-data-flow.md` step 5h, so
 /// a change in any of them re-renders.
+/// Version of everything that turns gathered inputs into a body: the render
+/// prompt, the format presets, and `render::sanitize_body`.
+///
+/// The dirty check hashes the *inputs*, so improving the prompt or the
+/// sanitizer used to leave every already-compiled day marked unchanged — the
+/// fix shipped but nobody could see it without deleting `state_dir()/hashes/`.
+/// Bump this whenever a change should make previously-compiled days recompile.
+pub const RENDER_CONTRACT_VERSION: &str = "2";
+
 pub fn inputs_hash(facts: &str, gathered: &Gathered) -> String {
     let claude = gathered.claude_files.join("\n");
     let opencode = gathered.opencode_sessions.join("\n");
@@ -737,6 +746,7 @@ pub fn inputs_hash(facts: &str, gathered: &Gathered) -> String {
     let gemini = gathered.gemini_sessions.join("\n");
     let grok = gathered.grok_sessions.join("\n");
     hashes::input_hash(&[
+        RENDER_CONTRACT_VERSION,
         facts,
         gathered.notes.as_str(),
         gathered.conv.as_deref().unwrap_or_default(),
@@ -1916,7 +1926,8 @@ mod tests {
         error_result, git_root_for, inputs_hash, is_regression, last_trigger,
         load_config_from_disk, ok_result, outcome_message, parse_note_refs, parse_repo_facts,
         required_llm_failure, should_skip_unchanged, sidecar_repo_count, skip_result,
-        split_ticket_days, subtitle_for, targets, title_for, RenderDecision, Step, STEPS,
+        split_ticket_days, subtitle_for, targets, title_for, RenderDecision, Step,
+        RENDER_CONTRACT_VERSION, STEPS,
     };
     use crate::commands::types::{
         AppConfig, CompileStatus, LastTrigger, RenderMode, RenderUsed, SchedulerConfig,
@@ -2064,6 +2075,36 @@ mod tests {
             assert!(should_skip_unchanged(source, true), "{source:?}");
             assert!(!should_skip_unchanged(source, false), "{source:?}");
         }
+    }
+
+    /// The dirty check hashes inputs, so a better prompt or sanitizer would
+    /// otherwise leave every compiled day marked unchanged and the fix invisible.
+    #[test]
+    fn the_inputs_hash_is_scoped_to_the_render_contract_version() {
+        let parts = [
+            RENDER_CONTRACT_VERSION,
+            "facts",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ];
+        assert_eq!(
+            inputs_hash("facts", &Gathered::default()),
+            autostand_core::hashes::input_hash(&parts)
+        );
+        let mut bumped = parts;
+        bumped[0] = "next";
+        assert_ne!(
+            inputs_hash("facts", &Gathered::default()),
+            autostand_core::hashes::input_hash(&bumped),
+            "bumping the contract version must force a recompile"
+        );
     }
 
     #[test]
