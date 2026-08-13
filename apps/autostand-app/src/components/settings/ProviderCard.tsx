@@ -12,7 +12,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { KeyRound, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, KeyRound, Zap } from "lucide-react";
 
 import { Badge } from "@autostand/ui/components/badge";
 import { Button } from "@autostand/ui/components/button";
@@ -32,6 +32,7 @@ import {
 } from "@autostand/ui/components/dialog";
 import { Input } from "@autostand/ui/components/input";
 import { Label } from "@autostand/ui/components/label";
+import { Switch } from "@autostand/ui/components/switch";
 import {
   Select,
   SelectContent,
@@ -88,7 +89,12 @@ export interface ProviderCardProps {
   /** `ProviderConfig.timeout_secs` — lives in config, not in the status DTO. */
   timeoutSecs: number;
   isPreferred: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   onSetPreferred: () => void;
+  onSetEnabled: (enabled: boolean) => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
   onSetMode: (mode: ProviderMode) => void;
   onSetModel: (model: string) => void;
   onSetTimeout: (seconds: number) => void;
@@ -100,7 +106,12 @@ export function ProviderCard({
   provider,
   timeoutSecs,
   isPreferred,
+  canMoveUp,
+  canMoveDown,
   onSetPreferred,
+  onSetEnabled,
+  onMoveUp,
+  onMoveDown,
   onSetMode,
   onSetModel,
   onSetTimeout,
@@ -220,6 +231,19 @@ export function ProviderCard({
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
+            <Label
+              htmlFor={`provider-${provider.id}-enabled`}
+              className="text-xs font-normal"
+            >
+              Enabled
+            </Label>
+            <Switch
+              id={`provider-${provider.id}-enabled`}
+              checked={provider.enabled}
+              onCheckedChange={onSetEnabled}
+            />
+          </div>
           <Badge variant={provider.cli.found ? "success" : "secondary"}>
             {provider.cli.found ? "CLI found" : "CLI not found"}
           </Badge>
@@ -230,6 +254,34 @@ export function ProviderCard({
       </CardHeader>
 
       <CardContent className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2">
+          <p className="text-xs text-muted-foreground">
+            Failover priority. Autostand tries providers from top to bottom.
+          </p>
+          <div className="flex shrink-0 gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              disabled={!canMoveUp}
+              aria-label={`Move ${provider.label} up`}
+              onClick={onMoveUp}
+            >
+              <ArrowUp aria-hidden="true" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              disabled={!canMoveDown}
+              aria-label={`Move ${provider.label} down`}
+              onClick={onMoveDown}
+            >
+              <ArrowDown aria-hidden="true" />
+            </Button>
+          </div>
+        </div>
+
         {provider.cli.found ? (
           <p className="font-mono text-xs text-muted-foreground">
             {provider.cli.path}

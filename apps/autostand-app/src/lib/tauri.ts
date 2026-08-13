@@ -21,6 +21,9 @@ import type {
   DataSourceConfig,
   GatherPreview,
   LlmProviderConfig,
+  LocalModelInfo,
+  LocalModelProgressEvent,
+  NotificationStatus,
   PathValidation,
   PipelineDoneEvent,
   PipelineErrorEvent,
@@ -28,6 +31,7 @@ import type {
   PipelineProgressEvent,
   PipelineStartedEvent,
   PipelineStatus,
+  ProviderHealth,
   ProviderTestMode,
   RepoInfo,
   SchedulerStatus,
@@ -53,6 +57,11 @@ export const tauriApi = {
     invoke<TestProviderResult>("test_llm_provider", { provider, mode }),
   listProviderModels: (provider: string) =>
     invoke<string[]>("list_provider_models", { provider }),
+  getProviderHealth: () => invoke<ProviderHealth[]>("get_provider_health"),
+  refreshProviderHealth: (provider?: string) =>
+    invoke<ProviderHealth[]>("refresh_provider_health", {
+      provider: provider ?? null,
+    }),
 
   // `date` is `Option<String>` on the Rust side; null selects "today".
   compileStandup: (date?: string) =>
@@ -93,6 +102,22 @@ export const tauriApi = {
     invoke<ApiKeyStatus>("get_api_key_status", { provider }),
   detectCli: (provider: string) =>
     invoke<CliDetection>("detect_cli", { provider }),
+  getNotificationStatus: () =>
+    invoke<NotificationStatus>("get_notification_status"),
+  requestNotificationPermission: () =>
+    invoke<string>("request_notification_permission"),
+  sendTestNotification: () => invoke<boolean>("send_test_notification"),
+  listLocalModels: () => invoke<LocalModelInfo[]>("list_local_models"),
+  downloadLocalModel: (modelId: string) =>
+    invoke<void>("download_local_model", { modelId }),
+  cancelLocalModelDownload: (modelId: string) =>
+    invoke<void>("cancel_local_model_download", { modelId }),
+  deleteLocalModel: (modelId: string) =>
+    invoke<void>("delete_local_model", { modelId }),
+  selectLocalModel: (modelId: string) =>
+    invoke<void>("select_local_model", { modelId }),
+  acceptLocalModelTerms: (modelId: string) =>
+    invoke<void>("accept_local_model_terms", { modelId }),
 } as const;
 
 // ── Events ────────────────────────────────────────────────────────────────
@@ -119,3 +144,9 @@ export const onPipelineError =
 
 export const onSchedulerTick =
   eventHelper<SchedulerTickEvent>("scheduler-tick");
+
+export const onProviderHealthUpdated =
+  eventHelper<ProviderHealth[]>("provider-health-updated");
+
+export const onLocalModelProgress =
+  eventHelper<LocalModelProgressEvent>("local-model-progress");

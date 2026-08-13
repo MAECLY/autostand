@@ -35,7 +35,12 @@ function renderCard(
       provider={makeProvider(overrides)}
       timeoutSecs={180}
       isPreferred
+      canMoveUp={false}
+      canMoveDown
       onSetPreferred={vi.fn()}
+      onSetEnabled={vi.fn()}
+      onMoveUp={vi.fn()}
+      onMoveDown={vi.fn()}
       onSetMode={vi.fn()}
       onSetModel={onSetModel}
       onSetTimeout={vi.fn()}

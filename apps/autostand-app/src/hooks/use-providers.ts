@@ -13,6 +13,7 @@ import { tauriApi } from "@/lib/tauri";
 import type { ProviderTestMode } from "@/lib/types";
 
 export const llmProvidersKey = ["llm-providers"] as const;
+export const providerHealthKey = ["provider-health"] as const;
 
 export function apiKeyStatusKey(provider: string) {
   return ["api-key-status", provider] as const;
@@ -30,6 +31,26 @@ export function useLlmProviders() {
   return useQuery({
     queryKey: llmProvidersKey,
     queryFn: tauriApi.listLlmProviders,
+  });
+}
+
+export function useProviderHealth() {
+  return useQuery({
+    queryKey: providerHealthKey,
+    queryFn: tauriApi.getProviderHealth,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useRefreshProviderHealth() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (provider?: string) => tauriApi.refreshProviderHealth(provider),
+    onSuccess: (health) => {
+      queryClient.setQueryData(providerHealthKey, health);
+    },
+    onError: (error) => handleInvokeError(error, "Refresh provider usage"),
   });
 }
 

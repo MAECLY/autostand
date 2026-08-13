@@ -64,11 +64,37 @@ export interface AppConfig {
   review: ReviewConfig;
   scrub: ScrubConfig;
   format: StandupFormatConfig;
+  notifications: NotificationConfig;
+}
+
+export interface NotificationConfig {
+  enabled: boolean;
+  low_usage: boolean;
+  low_usage_threshold_percent: number;
+  provider_exhausted: boolean;
+  provider_fallback: boolean;
+  local_model_downloads: boolean;
+  standup_complete: boolean;
+  standup_failed: boolean;
+}
+
+export interface NotificationStatus {
+  supported: boolean;
+  permission: string;
+  config: NotificationConfig;
 }
 
 export interface LlmConfig {
   preferred_provider: string;
   providers: ProviderConfig[];
+  fallback_enabled: boolean;
+  provider_order: string[];
+  fallback_policy: ProviderFallbackPolicy;
+}
+
+export interface ProviderFallbackPolicy {
+  retry_rate_limits: boolean;
+  max_retry_after_secs: number;
 }
 
 export interface ProviderConfig {
@@ -185,6 +211,72 @@ export interface TestProviderResult {
   latency_ms: number;
 }
 
+export type UsageSource =
+  | "provider_reported"
+  | "response_headers"
+  | "management_api"
+  | "failure_inferred"
+  | "unknown";
+
+export type ProviderAvailability =
+  | "available"
+  | "low"
+  | "exhausted"
+  | "rate_limited"
+  | "auth_required"
+  | "model_unavailable"
+  | "unavailable"
+  | "unknown";
+
+export interface UsageWindow {
+  id: string;
+  used_percent: number | null;
+  remaining_percent: number | null;
+  resets_at: string | null;
+}
+
+export interface ProviderHealth {
+  provider: string;
+  availability: ProviderAvailability;
+  source: UsageSource;
+  windows: UsageWindow[];
+  reason: string | null;
+  checked_at: string;
+}
+
+export type LocalModelStatus =
+  | "not_downloaded"
+  | "downloading"
+  | "available"
+  | "corrupted"
+  | "error";
+
+export interface LocalModelInfo {
+  id: string;
+  display_name: string;
+  tier: string;
+  quality: string;
+  format: string;
+  size_bytes: number;
+  context_length: number;
+  status: LocalModelStatus;
+  selected: boolean;
+  license: string;
+  license_url: string;
+  terms_required: boolean;
+  downloaded_bytes: number;
+  error: string | null;
+}
+
+export interface LocalModelProgressEvent {
+  model_id: string;
+  downloaded_bytes: number;
+  total_bytes: number;
+  bytes_per_second: number;
+  status: LocalModelStatus;
+  error: string | null;
+}
+
 // ── Compile + pipeline ────────────────────────────────────────────────────
 
 export interface CompileResult {
@@ -269,9 +361,19 @@ export interface AuditData {
   render_used: RenderUsed;
   provider: string | null;
   model: string | null;
+  provider_attempts: ProviderAttempt[];
   fellback: boolean;
   hash: string;
   accumulated_count: number;
+}
+
+export interface ProviderAttempt {
+  provider: string;
+  channel: "cli" | "api" | null;
+  model: string;
+  status: "succeeded" | "failed" | "empty" | "skipped";
+  reason: string | null;
+  latency_ms: number | null;
 }
 
 export interface DateRange {

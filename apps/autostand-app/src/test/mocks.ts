@@ -188,6 +188,12 @@ export function makeAppConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     llm: {
       preferred_provider: "claude",
       providers: [makeProviderConfig()],
+      fallback_enabled: true,
+      provider_order: ["claude"],
+      fallback_policy: {
+        retry_rate_limits: true,
+        max_retry_after_secs: 30,
+      },
     },
     data_sources: makeDataSourceConfigs(),
     scheduler: { enabled: true, cron: "0 9 * * 1-5", self_heal: true },
@@ -199,6 +205,16 @@ export function makeAppConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       include_self_reviews: false,
     },
     scrub: { alias_scrub: true, alias_scrub_min: 4, meta_extra: null },
+    notifications: {
+      enabled: false,
+      low_usage: true,
+      low_usage_threshold_percent: 20,
+      provider_exhausted: true,
+      provider_fallback: true,
+      local_model_downloads: true,
+      standup_complete: false,
+      standup_failed: true,
+    },
     format: {
       preset: "classic-scrum",
       verbosity: "standard",
@@ -316,6 +332,7 @@ export function makeAuditData(overrides: Partial<AuditData> = {}): AuditData {
     render_used: "llm",
     provider: "claude",
     model: "claude-sonnet-4",
+    provider_attempts: [],
     fellback: false,
     hash: "sha256:deadbeef",
     accumulated_count: 0,

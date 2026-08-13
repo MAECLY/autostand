@@ -25,7 +25,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@autostand/ui/components/card";
+import { Label } from "@autostand/ui/components/label";
 import { Separator } from "@autostand/ui/components/separator";
+import { Switch } from "@autostand/ui/components/switch";
 import {
   Tabs,
   TabsContent,
@@ -35,8 +37,11 @@ import {
 
 import { DataSourceToggle } from "@/components/settings/DataSourceToggle";
 import { FormatTab } from "@/components/settings/FormatTab";
+import { LocalModelsTab } from "@/components/settings/LocalModelsTab";
+import { NotificationsTab } from "@/components/settings/NotificationsTab";
 import { PathInput } from "@/components/settings/PathInput";
 import { ProviderCard } from "@/components/settings/ProviderCard";
+import { ProviderUsage } from "@/components/settings/ProviderUsage";
 import { RepoTable } from "@/components/settings/RepoTable";
 import { SchedulerForm } from "@/components/settings/SchedulerForm";
 import { SyncTab } from "@/components/settings/SyncTab";
@@ -169,6 +174,18 @@ function ProvidersTab() {
     setConfig.mutate(upsertProvider(config, id, changes));
   }
 
+  function setProviderOrder(order: string[]) {
+    if (config === undefined) return;
+    setConfig.mutate({
+      ...config,
+      llm: {
+        ...config.llm,
+        provider_order: order,
+        preferred_provider: order[0] ?? config.llm.preferred_provider,
+      },
+    });
+  }
+
   if (providers.isPending) return <TabSkeleton rows={3} />;
   if (providers.isError) {
     return (
@@ -176,9 +193,58 @@ function ProvidersTab() {
     );
   }
 
+  const providerById = new Map(
+    providers.data.map((provider) => [provider.id, provider]),
+  );
+  const configuredOrder = config?.llm.provider_order ?? [];
+  const orderedIds = [
+    ...configuredOrder.filter((id) => providerById.has(id)),
+    ...providers.data
+      .map((provider) => provider.id)
+      .filter((id) => !configuredOrder.includes(id)),
+  ];
+
   return (
     <div className="flex flex-col gap-4">
-      {providers.data.map((provider) => {
+      <Section
+        title="Automatic provider fallback"
+        description="When a provider cannot render, continue through the enabled providers in priority order."
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <Label htmlFor="provider-fallback-enabled">
+              Continue with the next provider
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Authentication, quota, model and service failures are isolated
+              to the provider that caused them.
+            </p>
+          </div>
+          <Switch
+            id="provider-fallback-enabled"
+            checked={config?.llm.fallback_enabled ?? true}
+            disabled={config === undefined}
+            onCheckedChange={(fallback_enabled) => {
+              if (config === undefined) return;
+              setConfig.mutate({
+                ...config,
+                llm: { ...config.llm, fallback_enabled },
+              });
+            }}
+          />
+        </div>
+      </Section>
+
+      <Section
+        title="Provider usage"
+        description="Exact percentages are shown only when the provider exposes a supported programmatic source."
+      >
+        <ProviderUsage />
+      </Section>
+
+      {orderedIds.map((providerId, index) => {
+        const provider = providerById.get(providerId);
+        if (provider === undefined) return null;
         const stored = config?.llm.providers.find(
           (candidate) => candidate.id === provider.id,
         );
@@ -200,12 +266,41 @@ function ProvidersTab() {
             provider={merged}
             timeoutSecs={stored?.timeout_secs ?? defaultTimeoutSecs(provider.id)}
             isPreferred={config?.llm.preferred_provider === provider.id}
+            canMoveUp={index > 0}
+            canMoveDown={index < orderedIds.length - 1}
             onSetPreferred={() => {
               if (config === undefined) return;
+              const order = [
+                provider.id,
+                ...orderedIds.filter((id) => id !== provider.id),
+              ];
               setConfig.mutate({
                 ...config,
-                llm: { ...config.llm, preferred_provider: provider.id },
+                llm: {
+                  ...config.llm,
+                  preferred_provider: provider.id,
+                  provider_order: order,
+                },
               });
+            }}
+            onSetEnabled={(enabled) => patchProvider(provider.id, { enabled })}
+            onMoveUp={() => {
+              if (index === 0) return;
+              const order = [...orderedIds];
+              [order[index - 1], order[index]] = [
+                order[index],
+                order[index - 1],
+              ];
+              setProviderOrder(order);
+            }}
+            onMoveDown={() => {
+              if (index >= orderedIds.length - 1) return;
+              const order = [...orderedIds];
+              [order[index], order[index + 1]] = [
+                order[index + 1],
+                order[index],
+              ];
+              setProviderOrder(order);
             }}
             onSetMode={(mode) => patchProvider(provider.id, { mode })}
             onSetModel={(model) => patchProvider(provider.id, { model })}
@@ -371,6 +466,8 @@ function SettingsPage() {
           <TabsTrigger value="paths">Paths</TabsTrigger>
           <TabsTrigger value="sync">Sync</TabsTrigger>
           <TabsTrigger value="scheduler">Scheduler</TabsTrigger>
+          <TabsTrigger value="notifications">Notifications</TabsTrigger>
+          <TabsTrigger value="local-models">Local AI</TabsTrigger>
         </TabsList>
 
         <TabsContent value="providers">
@@ -399,6 +496,24 @@ function SettingsPage() {
             description="Cron expression, self-heal, and what the installed scheduler is doing."
           >
             <SchedulerForm />
+          </Section>
+        </TabsContent>
+
+        <TabsContent value="notifications">
+          <Section
+            title="Notifications"
+            description="Choose which provider, usage and scheduler events may reach the operating system."
+          >
+            <NotificationsTab />
+          </Section>
+        </TabsContent>
+
+        <TabsContent value="local-models">
+          <Section
+            title="Built-in local AI"
+            description="Download and select a private GGUF model for offline provider fallback."
+          >
+            <LocalModelsTab />
           </Section>
         </TabsContent>
       </Tabs>
