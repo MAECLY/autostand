@@ -1,6 +1,6 @@
 //! Tauri IPC command handlers.
 //!
-//! The full 25-command inventory is defined in `docs/tauri/02-ipc-contracts.md`.
+//! The full command inventory is defined in `docs/tauri/02-ipc-contracts.md`.
 //! Shared DTOs live in [`types`]; the actual command fns live in the domain
 //! submodules and are registered with `generate_handler!` in `lib.rs`.
 

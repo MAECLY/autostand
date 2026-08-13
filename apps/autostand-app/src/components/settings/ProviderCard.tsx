@@ -11,7 +11,7 @@
  * to config JSON — `ProviderConfig.api_key_ref` holds a keychain name, not a key.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { KeyRound, Zap } from "lucide-react";
 
 import { Badge } from "@autostand/ui/components/badge";
@@ -40,6 +40,7 @@ import {
   SelectValue,
 } from "@autostand/ui/components/select";
 
+import { useProviderModels } from "@/hooks/use-providers";
 import { toAppError } from "@/lib/error";
 import type {
   ApiKeyMode,
@@ -49,6 +50,9 @@ import type {
   TestProviderResult,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/** Sentinel so the Select can offer a free-text fallback without colliding with a model id. */
+const CUSTOM_MODEL = "__custom__";
 
 const PROVIDER_MODES = [
   "CliFirst",
@@ -104,12 +108,29 @@ export function ProviderCard({
   onSaveKey,
 }: ProviderCardProps) {
   const [modelDraft, setModelDraft] = useState(provider.model);
+  const [customModel, setCustomModel] = useState(false);
   const [timeoutDraft, setTimeoutDraft] = useState(String(timeoutSecs));
   const [testResult, setTestResult] = useState<TestProviderResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [keyDialogOpen, setKeyDialogOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [savingKey, setSavingKey] = useState(false);
+
+  const modelsQuery = useProviderModels(provider.id);
+  const discovered = modelsQuery.data ?? [];
+  const modelOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: string[] = [];
+    for (const id of [...discovered, provider.model]) {
+      const trimmed = id.trim();
+      if (trimmed.length === 0 || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      options.push(trimmed);
+    }
+    return options;
+  }, [discovered, provider.model]);
+  // An empty probe is not a verdict — CLI-only setups keep the free-text field.
+  const showModelSelect = discovered.length > 0;
 
   const modelId = `provider-${provider.id}-model`;
   const modeId = `provider-${provider.id}-mode`;
@@ -219,18 +240,62 @@ export function ProviderCard({
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="flex flex-col gap-2">
             <Label htmlFor={modelId}>Model</Label>
-            <Input
-              id={modelId}
-              value={modelDraft}
-              spellCheck={false}
-              autoComplete="off"
-              className="font-mono"
-              onChange={(event) => setModelDraft(event.target.value)}
-              onBlur={commitModel}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") commitModel();
-              }}
-            />
+            {showModelSelect ? (
+              <>
+                <Select
+                  value={customModel ? CUSTOM_MODEL : modelDraft || undefined}
+                  onValueChange={(value) => {
+                    if (value === CUSTOM_MODEL) {
+                      setCustomModel(true);
+                      return;
+                    }
+                    setCustomModel(false);
+                    setModelDraft(value);
+                    if (value !== provider.model) onSetModel(value);
+                  }}
+                >
+                  <SelectTrigger id={modelId} className="font-mono">
+                    <SelectValue placeholder="Choose a model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {modelOptions.map((id) => (
+                      <SelectItem key={id} value={id} className="font-mono">
+                        {id}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value={CUSTOM_MODEL}>Custom…</SelectItem>
+                  </SelectContent>
+                </Select>
+                {customModel ? (
+                  <Input
+                    value={modelDraft}
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="font-mono"
+                    placeholder="model-id"
+                    aria-label={`${provider.label} custom model`}
+                    onChange={(event) => setModelDraft(event.target.value)}
+                    onBlur={commitModel}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") commitModel();
+                    }}
+                  />
+                ) : null}
+              </>
+            ) : (
+              <Input
+                id={modelId}
+                value={modelDraft}
+                spellCheck={false}
+                autoComplete="off"
+                className="font-mono"
+                onChange={(event) => setModelDraft(event.target.value)}
+                onBlur={commitModel}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") commitModel();
+                }}
+              />
+            )}
           </div>
 
           <div className="flex flex-col gap-2">
@@ -301,7 +366,7 @@ export function ProviderCard({
                   : "Test failed"}
               </Badge>
               {testResult.message.length > 0 ? (
-                <span className="text-xs text-muted-foreground">
+                <span className="min-w-0 truncate text-xs text-muted-foreground">
                   {testResult.message}
                 </span>
               ) : null}

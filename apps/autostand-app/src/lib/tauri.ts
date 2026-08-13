@@ -1,5 +1,5 @@
 /**
- * Typed wrappers over the 25 Tauri IPC commands and the 5 backend events.
+ * Typed wrappers over the 27 Tauri IPC commands and the 6 backend events.
  *
  * This is the only module in the app allowed to import from
  * `@tauri-apps/api` — everything else goes through `tauriApi` and the
@@ -51,6 +51,8 @@ export const tauriApi = {
   listLlmProviders: () => invoke<LlmProviderConfig[]>("list_llm_providers"),
   testLlmProvider: (provider: string, mode: ProviderTestMode) =>
     invoke<TestProviderResult>("test_llm_provider", { provider, mode }),
+  listProviderModels: (provider: string) =>
+    invoke<string[]>("list_provider_models", { provider }),
 
   // `date` is `Option<String>` on the Rust side; null selects "today".
   compileStandup: (date?: string) =>

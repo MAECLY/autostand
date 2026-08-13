@@ -66,6 +66,11 @@ const COMMANDS: CommandCase[] = [
     args: { provider: "claude", mode: "cli" },
   },
   {
+    command: "list_provider_models",
+    call: () => tauriApi.listProviderModels("claude"),
+    args: { provider: "claude" },
+  },
+  {
     command: "compile_standup",
     call: () => tauriApi.compileStandup("2026-08-03"),
     args: { date: "2026-08-03" },
@@ -130,10 +135,10 @@ beforeEach(() => {
 });
 
 describe("tauriApi", () => {
-  it("exposes exactly the 26 documented commands", () => {
-    expect(COMMANDS).toHaveLength(26);
-    expect(Object.keys(tauriApi)).toHaveLength(26);
-    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(26);
+  it("exposes exactly the 27 documented commands", () => {
+    expect(COMMANDS).toHaveLength(27);
+    expect(Object.keys(tauriApi)).toHaveLength(27);
+    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(27);
   });
 
   it.each(COMMANDS)(

@@ -38,6 +38,7 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `toggle_data_source` | `{ id: string, enabled: boolean }` | `void` | Flip a source flag, persist config | `autostand-core::config::set_source` |
 | `list_llm_providers` | — | `LlmProviderConfig[]` | List 5 providers with status: CLI detected? API key set? | `autostand-adapters::llm::registry` |
 | `test_llm_provider` | `{ provider: string, mode: "cli" \| "api" }` | `{ ok: boolean, message: string, latency_ms: number }` | Ping provider (echo prompt); never throws | `autostand-adapters::llm::test` |
+| `list_provider_models` | `{ provider: string }` | `string[]` | Probe the provider API for model ids. Empty on missing key / unreachable host; `invalid` only for an unknown provider | `autostand-adapters::llm::helpers` |
 | `compile_standup` | `{ date?: string }` | `CompileResult` | Run full pipeline for one date (default: today) | `autostand-core::pipeline::trigger` |
 | `compile_all` | — | `CompileResult[]` | Recompile F_TODAY + F_PREV (business-day aware) | `autostand-core::pipeline::trigger_all` |
 | `read_standup_file` | `{ date: string }` | `StandupFileContent` | Parse `dailies/<date>.md` → AUTO blocks per host, MANUAL region, title, subtitle | `autostand-core::format::parse_file` |
@@ -318,6 +319,8 @@ export const tauriApi = {
   testLlmProvider:     (provider: string, mode: "cli" | "api") =>
                           invoke<{ ok: boolean; message: string; latency_ms: number }>(
                             "test_llm_provider", { provider, mode }),
+  listProviderModels:  (provider: string)          =>
+                          invoke<string[]>("list_provider_models", { provider }),
   compileStandup:       (date?: string)             => invoke<CompileResult>("compile_standup", { date }),
   compileAll:          ()                          => invoke<CompileResult[]>("compile_all"),
   readStandupFile:      (date: string)              => invoke<StandupFileContent>("read_standup_file", { date }),

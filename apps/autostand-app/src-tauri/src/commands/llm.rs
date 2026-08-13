@@ -1,7 +1,8 @@
 //! LLM provider IPC commands.
 //!
 //! See `docs/tauri/02-ipc-contracts.md` rows `list_llm_providers`,
-//! `test_llm_provider`, `store_api_key`, `get_api_key_status`, `detect_cli`.
+//! `test_llm_provider`, `list_provider_models`, `store_api_key`,
+//! `get_api_key_status`, `detect_cli`.
 //!
 //! CLI detection goes through the adapter `detect_cli_binary` helper and API
 //! keys through the `keyring` crate; `test_llm_provider` dispatches to the
@@ -333,10 +334,199 @@ pub async fn detect_cli(
     Ok(info)
 }
 
+/// Resolve the saved `api_base_url` for `provider`, or the documented default.
+fn api_base_for(provider: &str, stored: &ProviderConfig) -> String {
+    match provider {
+        "ollama" => stored
+            .api_base_url
+            .clone()
+            .unwrap_or_else(|| "http://localhost:11434".to_string()),
+        "claude" => stored
+            .api_base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.anthropic.com".to_string()),
+        "openai" => stored
+            .api_base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com".to_string()),
+        "gemini" => stored
+            .api_base_url
+            .clone()
+            .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string()),
+        "grok" => stored
+            .api_base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.x.ai".to_string()),
+        _ => String::new(),
+    }
+}
+
+/// Resolve the API key for `provider` via keychain + env, returning `None` if unset.
+fn resolve_key(provider: &str, stored: &ProviderConfig) -> Option<String> {
+    let env_vars: &[&str] = match provider {
+        "claude" => &["ANTHROPIC_API_KEY"],
+        "openai" => &["OPENAI_API_KEY"],
+        "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "grok" => &["XAI_API_KEY", "GROK_API_KEY"],
+        _ => &[],
+    };
+    autostand_adapters::llm::helpers::resolve_api_key(
+        &crate::render::provider_config(stored, None),
+        provider,
+        env_vars,
+    )
+}
+
+/// Parse a `/v1/models`-style response (`{ "data": [{ "id": "..." }] }`) into a
+/// sorted, deduped list of model ids.
+fn parse_openai_models(resp: &serde_json::Value) -> Vec<String> {
+    resp.get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            let mut ids: Vec<String> = arr
+                .iter()
+                .filter_map(|entry| entry.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        })
+        .unwrap_or_default()
+}
+
+/// Parse a `/v1beta/models?key=…` response (`{ "models": [{ "name": "models/foo" }] }`)
+/// stripping the `models/` prefix.
+fn parse_gemini_models(resp: &serde_json::Value) -> Vec<String> {
+    resp.get("models")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            let mut ids: Vec<String> = arr
+                .iter()
+                .filter_map(|entry| entry.get("name").and_then(|n| n.as_str()).map(String::from))
+                .map(|n| n.strip_prefix("models/").unwrap_or(&n).to_string())
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        })
+        .unwrap_or_default()
+}
+
+/// Parse an Ollama `/api/tags` response (`{ "models": [{ "name": "llama3.2:latest" }] }`).
+fn parse_ollama_models(resp: &serde_json::Value) -> Vec<String> {
+    resp.get("models")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            let mut ids: Vec<String> = arr
+                .iter()
+                .filter_map(|entry| entry.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        })
+        .unwrap_or_default()
+}
+
+/// List available models for a provider via its API.
+///
+/// Returns an empty `Vec` (never an error) when the API key is missing or the
+/// endpoint is unreachable — the Settings UI shows the saved model only, so a
+/// failed probe is not a verdict on the saved config.
+#[tauri::command]
+pub async fn list_provider_models(
+    app_handle: AppHandle,
+    provider: String,
+) -> Result<Vec<String>, AppError> {
+    if binary_for(&provider).is_none() {
+        return Err(AppError::Invalid(format!("unknown provider: {provider}")));
+    }
+    let config = crate::commands::load_config(&app_handle)?;
+    let stored = stored_entry(&config, &provider);
+    let base = api_base_for(&provider, &stored);
+    if base.is_empty() {
+        return Ok(Vec::new());
+    }
+    let client = autostand_adapters::llm::helpers::build_client();
+    let timeout = 15u64;
+
+    let result = match provider.as_str() {
+        "ollama" => {
+            let url = format!("{base}/api/tags");
+            let auth = resolve_key(&provider, &stored);
+            let mut headers: Vec<(&str, &str)> = Vec::new();
+            if let Some(ref k) = auth {
+                headers.push(("Authorization", k.as_str()));
+            }
+            autostand_adapters::llm::helpers::http_get_json(&client, &url, &headers, timeout)
+                .await
+                .map(|resp| parse_ollama_models(&resp))
+        }
+        "claude" => match resolve_key(&provider, &stored) {
+            Some(key) => {
+                let url = format!("{base}/v1/models");
+                let headers = [
+                    ("x-api-key", key.as_str()),
+                    ("anthropic-version", "2023-06-01"),
+                ];
+                autostand_adapters::llm::helpers::http_get_json(&client, &url, &headers, timeout)
+                    .await
+                    .map(|resp| parse_openai_models(&resp))
+            }
+            None => Err(LlmError::AuthError),
+        },
+        "openai" => match resolve_key(&provider, &stored) {
+            Some(key) => {
+                let url = format!("{base}/v1/models");
+                let auth = format!("Bearer {key}");
+                let headers = [("Authorization", auth.as_str())];
+                autostand_adapters::llm::helpers::http_get_json(&client, &url, &headers, timeout)
+                    .await
+                    .map(|resp| parse_openai_models(&resp))
+            }
+            None => Err(LlmError::AuthError),
+        },
+        "grok" => match resolve_key(&provider, &stored) {
+            Some(key) => {
+                let url = format!("{base}/v1/models");
+                let auth = format!("Bearer {key}");
+                let headers = [("Authorization", auth.as_str())];
+                autostand_adapters::llm::helpers::http_get_json(&client, &url, &headers, timeout)
+                    .await
+                    .map(|resp| parse_openai_models(&resp))
+            }
+            None => Err(LlmError::AuthError),
+        },
+        "gemini" => match resolve_key(&provider, &stored) {
+            Some(key) => {
+                let url = format!("{base}/v1beta/models?key={key}");
+                autostand_adapters::llm::helpers::http_get_json(&client, &url, &[], timeout)
+                    .await
+                    .map(|resp| parse_gemini_models(&resp))
+            }
+            None => Err(LlmError::AuthError),
+        },
+        _ => return Ok(Vec::new()),
+    };
+
+    match result {
+        Ok(models) => Ok(models),
+        Err(err) => {
+            tracing::warn!(
+                provider = %provider,
+                reason = %probe_failure(&err),
+                "model list probe failed"
+            );
+            Ok(Vec::new())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        binary_for, env_var_for, is_local_only, probe_failure, probe_mode, stored_entry,
+        api_base_for, binary_for, env_var_for, is_local_only, parse_gemini_models,
+        parse_ollama_models, parse_openai_models, probe_failure, probe_mode, stored_entry,
         AdapterMode, AppConfig, LlmError, ProviderConfig, PROVIDERS,
     };
     use crate::commands::types::ProviderMode;
@@ -497,6 +687,72 @@ mod tests {
         assert!(entry.model.is_empty());
         assert!(entry.api_base_url.is_none());
         assert_eq!(entry.timeout_secs, 0);
+    }
+
+    #[test]
+    fn parse_openai_models_sorts_and_dedups_ids() {
+        let resp = serde_json::json!({
+            "data": [
+                { "id": "gpt-4o" },
+                { "id": "o3" },
+                { "id": "gpt-4o" },
+                { "object": "model" }
+            ]
+        });
+        assert_eq!(parse_openai_models(&resp), ["gpt-4o", "o3"]);
+    }
+
+    #[test]
+    fn parse_openai_models_is_empty_when_the_payload_is_malformed() {
+        assert!(parse_openai_models(&serde_json::json!({})).is_empty());
+        assert!(parse_openai_models(&serde_json::json!({ "data": "nope" })).is_empty());
+    }
+
+    #[test]
+    fn parse_gemini_models_strips_the_models_prefix() {
+        let resp = serde_json::json!({
+            "models": [
+                { "name": "models/gemini-2.5-pro" },
+                { "name": "gemini-2.0-flash" },
+                { "name": "models/gemini-2.5-pro" }
+            ]
+        });
+        assert_eq!(
+            parse_gemini_models(&resp),
+            ["gemini-2.0-flash", "gemini-2.5-pro"]
+        );
+    }
+
+    #[test]
+    fn parse_ollama_models_reads_local_tag_names() {
+        let resp = serde_json::json!({
+            "models": [
+                { "name": "llama3.2:latest" },
+                { "name": "mistral" },
+                { "digest": "sha256:abc" }
+            ]
+        });
+        assert_eq!(parse_ollama_models(&resp), ["llama3.2:latest", "mistral"]);
+    }
+
+    #[test]
+    fn api_base_for_uses_the_documented_default_or_the_saved_override() {
+        let blank = ProviderConfig::default();
+        assert_eq!(api_base_for("ollama", &blank), "http://localhost:11434");
+        assert_eq!(api_base_for("claude", &blank), "https://api.anthropic.com");
+        assert_eq!(api_base_for("openai", &blank), "https://api.openai.com");
+        assert_eq!(
+            api_base_for("gemini", &blank),
+            "https://generativelanguage.googleapis.com"
+        );
+        assert_eq!(api_base_for("grok", &blank), "https://api.x.ai");
+        assert_eq!(api_base_for("nope", &blank), "");
+
+        let override_cfg = ProviderConfig {
+            api_base_url: Some("http://proxy.local".to_string()),
+            ..ProviderConfig::default()
+        };
+        assert_eq!(api_base_for("claude", &override_cfg), "http://proxy.local");
     }
 
     #[test]

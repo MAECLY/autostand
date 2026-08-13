@@ -397,7 +397,7 @@ The app's home route. Shows today's standup preview + a single "Compile now" but
 
 Tabbed configuration UI. Tabs:
 
-1. **Providers** — one `ProviderCard` per LLM provider (`claude`, `ollama`, `openai`, `gemini`, `grok`). Each card shows CLI detect status (`detect_cli`), API key status (`get_api_key_status`), mode dropdown (`CliFirst`/`ApiFallback`/`CliOnly`/`ApiOnly`), model input, "Test" button (calls `test_llm_provider` and shows latency). "Store key" opens a dialog that calls `store_api_key`.
+1. **Providers** — one `ProviderCard` per LLM provider (`claude`, `ollama`, `openai`, `gemini`, `grok`). Each card shows CLI detect status (`detect_cli`), API key status (`get_api_key_status`), mode dropdown (`CliFirst`/`ApiFallback`/`CliOnly`/`ApiOnly`), model Select from `list_provider_models` (free-text "Custom…" / empty-probe fallback), "Test" button (calls `test_llm_provider` and shows latency). "Store key" opens a dialog that calls `store_api_key`.
 2. **Data Sources** — `DataSourceToggle` list bound to `list_data_sources` + `toggle_data_source`. `local_git` is always on (disabled toggle).
 3. **Paths** — `PathInput` for `github_dir`, `dailies_dir`; `validate_paths` runs on blur and shows green/red badges. "Discover repos" button calls `discover_repos` and renders a `RepoInfo` table.
 4. **Scheduler** — cron editor bound to `set_scheduler_schedule`; shows `get_scheduler_status` (source: launchd/systemd/task-scheduler/in-process; next run; last run).

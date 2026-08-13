@@ -28,7 +28,7 @@ Three init scripts run in order (see [`support/fixtures.ts`](support/fixtures.ts
 1. a two-line CommonJS shim, so the mocks build has an `exports` object to
    write to;
 2. `@tauri-apps/api/mocks` itself, as a classic script;
-3. `installMockBackend`, which hands `mockIPC` a dispatcher for the 25 IPC
+3. `installMockBackend`, which hands `mockIPC` a dispatcher for the 27 IPC
    commands and publishes `window.__E2E__` for the test helpers.
 
 The fake backend ([`support/mock-backend.ts`](support/mock-backend.ts)) is a real

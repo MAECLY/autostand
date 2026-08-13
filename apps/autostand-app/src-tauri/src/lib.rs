@@ -55,6 +55,7 @@ pub fn run() {
             commands::llm::store_api_key,
             commands::llm::get_api_key_status,
             commands::llm::detect_cli,
+            commands::llm::list_provider_models,
             commands::pipeline::compile_standup,
             commands::pipeline::compile_all,
             commands::pipeline::trigger_run_now,

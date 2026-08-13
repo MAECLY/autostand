@@ -18,6 +18,10 @@ export function apiKeyStatusKey(provider: string) {
   return ["api-key-status", provider] as const;
 }
 
+export function providerModelsKey(provider: string) {
+  return ["provider-models", provider] as const;
+}
+
 export function cliDetectionKey(provider: string) {
   return ["cli-detection", provider] as const;
 }
@@ -70,6 +74,7 @@ export function useStoreApiKey() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: apiKeyStatusKey(provider) }),
         queryClient.invalidateQueries({ queryKey: llmProvidersKey }),
+        queryClient.invalidateQueries({ queryKey: providerModelsKey(provider) }),
       ]);
     },
     onError: (error) => handleInvokeError(error, "Store API key"),
@@ -90,6 +95,16 @@ export function useDetectCli(provider: string) {
     queryFn: () => tauriApi.detectCli(provider),
     enabled: provider.length > 0,
     // Detection spawns the binary with `--version`; the answer holds for a session.
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useProviderModels(provider: string) {
+  return useQuery({
+    queryKey: providerModelsKey(provider),
+    queryFn: () => tauriApi.listProviderModels(provider),
+    enabled: provider.length > 0,
+    // A probe hits the provider API; the catalogue does not change mid-session.
     staleTime: 5 * 60_000,
   });
 }

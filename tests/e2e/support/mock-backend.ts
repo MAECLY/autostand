@@ -7,7 +7,7 @@
  * type-only (erased at transpile time).
  *
  * It routes `invoke` through the real `mockIPC` from `@tauri-apps/api/mocks`
- * — loaded by the preceding init script — and answers each of the 25 IPC
+ * — loaded by the preceding init script — and answers each of the 27 IPC
  * commands from a mutable state object. Commands are dispatched by their exact
  * contract names; anything unlisted rejects loudly rather than resolving
  * `undefined`, so a renamed command fails a spec instead of quietly emptying
@@ -124,6 +124,8 @@ export function installMockBackend(scenario: Scenario): void {
 
       case "list_llm_providers":
         return state.providers;
+      case "list_provider_models":
+        return state.providerModels[String(args.provider)] ?? [];
       case "test_llm_provider": {
         const id = String(args.provider);
         const result = state.providerTests[id];

@@ -65,6 +65,8 @@ export interface BackendState {
   providers: LlmProviderConfig[];
   /** `test_llm_provider` answers, keyed by provider id. */
   providerTests: Record<string, TestProviderResult>;
+  /** `list_provider_models` answers, keyed by provider id. A miss is `[]`. */
+  providerModels: Record<string, string[]>;
   /** `read_standup_file` answers, keyed by filing date. A miss is `not_found`. */
   standups: Record<string, StandupFileContent>;
   /** `list_audit_sidecars` answers, keyed by filing date. A miss is an empty list. */
@@ -432,6 +434,10 @@ export function makeScenario(): Scenario {
       providerTests: {
         claude: { ok: true, message: "claude-sonnet-4 responded", latency_ms: 42 },
         ollama: { ok: false, message: "connection refused", latency_ms: 0 },
+      },
+      providerModels: {
+        claude: ["claude-sonnet-4", "claude-opus-4"],
+        ollama: ["llama3.1", "llama3.2:latest"],
       },
       standups: { [TODAY]: makeStandupFile() },
       sidecars: { [TODAY]: makeSidecars() },
