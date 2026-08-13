@@ -237,7 +237,7 @@ This prevents a render CLI from re-invoking `autostand` and recursing.
 | `llm.preferred_provider` | `claude` | Default provider id |
 | `provider.enabled` | `true` for `claude`, `false` for others | Whether a provider appears in the rotation |
 | `provider.mode` | `CliFirst` | Try CLI first, fall back to API |
-| `provider.model` | `sonnet` (claude), `gpt-5-codex` (openai), `grok-4.5` (grok), `gemini-2.5-pro` (gemini), `llama3.3` (ollama) | Model identifier |
+| `provider.model` | `sonnet` (claude), blank/account default (Codex CLI), `gpt-5` (OpenAI API), `grok-4.5` (grok), `gemini-2.5-pro` (gemini), `llama3.3` (ollama) | Model identifier |
 | `provider.cli_path` | `None` (auto-detect) | Override binary path |
 | `provider.api_key_ref` | `None` | Keychain reference name (not the key) |
 | `provider.api_base_url` | `None` | Custom API base (e.g. self-hosted Ollama) |

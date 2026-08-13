@@ -7,12 +7,13 @@ Anthropic's Claude is the default provider for `autostand`. It is available via 
 **Command:**
 
 ```
-claude -p --model <model> "<prompt>"
+claude -p --no-session-persistence --model <model> < prompt.txt
 ```
 
 - `-p` / `--print` — non-interactive "print" mode (exit after producing output, no REPL).
 - `--model <model>` — overrides the model the CLI uses.
-- The full render prompt is passed as the trailing positional argument.
+- The full render prompt is sent on stdin, and `--no-session-persistence`
+  prevents the synthetic render from being gathered into a future standup.
 
 **Binary:** `claude` (the Anthropic CLI, distributed either via npm `@anthropic-ai/claude-code` or the native installer).
 

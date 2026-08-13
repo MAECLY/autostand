@@ -242,9 +242,12 @@ fn default_model_for(provider_id: &str) -> &'static str {
     match provider_id {
         "claude" => "sonnet",
         "ollama" => "llama3.2",
-        "openai" => "gpt-5",
         "gemini" => "gemini-2.5-flash",
         "grok" => "grok-4.5",
+        // Codex accounts do not all expose the same model ids. Leaving OpenAI
+        // (and unknown providers) blank lets the CLI use the compatible model
+        // selected by the user's Codex configuration. The HTTP adapter owns
+        // its separate API default.
         _ => "",
     }
 }
@@ -393,11 +396,33 @@ fn error_kind(err: &LlmError) -> &'static str {
     match err {
         LlmError::Timeout { .. } => "timeout",
         LlmError::CliNotFound { .. } => "cli_not_found",
-        LlmError::CliExitError { .. } => "cli_exit_error",
-        LlmError::ApiError { .. } => "api_error",
+        LlmError::CliExitError { stderr, .. } => safe_provider_error(stderr, "cli_exit_error"),
+        LlmError::ApiError { body, .. } => safe_provider_error(body, "api_error"),
         LlmError::AuthError => "auth_error",
         LlmError::ParseError { .. } => "parse_error",
         LlmError::RateLimit { .. } => "rate_limit",
+    }
+}
+
+/// Recognise a small allow-list of actionable provider failures.
+///
+/// Raw CLI/API bodies can contain prompts, URLs, or credentials, so they must
+/// never enter the pipeline log. These stable labels reveal only the category
+/// of several common failures observed in the supported CLIs.
+fn safe_provider_error(message: &str, fallback: &'static str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("usage balance exhausted") {
+        "usage_balance_exhausted"
+    } else if lower.contains("payment required") {
+        "payment_required"
+    } else if lower.contains("not logged in") || lower.contains("please run /login") {
+        "not_logged_in"
+    } else if lower.contains("model is not supported")
+        || (lower.contains("model") && lower.contains("not supported"))
+    {
+        "unsupported_model"
+    } else {
+        fallback
     }
 }
 
@@ -1073,6 +1098,10 @@ mod tests {
         let claude = provider_config(&provider("claude", ProviderMode::ApiOnly), None);
         assert_eq!(claude.model, "sonnet");
         assert_eq!(claude.timeout_secs, 180);
+
+        let codex = provider_config(&provider("openai", ProviderMode::CliFirst), None);
+        assert_eq!(codex.model, "");
+        assert_eq!(codex.timeout_secs, 180);
     }
 
     #[test]
@@ -1123,6 +1152,27 @@ mod tests {
                 retry_after_secs: None
             }),
             "rate_limit"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: 1,
+                stderr: "402 Payment Required: Grok Build usage balance exhausted".into(),
+            }),
+            "usage_balance_exhausted"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: 1,
+                stderr: "Not logged in · Please run /login".into(),
+            }),
+            "not_logged_in"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: 1,
+                stderr: "secret-shaped unknown failure sk-test-must-not-leak".into(),
+            }),
+            "cli_exit_error"
         );
     }
 

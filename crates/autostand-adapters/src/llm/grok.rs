@@ -207,6 +207,8 @@ pub(crate) fn official_headless_args<'a>(prompt_file: &'a str, model: &'a str) -
         "1",
         "--permission-mode",
         "dontAsk",
+        "--no-memory",
+        "--no-subagents",
         "--disable-web-search",
     ];
     if !model.trim().is_empty() {
@@ -334,6 +336,8 @@ mod tests {
         assert!(args.contains(&"--verbatim"));
         assert!(args.contains(&"--max-turns"));
         assert!(args.contains(&"1"));
+        assert!(args.contains(&"--no-memory"));
+        assert!(args.contains(&"--no-subagents"));
         assert!(args.contains(&"-m"));
         assert!(args.contains(&"grok-4.5"));
         // A lone positional string is what opens the interactive TUI.

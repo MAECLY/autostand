@@ -49,12 +49,15 @@ impl ClaudeAdapter {
         } else {
             format!("{system_prompt}\n\n{prompt}")
         };
-        let args: Vec<&str> = vec!["-p", "--model", &model, &combined_prompt];
+        // Print mode reads stdin when no positional prompt is provided. This
+        // avoids ARG_MAX for large fact sets, and the render session must not
+        // be persisted and gathered into tomorrow's standup.
+        let args: Vec<&str> = vec!["-p", "--no-session-persistence", "--model", &model];
         let start = Instant::now();
         let body = helpers::run_cli(
             &cmd,
             &args,
-            "",
+            &combined_prompt,
             config.timeout_secs.max(1),
             &[("CLAUDE_STANDUP_RENDER", "1")],
         )
