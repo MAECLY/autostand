@@ -713,7 +713,7 @@ mod tests {
         ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed, RenderOutput,
         MAX_RENDER_CHARS, PROVIDER_ENV,
     };
-    use crate::commands::types::{AppConfig, LlmConfig};
+    use crate::commands::types::{AppConfig, LlmConfig, StandupFormatConfig};
     use std::future::Future;
     use std::sync::Mutex;
 
@@ -782,6 +782,26 @@ mod tests {
         assert!(at("## PR REVIEWS") < at("## EDITED FILES"));
         assert!(at("## EDITED FILES") < at("## NOTES"));
         assert!(at("## NOTES") < at("## OUTPUT"));
+    }
+
+    #[test]
+    fn build_prompt_embeds_every_preset_marker() {
+        for preset in crate::format_presets::all_presets() {
+            let format = StandupFormatConfig {
+                preset,
+                ..StandupFormatConfig::default()
+            };
+            let prompt = build_prompt(&PromptInputs {
+                format: Some(&format),
+                ..full_inputs()
+            });
+            for marker in crate::format_presets::preset_section_markers(preset) {
+                assert!(
+                    prompt.contains(marker),
+                    "{preset:?} prompt is missing {marker}"
+                );
+            }
+        }
     }
 
     #[test]

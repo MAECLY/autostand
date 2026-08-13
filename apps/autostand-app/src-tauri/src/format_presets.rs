@@ -59,6 +59,76 @@ pub fn output_section(config: &StandupFormatConfig) -> String {
     out
 }
 
+/// Bold section headers each preset must put in the `## OUTPUT` template.
+pub fn preset_section_markers(preset: StandupPreset) -> &'static [&'static str] {
+    match preset {
+        StandupPreset::ClassicScrum | StandupPreset::WalkingTimebox => {
+            &["**Yesterday**", "**Today**", "**Blockers**"]
+        }
+        StandupPreset::FourQuestion => &[
+            "**Yesterday**",
+            "**Today**",
+            "**Blockers**",
+            "**Help needed**",
+        ],
+        StandupPreset::MadSadGlad => &["**Mad**", "**Sad**", "**Glad**"],
+        StandupPreset::StartStopContinue => &["**Start**", "**Stop**", "**Continue**"],
+        StandupPreset::KeepDropCreate => &["**Keep**", "**Drop**", "**Create**"],
+        StandupPreset::FiveQuestion => &[
+            "**Yesterday**",
+            "**Today**",
+            "**Blockers**",
+            "**Sprint Goal confidence**",
+            "**Team health**",
+        ],
+        StandupPreset::Spotify4q => &["**Did**", "**Doing**", "**Blocking**", "**Need**"],
+        StandupPreset::AsyncStatus => &[
+            "**Done yesterday**",
+            "**Doing today**",
+            "**Blockers**",
+            "**FYI**",
+        ],
+        StandupPreset::WalkTheBoard => &[
+            "**In-flight cards**",
+            "**Aging / WIP violations**",
+            "**Swarm needed?**",
+        ],
+        StandupPreset::Ytbr => &["**Yesterday**", "**Today**", "**Blockers**", "**Risks**"],
+        StandupPreset::DecisionsCommitments => &[
+            "**Fulfilled**",
+            "**Committing today**",
+            "**Decisions**",
+            "**Blockers**",
+        ],
+        StandupPreset::OkrTied => &[
+            "**Key Result**",
+            "**Yesterday's delta**",
+            "**Today**",
+            "**Blockers**",
+            "**Confidence**",
+        ],
+    }
+}
+
+/// Every documented standup preset, in the same order as the Settings grid.
+pub fn all_presets() -> [StandupPreset; 13] {
+    [
+        StandupPreset::ClassicScrum,
+        StandupPreset::FourQuestion,
+        StandupPreset::MadSadGlad,
+        StandupPreset::StartStopContinue,
+        StandupPreset::KeepDropCreate,
+        StandupPreset::FiveQuestion,
+        StandupPreset::Spotify4q,
+        StandupPreset::AsyncStatus,
+        StandupPreset::WalkingTimebox,
+        StandupPreset::WalkTheBoard,
+        StandupPreset::Ytbr,
+        StandupPreset::DecisionsCommitments,
+        StandupPreset::OkrTied,
+    ]
+}
+
 /// The preset-specific template text.
 fn preset_template(preset: StandupPreset) -> &'static str {
     match preset {
@@ -262,24 +332,25 @@ mod tests {
     }
 
     #[test]
+    fn each_preset_embeds_its_section_markers() {
+        for preset in all_presets() {
+            let section = output_section(&StandupFormatConfig {
+                preset,
+                ..StandupFormatConfig::default()
+            });
+            for marker in preset_section_markers(preset) {
+                assert!(
+                    section.contains(marker),
+                    "{preset:?} is missing {marker}:\n{section}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn each_preset_produces_a_distinct_template() {
-        let presets = [
-            StandupPreset::ClassicScrum,
-            StandupPreset::FourQuestion,
-            StandupPreset::MadSadGlad,
-            StandupPreset::StartStopContinue,
-            StandupPreset::KeepDropCreate,
-            StandupPreset::FiveQuestion,
-            StandupPreset::Spotify4q,
-            StandupPreset::AsyncStatus,
-            StandupPreset::WalkingTimebox,
-            StandupPreset::WalkTheBoard,
-            StandupPreset::Ytbr,
-            StandupPreset::DecisionsCommitments,
-            StandupPreset::OkrTied,
-        ];
         let mut seen = std::collections::HashSet::new();
-        for preset in presets {
+        for preset in all_presets() {
             let config = StandupFormatConfig {
                 preset,
                 ..StandupFormatConfig::default()

@@ -49,3 +49,6 @@ tempfile = "3"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+# Compiles `tests/provider_preset_live.rs`. The test itself also requires
+# `AUTOSTAND_E2E_LIVE=1` and skips any provider whose API key is missing.
+live-e2e = []
