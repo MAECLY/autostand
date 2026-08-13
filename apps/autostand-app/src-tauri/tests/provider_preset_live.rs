@@ -1,4 +1,4 @@
-//! Live 4-provider × 13-preset matrix.
+//! Live provider × 13-preset matrices for HTTP APIs and coding CLIs.
 //!
 //! Double-gated so the default `cargo test --workspace` never hits the
 //! network: compile with `--features live-e2e` **and** set
@@ -13,10 +13,10 @@ use autostand_adapters::llm::{
 };
 use autostand_app::commands::types::StandupFormatConfig;
 use autostand_app::format_presets::{all_presets, preset_section_markers};
-use autostand_app::render::{build_prompt, system_prompt_for, PromptInputs};
+use autostand_app::render::{build_prompt, system_prompt_for, validate_render, PromptInputs};
 
 const FACTS: &str = "### repo: autostand-core / tickets: FIF-136 / commits (1):\n- (FIF-136) Wired the compile pipeline";
-const NOTES: &str = "- Pairing session on the render prompt";
+const NOTES: &str = "- Pairing session on the render prompt\n- Risk: the release deadline may slip without review help";
 
 struct LiveProvider {
     id: &'static str,
@@ -50,6 +50,31 @@ fn live_providers() -> [LiveProvider; 4] {
             env_vars: &[],
             model: "llama3.2",
             adapter: Box::new(OllamaAdapter::default()),
+        },
+    ]
+}
+
+fn live_cli_providers() -> [LiveProvider; 3] {
+    [
+        LiveProvider {
+            id: "claude",
+            env_vars: &[],
+            model: "sonnet",
+            adapter: Box::new(ClaudeAdapter::default()),
+        },
+        LiveProvider {
+            id: "openai",
+            env_vars: &[],
+            // Blank is intentional: the signed-in Codex account selects its
+            // compatible configured default.
+            model: "",
+            adapter: Box::new(OpenAiAdapter::default()),
+        },
+        LiveProvider {
+            id: "grok",
+            env_vars: &[],
+            model: "grok-4.5",
+            adapter: Box::new(GrokAdapter::default()),
         },
     ]
 }
@@ -109,6 +134,69 @@ fn stub_prompt(format: &StandupFormatConfig) -> String {
     })
 }
 
+fn full_preset_config(
+    preset: autostand_app::commands::types::StandupPreset,
+) -> StandupFormatConfig {
+    use autostand_app::commands::types::StandupPreset;
+
+    StandupFormatConfig {
+        preset,
+        include_pr_review: false,
+        include_confidence: matches!(preset, StandupPreset::FiveQuestion | StandupPreset::OkrTied),
+        include_risks: preset == StandupPreset::Ytbr,
+        ..StandupFormatConfig::default()
+    }
+}
+
+fn selected_cli_provider(id: &str) -> bool {
+    let selected = std::env::var("AUTOSTAND_E2E_CLI_PROVIDERS")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match selected {
+        None => true,
+        Some(value) => value
+            .split(',')
+            .map(str::trim)
+            .any(|selected| selected == id),
+    }
+}
+
+fn selected_preset(preset: autostand_app::commands::types::StandupPreset) -> bool {
+    let selected = std::env::var("AUTOSTAND_E2E_PRESETS")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match selected {
+        None => true,
+        Some(value) => value
+            .split(',')
+            .map(str::trim)
+            .any(|selected| selected == format!("{preset:?}")),
+    }
+}
+
+fn validate_live_output(
+    provider: &str,
+    preset: autostand_app::commands::types::StandupPreset,
+    body: &str,
+) -> Result<(), String> {
+    validate_render(body, &["FIF-136".to_string()], &[]).map_err(|error| {
+        format!("{provider} × {preset:?} pipeline validation failed: {error}:\n{body}")
+    })?;
+
+    let missing = preset_section_markers(preset)
+        .iter()
+        .filter(|marker| !body.contains(**marker))
+        .copied()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{provider} × {preset:?} is missing required sections {missing:?}:\n{body}"
+        ))
+    }
+}
+
 #[tokio::test]
 async fn provider_preset_matrix() {
     if std::env::var("AUTOSTAND_E2E_LIVE").ok().as_deref() != Some("1") {
@@ -155,4 +243,69 @@ async fn provider_preset_matrix() {
     }
 
     eprintln!("live matrix: {ran} cells ran, {skipped} skipped");
+}
+
+#[tokio::test]
+async fn cli_provider_preset_matrix() {
+    if std::env::var("AUTOSTAND_E2E_LIVE").ok().as_deref() != Some("1")
+        || std::env::var("AUTOSTAND_E2E_CLI").ok().as_deref() != Some("1")
+    {
+        eprintln!("skipping live CLI matrix: set AUTOSTAND_E2E_LIVE=1 and AUTOSTAND_E2E_CLI=1");
+        return;
+    }
+
+    let system = system_prompt_for("https://example.atlassian.net/browse");
+    let mut failures = Vec::new();
+    let mut ran = 0_u32;
+
+    for provider in live_cli_providers()
+        .into_iter()
+        .filter(|provider| selected_cli_provider(provider.id))
+    {
+        let config = ProviderConfig {
+            mode: ProviderMode::CliOnly,
+            model: provider.model.to_string(),
+            cli_path: None,
+            api_key: None,
+            api_base_url: None,
+            timeout_secs: 180,
+        };
+
+        for preset in all_presets()
+            .into_iter()
+            .filter(|preset| selected_preset(*preset))
+        {
+            let prompt = stub_prompt(&full_preset_config(preset));
+            match provider.adapter.render(&prompt, &system, &config).await {
+                Ok(output) => match validate_live_output(provider.id, preset, &output.body) {
+                    Ok(()) => eprintln!(
+                        "PASS {} × {preset:?} — {} ms, model {}",
+                        provider.id, output.latency_ms, output.model
+                    ),
+                    Err(error) => {
+                        eprintln!("FAIL {error}");
+                        failures.push(error);
+                    }
+                },
+                Err(error) => {
+                    let failure = format!("{} × {preset:?} render failed: {error}", provider.id);
+                    eprintln!("FAIL {failure}");
+                    failures.push(failure);
+                }
+            }
+            ran += 1;
+        }
+    }
+
+    assert!(
+        ran > 0,
+        "no CLI providers selected by AUTOSTAND_E2E_CLI_PROVIDERS"
+    );
+    assert!(
+        failures.is_empty(),
+        "live CLI matrix had {} failure(s):\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+    eprintln!("live CLI matrix: {ran} cells passed");
 }
