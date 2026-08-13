@@ -188,7 +188,7 @@ function DashboardPage() {
             directory.
           </p>
         </div>
-        <CompileButton />
+        <CompileButton date={date} />
       </header>
 
       <Tabs
