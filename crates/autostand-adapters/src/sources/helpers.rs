@@ -161,10 +161,67 @@ pub fn is_keepable_prompt(s: &str) -> bool {
     if looks_like_code_paste(trimmed) {
         return false;
     }
+    if looks_like_agent_dump_line(trimmed) {
+        return false;
+    }
     if autostand_core::meta::is_meta_work(trimmed, None) {
         return false;
     }
     true
+}
+
+/// Lines that come from a Claude Code / Codex review dump, not from a human standup note.
+pub fn looks_like_agent_dump_line(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    if lower.starts_with("changed files")
+        || lower.starts_with("unified diff")
+        || lower.starts_with("=== diff")
+        || lower.starts_with("@@ ")
+        || lower == "prompts:"
+        || lower == "plans:"
+        || lower == "files:"
+        || lower == "## context"
+        || trimmed.starts_with("## CONTEXT")
+        || trimmed.starts_with("===")
+    {
+        return true;
+    }
+    // Review-command file lists: `- src/foo.ts` or `- - package.json`.
+    let bullet = trimmed
+        .trim_start_matches('-')
+        .trim_start_matches('-')
+        .trim();
+    looks_like_source_path(bullet)
+}
+
+/// A path-looking token (`src/foo.ts`, `package.json`, `=== DIFF: x ===`).
+fn looks_like_source_path(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.contains(' ') && !s.contains('/') {
+        return false;
+    }
+    let last = s.rsplit(['/', '\\']).next().unwrap_or(s);
+    last.contains('.')
+        && last
+            .rsplit('.')
+            .next()
+            .is_some_and(|ext| ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// Index of the first line that starts a review-diff dump, if any.
+pub fn agent_dump_cut_line(raw: &str) -> Option<usize> {
+    raw.lines().position(|line| {
+        let lower = line.trim().to_lowercase();
+        lower.starts_with("changed files")
+            || lower.starts_with("unified diff")
+            || lower.starts_with("=== diff")
+            || lower.starts_with("@@ ")
+            || lower.starts_with("## context")
+    })
 }
 
 /// Strip Claude Code preamble blocks that are not real user prompts: XML-like
@@ -246,7 +303,14 @@ impl PromptCollector {
     /// filtered, deduped against all prior lines, and truncated.
     pub fn add(&mut self, raw: &str) {
         let stripped = strip_preamble(raw);
-        for line in stripped.lines() {
+        // A Claude Code "review this change" dump is one user message: a short
+        // intent, then `Changed files` + a unified diff. Keep only the intent.
+        let usable = match agent_dump_cut_line(&stripped) {
+            Some(0) => return,
+            Some(cut) => stripped.lines().take(cut).collect::<Vec<_>>().join("\n"),
+            None => stripped,
+        };
+        for line in usable.lines() {
             if self.snippets.len() >= MAX_SNIPPETS {
                 return;
             }
@@ -475,6 +539,39 @@ mod tests {
     fn is_keepable_prompt_keeps_normal_prose() {
         assert!(is_keepable_prompt("fixed the login redirect bug"));
         assert!(is_keepable_prompt("reviewed PR #42 for the auth module"));
+    }
+
+    #[test]
+    fn is_keepable_prompt_rejects_review_diff_dumps() {
+        assert!(!is_keepable_prompt(
+            "Changed files (you may Read these and any other file in the repo):"
+        ));
+        assert!(!is_keepable_prompt("Unified diff (only + lines are new):"));
+        assert!(!is_keepable_prompt("=== DIFF: package.json ==="));
+        assert!(!is_keepable_prompt("@@ -54,7 +54,7 @@"));
+        assert!(!is_keepable_prompt("- package.json"));
+        assert!(!is_keepable_prompt(
+            "- src/core/application/gorgias/use-cases/create-ticket.ts"
+        ));
+    }
+
+    #[test]
+    fn prompt_collector_keeps_only_the_intent_before_a_diff_dump() {
+        let mut pc = PromptCollector::default();
+        pc.add(
+            "Review this change for security vulnerabilities.\n\
+             Changed files (you may Read these and any other file in the repo):\n\
+             - package.json\n\
+             Unified diff (only + lines are new):\n\
+             === DIFF: package.json ===\n\
+             @@ -54,7 +54,7 @@\n\
+             +    \"@fifty-git/shared\": \"0.53.40\",\n",
+        );
+        let snips = pc.snippets();
+        assert_eq!(snips, ["Review this change for security vulnerabilities."]);
+        assert!(snips
+            .iter()
+            .all(|s| !s.contains("DIFF") && !s.contains("@@")));
     }
 
     #[test]

@@ -66,11 +66,15 @@ pub fn render_det(
     }
 
     if let Some(c) = conv.map(str::trim).filter(|s| !s.is_empty()) {
-        push_section_break(&mut out);
-        out.push_str("**Claude Code context**\n");
-        out.push_str(c);
-        if !out.ends_with('\n') {
-            out.push('\n');
+        let bullets = standup_conv_bullets(c);
+        if !bullets.is_empty() {
+            push_section_break(&mut out);
+            out.push_str("**Session notes**\n");
+            for bullet in bullets {
+                out.push_str("- ");
+                out.push_str(&bullet);
+                out.push('\n');
+            }
         }
     }
 
@@ -84,6 +88,40 @@ pub fn render_det(
     }
 
     Ok(out)
+}
+
+/// Pull standup-worthy bullets out of a session digest.
+///
+/// Claude Code / Codex collectors wrap prompts as `## CONTEXT` / `prompts:`.
+/// When the LLM is down we must not dump that wrapper (or a unified diff) into
+/// the AUTO block — only short human intents and attributed file names.
+fn standup_conv_bullets(conv: &str) -> Vec<String> {
+    let mut bullets = Vec::new();
+    for line in conv.lines() {
+        let trimmed = line.trim();
+        let item = trimmed.strip_prefix("- ").unwrap_or(trimmed).trim();
+        if item.is_empty()
+            || item.eq_ignore_ascii_case("_(none)_")
+            || item.eq_ignore_ascii_case("prompts:")
+            || item.eq_ignore_ascii_case("plans:")
+            || item.eq_ignore_ascii_case("files:")
+            || item.starts_with('#')
+            || item.starts_with("===")
+            || item.starts_with("@@ ")
+            || item.to_lowercase().starts_with("changed files")
+            || item.to_lowercase().starts_with("unified diff")
+        {
+            continue;
+        }
+        if bullets.iter().any(|existing| existing == item) {
+            continue;
+        }
+        bullets.push(item.to_string());
+        if bullets.len() >= 12 {
+            break;
+        }
+    }
+    bullets
 }
 
 struct ParsedRepo {
@@ -233,5 +271,21 @@ mod tests {
         assert!(body.contains("PR #12 opened in autostand"));
         assert!(body.contains("**PR Review**"));
         assert!(body.contains("Approved"));
+    }
+
+    #[test]
+    fn session_digest_keeps_intent_and_drops_diff_dumps() {
+        let conv = "## CONTEXT\nprompts:\n\
+             - Review this change for security vulnerabilities.\n\
+             - Changed files (you may Read these and any other file in the repo):\n\
+             - === DIFF: package.json ===\n\
+             - @@ -54,7 +54,7 @@\n";
+        let body = render_det("", None, "", Some(conv), None, "").expect("render");
+        assert!(body.contains("**Session notes**"));
+        assert!(body.contains("- Review this change for security vulnerabilities."));
+        assert!(!body.contains("DIFF"));
+        assert!(!body.contains("@@ "));
+        assert!(!body.contains("## CONTEXT"));
+        assert!(!body.contains("**Claude Code context**"));
     }
 }

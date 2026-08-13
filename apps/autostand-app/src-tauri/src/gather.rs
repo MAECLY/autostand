@@ -305,7 +305,17 @@ pub fn merge_source_data(out: &mut Gathered, source_id: &str, data: SourceData) 
             out.prrev = prrev;
         }
         SOURCE_CLAUDE_CODE => {
-            out.conv = non_empty(data.enrichment.as_deref());
+            let mut block = data.enrichment.unwrap_or_default();
+            if !data.files.is_empty() {
+                if !block.ends_with('\n') && !block.is_empty() {
+                    block.push('\n');
+                }
+                block.push_str("files:\n");
+                for file in &data.files {
+                    let _ = std::fmt::Write::write_fmt(&mut block, format_args!("- {file}\n"));
+                }
+            }
+            out.conv = non_empty(Some(&block));
             extend_unique(&mut out.claude_files, data.files);
         }
         SOURCE_OPENCODE => out.opencode_sessions = session_entries(&data),
