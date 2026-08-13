@@ -117,11 +117,11 @@ export function ProviderCard({
   const [savingKey, setSavingKey] = useState(false);
 
   const modelsQuery = useProviderModels(provider.id);
-  const discovered = modelsQuery.data ?? [];
+  const discovered = modelsQuery.data;
   const modelOptions = useMemo(() => {
     const seen = new Set<string>();
     const options: string[] = [];
-    for (const id of [...discovered, provider.model]) {
+    for (const id of [...(discovered ?? []), provider.model]) {
       const trimmed = id.trim();
       if (trimmed.length === 0 || seen.has(trimmed)) continue;
       seen.add(trimmed);
@@ -130,7 +130,7 @@ export function ProviderCard({
     return options;
   }, [discovered, provider.model]);
   // An empty probe is not a verdict — CLI-only setups keep the free-text field.
-  const showModelSelect = discovered.length > 0;
+  const showModelSelect = (discovered ?? []).length > 0;
 
   const modelId = `provider-${provider.id}-model`;
   const modeId = `provider-${provider.id}-mode`;
