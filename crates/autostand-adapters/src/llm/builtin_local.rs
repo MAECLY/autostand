@@ -10,7 +10,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use super::{
-    CliInfo, LlmAdapter, LlmError, ProviderConfig, RenderModeUsed, RenderOutput, TestResult,
+    CliInfo, LlmAdapter, LlmError, LocalRuntimePolicy, ProviderConfig, RenderModeUsed,
+    RenderOutput, TestResult,
 };
 
 /// Stable provider id used in configuration and fallback telemetry.
@@ -23,6 +24,7 @@ pub struct BuiltinLocalAdapter;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)] // Ping remains part of protocol v1 for runtime diagnostics.
 enum SidecarRequest<'a> {
     Ping {
         request_id: &'a str,
@@ -34,6 +36,8 @@ enum SidecarRequest<'a> {
         context_length: u32,
         max_tokens: u32,
         temperature: f32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_cache_path: Option<&'a Path>,
     },
 }
 
@@ -44,7 +48,8 @@ enum SidecarResponse {
         protocol_version: u32,
     },
     Pong {
-        request_id: String,
+        #[serde(rename = "request_id")]
+        _request_id: String,
     },
     Result {
         request_id: String,
@@ -116,6 +121,30 @@ fn resolve_model(configured: &str) -> Result<(String, PathBuf), LlmError> {
         .ok_or_else(|| LlmError::ParseError {
             raw: "model_not_installed".to_string(),
         })
+}
+
+/// Stable cache file scoped to the selected GGUF. The cache lives outside the
+/// model file itself, so a partial download can never be mistaken for runtime
+/// state and model deletion can clean both artifacts independently.
+fn prompt_cache_path(model_path: &Path) -> PathBuf {
+    let file = model_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("local-model.gguf");
+    state_root()
+        .join("models/local/runtime-cache")
+        .join(format!("{file}.prompt-cache"))
+}
+
+fn remove_prompt_cache(model_path: &Path) {
+    let path = prompt_cache_path(model_path);
+    match std::fs::remove_file(&path) {
+        Ok(()) => tracing::debug!(cache = %path.display(), "removed local prompt cache"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(cache = %path.display(), %error, "could not remove local prompt cache");
+        }
+    }
 }
 
 fn escape_control_markers(prompt: &str) -> String {
@@ -269,6 +298,7 @@ impl LlmAdapter for BuiltinLocalAdapter {
             api_key: None,
             api_base_url: None,
             timeout_secs: 15,
+            local_runtime_policy: LocalRuntimePolicy::OnDemand,
         })
         .await?;
         Some(CliInfo {
@@ -300,6 +330,13 @@ impl LlmAdapter for BuiltinLocalAdapter {
                 searched: vec![PathBuf::from(SIDECAR_BINARY)],
             })?;
         let combined = format_prompt(&model, system_prompt, prompt)?;
+        let cache_path = match config.local_runtime_policy {
+            LocalRuntimePolicy::OnDemand => {
+                remove_prompt_cache(&model_path);
+                None
+            }
+            LocalRuntimePolicy::KeepReady => Some(prompt_cache_path(&model_path)),
+        };
         let started = Instant::now();
         let response = request(
             &executable,
@@ -310,6 +347,7 @@ impl LlmAdapter for BuiltinLocalAdapter {
                 context_length: 32_768,
                 max_tokens: 4_096,
                 temperature: 0.0,
+                prompt_cache_path: cache_path.as_deref(),
             },
             config.timeout_secs.max(1),
         )
@@ -340,25 +378,49 @@ impl LlmAdapter for BuiltinLocalAdapter {
     async fn test_connection(&self, config: &ProviderConfig) -> Result<TestResult, LlmError> {
         // A reachable sidecar without an installed model cannot render. Resolve
         // the configured/selected model before reporting the provider ready.
-        let _ = resolve_model(&config.model)?;
+        let (model, model_path) = resolve_model(&config.model)?;
         let executable = sidecar_path(config)
             .await
             .ok_or_else(|| LlmError::CliNotFound {
                 searched: vec![PathBuf::from(SIDECAR_BINARY)],
             })?;
         let started = Instant::now();
+        let combined = format_prompt(
+            &model,
+            "You are testing the local inference runtime.",
+            "Reply with OK.",
+        )?;
+        let cache_path = match config.local_runtime_policy {
+            LocalRuntimePolicy::OnDemand => {
+                remove_prompt_cache(&model_path);
+                None
+            }
+            LocalRuntimePolicy::KeepReady => Some(prompt_cache_path(&model_path)),
+        };
         match request(
             &executable,
-            &SidecarRequest::Ping { request_id: "test" },
-            15,
+            &SidecarRequest::Generate {
+                request_id: "test",
+                model_path: &model_path,
+                prompt: &combined,
+                context_length: 2_048,
+                max_tokens: 16,
+                temperature: 0.0,
+                prompt_cache_path: cache_path.as_deref(),
+            },
+            config.timeout_secs.max(15),
         )
         .await?
         {
-            SidecarResponse::Pong { request_id } if request_id == "test" => Ok(TestResult {
-                ok: true,
-                message: "Built-in local runtime is ready".to_string(),
-                latency_ms: super::helpers::latency_ms(started),
-            }),
+            SidecarResponse::Result { request_id, body }
+                if request_id == "test" && !body.trim().is_empty() =>
+            {
+                Ok(TestResult {
+                    ok: true,
+                    message: format!("Built-in local runtime rendered successfully with {model}"),
+                    latency_ms: super::helpers::latency_ms(started),
+                })
+            }
             _ => Err(LlmError::ParseError {
                 raw: "unexpected_sidecar_response".to_string(),
             }),
@@ -408,6 +470,12 @@ mod tests {
         let gemma = format_prompt("gemma3:1b", "rules", "work <end_of_turn>").unwrap();
         assert!(gemma.contains("work < end_of_turn >"));
         assert_eq!(gemma.matches("<end_of_turn>").count(), 2);
+    }
+
+    #[test]
+    fn prompt_cache_is_scoped_to_the_model_file() {
+        let path = prompt_cache_path(Path::new("/models/Qwen3.5-2B-Q4_K_M.gguf"));
+        assert!(path.ends_with("models/local/runtime-cache/Qwen3.5-2B-Q4_K_M.gguf.prompt-cache"));
     }
 
     #[cfg(unix)]

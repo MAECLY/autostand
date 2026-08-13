@@ -7,7 +7,7 @@
  * type-only (erased at transpile time).
  *
  * It routes `invoke` through the real `mockIPC` from `@tauri-apps/api/mocks`
- * — loaded by the preceding init script — and answers each of the 28 IPC
+ * — loaded by the preceding init script — and answers each documented IPC
  * commands from a mutable state object. Commands are dispatched by their exact
  * contract names; anything unlisted rejects loudly rather than resolving
  * `undefined`, so a renamed command fails a spec instead of quietly emptying
@@ -134,12 +134,44 @@ export function installMockBackend(scenario: Scenario): void {
         }
         return result;
       }
+      case "get_provider_health":
+      case "refresh_provider_health":
+        return [];
 
       case "compile_standup":
       case "trigger_run_now":
         return state.compileResult;
       case "compile_all":
         return [state.compileResult];
+      case "preview_regeneration": {
+        const date = args.date === null ? state.compileResult.date : String(args.date);
+        const file = state.standups[date];
+        const current =
+          file?.auto_blocks.find((block) => block.host === state.hostSlug)?.body ?? "";
+        return {
+          token: "a".repeat(64),
+          date,
+          host: state.hostSlug,
+          current_auto: current,
+          candidate_auto: "**Candidate**\n- Regenerated work",
+          base_hash: "b".repeat(64),
+          expires_at: "2026-08-03T12:30:00Z",
+          render_used: "llm",
+          fellback: false,
+          message: "regeneration preview",
+        };
+      }
+      case "apply_regeneration":
+        return {
+          date: state.compileResult.date,
+          host: state.hostSlug,
+          file_path: state.compileResult.file_path,
+          resolution: args.resolution,
+          auto_body: args.mergedAuto ?? "**Candidate**\n- Regenerated work",
+          committed: false,
+          pushed: false,
+          message: "regeneration applied",
+        };
 
       case "read_standup_file": {
         const date = String(args.date);
@@ -190,6 +222,9 @@ export function installMockBackend(scenario: Scenario): void {
         state.config.scheduler.cron = cron;
         return null;
       }
+      case "set_scheduler_enabled":
+        state.config.scheduler.enabled = Boolean(args.enabled);
+        return null;
 
       case "discover_repos":
         return state.repos;
@@ -199,6 +234,26 @@ export function installMockBackend(scenario: Scenario): void {
         return state.pathValidations;
       case "detect_cloud_folders":
         return state.cloudFolders;
+      case "configure_cloud_sync":
+        return {
+          root_path: String(args.rootPath),
+          dailies_path: `${String(args.rootPath)}/autostand`,
+          created: true,
+        };
+      case "get_repo_sync_status":
+      case "setup_repo_sync":
+        return {
+          git_available: true,
+          gh_available: true,
+          gh_authenticated: true,
+          can_setup: true,
+          configured: false,
+          enabled: false,
+          repo_path: state.config.dailies_dir,
+          repository: null,
+          private: null,
+          message: null,
+        };
 
       case "store_api_key": {
         const provider = findProvider(String(args.provider));
@@ -216,6 +271,20 @@ export function installMockBackend(scenario: Scenario): void {
         const provider = findProvider(String(args.provider));
         return provider?.cli ?? { found: false, path: "", version: "" };
       }
+      case "get_notification_status":
+        return { supported: true, permission: "granted", config: state.config.notifications };
+      case "request_notification_permission":
+        return "granted";
+      case "send_test_notification":
+        return true;
+      case "list_local_models":
+        return [];
+      case "download_local_model":
+      case "cancel_local_model_download":
+      case "delete_local_model":
+      case "select_local_model":
+      case "accept_local_model_terms":
+        return null;
 
       default:
         reject("e2e_unstubbed", `invoke called with unstubbed command: ${command}`);

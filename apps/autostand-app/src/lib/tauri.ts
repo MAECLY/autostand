@@ -17,6 +17,7 @@ import type {
   AuditSidecar,
   CliDetection,
   CloudFolder,
+  CloudSyncSelection,
   CompileResult,
   DataSourceConfig,
   GatherPreview,
@@ -34,6 +35,10 @@ import type {
   ProviderHealth,
   ProviderTestMode,
   RepoInfo,
+  RegenerationApplied,
+  RegenerationPreview,
+  RegenerationResolution,
+  RepoSyncStatus,
   SchedulerStatus,
   SchedulerTickEvent,
   SettingsPaths,
@@ -68,6 +73,20 @@ export const tauriApi = {
     invoke<CompileResult>("compile_standup", { date: date ?? null }),
   compileAll: () => invoke<CompileResult[]>("compile_all"),
   triggerRunNow: () => invoke<CompileResult>("trigger_run_now"),
+  previewRegeneration: (date?: string) =>
+    invoke<RegenerationPreview>("preview_regeneration", {
+      date: date ?? null,
+    }),
+  applyRegeneration: (
+    token: string,
+    resolution: RegenerationResolution,
+    mergedAuto?: string,
+  ) =>
+    invoke<RegenerationApplied>("apply_regeneration", {
+      token,
+      resolution,
+      mergedAuto: mergedAuto ?? null,
+    }),
 
   readStandupFile: (date: string) =>
     invoke<StandupFileContent>("read_standup_file", { date }),
@@ -88,6 +107,8 @@ export const tauriApi = {
   getSchedulerStatus: () => invoke<SchedulerStatus>("get_scheduler_status"),
   setSchedulerSchedule: (cron: string) =>
     invoke<void>("set_scheduler_schedule", { cron }),
+  setSchedulerEnabled: (enabled: boolean) =>
+    invoke<void>("set_scheduler_enabled", { enabled }),
 
   discoverRepos: () => invoke<RepoInfo[]>("discover_repos"),
 
@@ -95,6 +116,14 @@ export const tauriApi = {
   validatePaths: () => invoke<PathValidation[]>("validate_paths"),
 
   detectCloudFolders: () => invoke<CloudFolder[]>("detect_cloud_folders"),
+  configureCloudSync: (rootPath: string) =>
+    invoke<CloudSyncSelection>("configure_cloud_sync", { rootPath }),
+  getRepoSyncStatus: () =>
+    invoke<RepoSyncStatus>("get_repo_sync_status"),
+  setupRepoSync: (repoName?: string) =>
+    invoke<RepoSyncStatus>("setup_repo_sync", {
+      repoName: repoName?.trim() || null,
+    }),
 
   storeApiKey: (provider: string, key: string) =>
     invoke<void>("store_api_key", { provider, key }),

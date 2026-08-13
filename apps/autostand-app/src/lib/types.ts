@@ -65,6 +65,19 @@ export interface AppConfig {
   scrub: ScrubConfig;
   format: StandupFormatConfig;
   notifications: NotificationConfig;
+  sync: SyncConfig;
+  regeneration: RegenerationConfig;
+}
+
+export interface RegenerationConfig {
+  replace_immediately: boolean;
+}
+
+export interface SyncConfig {
+  /** Selected provider root; dailies are stored in its `autostand/` child. */
+  cloud_root: string | null;
+  /** User preference. Effective availability is reported by RepoSyncStatus. */
+  repo_enabled: boolean;
 }
 
 export interface NotificationConfig {
@@ -90,7 +103,11 @@ export interface LlmConfig {
   fallback_enabled: boolean;
   provider_order: string[];
   fallback_policy: ProviderFallbackPolicy;
+  local_runtime_policy: LocalRuntimePolicy;
 }
+
+/** Lifecycle policy for the managed built-in local runtime. */
+export type LocalRuntimePolicy = "on_demand" | "keep_ready";
 
 export interface ProviderFallbackPolicy {
   retry_rate_limits: boolean;
@@ -293,6 +310,36 @@ export interface CompileResult {
   message: string;
 }
 
+export type RegenerationResolution =
+  | "keep_current"
+  | "use_candidate"
+  | "merge";
+
+export interface RegenerationPreview {
+  token: string;
+  date: string;
+  host: string;
+  current_auto: string;
+  candidate_auto: string;
+  /** SHA-256 of the exact live file when the comparison was generated. */
+  base_hash: string;
+  expires_at: string;
+  render_used: RenderUsed;
+  fellback: boolean;
+  message: string;
+}
+
+export interface RegenerationApplied {
+  date: string;
+  host: string;
+  file_path: string;
+  resolution: RegenerationResolution;
+  auto_body: string;
+  committed: boolean;
+  pushed: boolean;
+  message: string;
+}
+
 export interface StandupFileContent {
   date: string;
   /** e.g. `Daily Standup — August 03, 2026`. */
@@ -482,10 +529,32 @@ export interface CloudFolder {
   label: string;
   /** Absolute path to the folder root. */
   path: string;
+  /** Directory used by the pipeline: `<path>/autostand`. */
+  dailies_path: string;
   /** Whether the folder exists on this machine. */
   exists: boolean;
   /** Cloud provider name, e.g. `iCloud`, `OneDrive`, `Syncthing`. */
   provider: string;
+}
+
+export interface CloudSyncSelection {
+  root_path: string;
+  dailies_path: string;
+  created: boolean;
+}
+
+export interface RepoSyncStatus {
+  git_available: boolean;
+  gh_available: boolean;
+  gh_authenticated: boolean;
+  can_setup: boolean;
+  configured: boolean;
+  enabled: boolean;
+  repo_path: string;
+  /** Safe `owner/name` identifier; never a credential-bearing remote URL. */
+  repository: string | null;
+  private: boolean | null;
+  message: string | null;
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────

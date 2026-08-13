@@ -27,14 +27,14 @@ use std::time::Duration;
 
 use autostand_adapters::llm::helpers;
 use autostand_adapters::llm::traits::{
-    LlmAdapter, LlmError, ProviderConfig as AdapterConfig, ProviderMode as AdapterMode,
-    RenderModeUsed, RenderOutput,
+    LlmAdapter, LlmError, LocalRuntimePolicy as AdapterLocalRuntimePolicy,
+    ProviderConfig as AdapterConfig, ProviderMode as AdapterMode, RenderModeUsed, RenderOutput,
 };
 use autostand_core::provenance::extract_tickets;
 
 use crate::commands::types::{
-    AppConfig, ProviderConfig, ProviderFallbackPolicy, ProviderMode, RenderMode,
-    StandupFormatConfig,
+    AppConfig, LocalRuntimePolicy, ProviderConfig, ProviderFallbackPolicy, ProviderMode,
+    RenderMode, StandupFormatConfig,
 };
 
 // ── Canonical prompt ──────────────────────────────────────────────────────
@@ -294,6 +294,16 @@ fn parse_mode(raw: &str) -> Option<AdapterMode> {
 /// the Settings UI stores `""` for "not chosen yet", and sending that straight to a CLI's
 /// `--model` flag would fail every render.
 pub fn provider_config(cfg: &ProviderConfig, api_key: Option<String>) -> AdapterConfig {
+    provider_config_with_local_policy(cfg, api_key, LocalRuntimePolicy::OnDemand)
+}
+
+/// Translate provider settings while preserving the app-level local lifecycle
+/// policy. Non-local adapters receive the value but intentionally ignore it.
+pub fn provider_config_with_local_policy(
+    cfg: &ProviderConfig,
+    api_key: Option<String>,
+    local_runtime_policy: LocalRuntimePolicy,
+) -> AdapterConfig {
     let is_builtin_local = cfg.id == "builtin-local";
     let model = if cfg.model.trim().is_empty() {
         default_model_for(&cfg.id).to_string()
@@ -328,6 +338,10 @@ pub fn provider_config(cfg: &ProviderConfig, api_key: Option<String>) -> Adapter
                 .filter(|u| !u.is_empty())
         },
         timeout_secs,
+        local_runtime_policy: match local_runtime_policy {
+            LocalRuntimePolicy::OnDemand => AdapterLocalRuntimePolicy::OnDemand,
+            LocalRuntimePolicy::KeepReady => AdapterLocalRuntimePolicy::KeepReady,
+        },
     }
 }
 
@@ -860,7 +874,8 @@ async fn render_llm_outcome_inner(
         } else {
             helpers::load_api_key(&provider_id, env_vars_for(&provider_id))
         };
-        let mut adapter_cfg = provider_config(&entry, api_key);
+        let mut adapter_cfg =
+            provider_config_with_local_policy(&entry, api_key, config.llm.local_runtime_policy);
         adapter_cfg.mode = mode;
         log(&format!(
             "prompt ready — {} chars, provider {provider_id}, mode {mode:?}",
@@ -955,6 +970,13 @@ pub enum ValidationFailure {
     /// The body had no `- ` bullet at all, so it is not a standup.
     #[error("render body has no bullet lines")]
     NoBullets,
+    /// The provider echoed the prompt, a conversation transcript, or a raw diff
+    /// instead of summarizing the work as a standup.
+    #[error("render appears to contain raw prompt or source context ({reason})")]
+    ContextDump {
+        /// Stable, human-readable signal that caused the rejection.
+        reason: &'static str,
+    },
     /// The body claimed nothing happened while the window had facts.
     #[error("render claims no work was done, but the window has facts")]
     NoWorkClaim,
@@ -982,11 +1004,56 @@ impl ValidationFailure {
             Self::Empty => "empty",
             Self::TooLong { .. } => "too_long",
             Self::NoBullets => "no_bullets",
+            Self::ContextDump { .. } => "context_dump",
             Self::NoWorkClaim => "no_work_claim",
             Self::ForbiddenTicket { .. } => "forbidden_ticket",
             Self::InventedTicket { .. } => "invented_ticket",
         }
     }
+}
+
+/// Return a high-confidence reason when a render is actually an echoed input.
+///
+/// These checks intentionally require either a very specific marker or a pair
+/// of related markers. Standup presets are free to use headings and discuss
+/// prompts/diffs; what is unsafe is reproducing the pipeline's own envelope or
+/// a tool's raw review request verbatim.
+fn context_dump_reason(body: &str) -> Option<&'static str> {
+    let lower = body.to_ascii_lowercase();
+
+    if lower.contains("unified diff (only + lines are new)")
+        || (lower.contains("=== diff:")
+            && lower
+                .lines()
+                .any(|line| line.trim_start_matches([' ', '-', '+']).starts_with("@@ -")))
+    {
+        return Some("raw_diff");
+    }
+
+    if lower.contains("## context")
+        && (lower.lines().any(|line| line.trim() == "prompts:")
+            || lower.contains("changed files (you may read"))
+    {
+        return Some("conversation_context");
+    }
+
+    let prompt_sections = [
+        "## git facts",
+        "## github",
+        "## pr reviews",
+        "## edited files",
+        "## notes",
+        "## previous render",
+        "## output",
+    ]
+    .iter()
+    .filter(|marker| lower.contains(**marker))
+    .count();
+    if prompt_sections >= 3 {
+        return Some("prompt_envelope");
+    }
+
+    None
 }
 
 /// Validate an LLM body against the window's provenance — step (n) of the pipeline spec.
@@ -1023,6 +1090,10 @@ pub fn validate_render(
         return Err(ValidationFailure::NoBullets);
     }
 
+    if let Some(reason) = context_dump_reason(trimmed) {
+        return Err(ValidationFailure::ContextDump { reason });
+    }
+
     if !range_tickets.is_empty() {
         let lower = trimmed.to_lowercase();
         if NO_WORK_PHRASES.iter().any(|p| lower.contains(p)) {
@@ -1045,13 +1116,14 @@ pub fn validate_render(
 mod tests {
     use super::{
         adapter_for, attempt_plan, build_prompt, error_kind, is_render_subprocess, parse_mode,
-        provider_chain, provider_config, render_via_backend, strip_code_fence, system_prompt,
-        system_prompt_for, validate_render, AdapterConfig, AdapterMode, LlmError, PromptInputs,
-        ProviderAttemptStatus, ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed,
-        RenderOutput, MAX_RENDER_CHARS, PROVIDER_ENV,
+        provider_chain, provider_config, provider_config_with_local_policy, render_via_backend,
+        strip_code_fence, system_prompt, system_prompt_for, validate_render, AdapterConfig,
+        AdapterLocalRuntimePolicy, AdapterMode, LlmError, PromptInputs, ProviderAttemptStatus,
+        ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed, RenderOutput,
+        MAX_RENDER_CHARS, PROVIDER_ENV,
     };
     use crate::commands::types::{
-        AppConfig, LlmConfig, ProviderFallbackPolicy, StandupFormatConfig,
+        AppConfig, LlmConfig, LocalRuntimePolicy, ProviderFallbackPolicy, StandupFormatConfig,
     };
     use std::future::Future;
     use std::sync::Mutex;
@@ -1253,6 +1325,65 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_the_observed_claude_context_dump() {
+        let body = "**Claude Code context**\n\
+            ## CONTEXT\n\
+            prompts:\n\
+            - Review this change for security vulnerabilities.\n\
+            - Changed files (you may Read these and any other file in the repo):\n\
+            - Unified diff (only + lines are new):\n\
+            === DIFF: package.json ===\n\
+            @@ -54,7 +54,7 @@\n\
+            - Updated a dependency\n";
+        let err = validate_render(body, &[], &[]).expect_err("context dumps are rejected");
+        assert_eq!(err.code(), "context_dump");
+        assert!(err.to_string().contains("raw_diff"));
+    }
+
+    #[test]
+    fn validate_rejects_an_echoed_pipeline_prompt() {
+        let body = "**Summary**\n\
+            ## GIT FACTS\n\
+            - raw commit\n\
+            ## NOTES\n\
+            - raw note\n\
+            ## OUTPUT\n\
+            - instruction text\n";
+        let err = validate_render(body, &[], &[]).expect_err("prompt envelopes are rejected");
+        assert_eq!(err.code(), "context_dump");
+    }
+
+    #[test]
+    fn validate_does_not_reject_normal_standup_headings_or_diff_work() {
+        let bodies = [
+            "## Context\n- Reviewed the authentication flow and documented the findings\n",
+            "**API**\n- Reviewed a unified diff and fixed the request validator\n",
+            "## Notes\n- Implemented the output renderer and added regression coverage\n",
+        ];
+        for body in bodies {
+            assert!(
+                validate_render(body, &[], &[]).is_ok(),
+                "normal standup was rejected: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_accepts_every_configured_preset_shape() {
+        for preset in crate::format_presets::all_presets() {
+            let body = crate::format_presets::preset_section_markers(preset)
+                .iter()
+                .map(|marker| format!("{marker}\n- Completed the relevant work"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            assert!(
+                validate_render(&body, &[], &[]).is_ok(),
+                "preset {preset:?} was rejected: {body}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_rejects_an_invented_ticket() {
         let range = vec!["FIF-133".to_string()];
         let body = "**autostand**\n- Implemented FIF-999 end to end\n";
@@ -1379,6 +1510,7 @@ mod tests {
         assert!(config.provider_order.is_empty());
         assert!(config.fallback_policy.retry_rate_limits);
         assert_eq!(config.fallback_policy.max_retry_after_secs, 30);
+        assert_eq!(config.local_runtime_policy, LocalRuntimePolicy::OnDemand);
     }
 
     #[test]
@@ -1415,6 +1547,16 @@ mod tests {
         assert_eq!(local.mode, AdapterMode::CliOnly);
         assert_eq!(local.timeout_secs, 300);
         assert!(local.api_key.is_none());
+
+        let cached = provider_config_with_local_policy(
+            &provider("builtin-local", ProviderMode::CliOnly),
+            None,
+            LocalRuntimePolicy::KeepReady,
+        );
+        assert_eq!(
+            cached.local_runtime_policy,
+            AdapterLocalRuntimePolicy::KeepReady
+        );
     }
 
     #[test]
@@ -1602,6 +1744,7 @@ mod tests {
             api_key: None,
             api_base_url: None,
             timeout_secs: 5,
+            local_runtime_policy: AdapterLocalRuntimePolicy::OnDemand,
         }
     }
 

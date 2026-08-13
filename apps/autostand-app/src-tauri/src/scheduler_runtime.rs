@@ -163,6 +163,19 @@ pub fn set_cron(app: &AppHandle, cron: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Enable or disable scheduled runs and immediately reconcile the OS unit.
+///
+/// This is separate from a generic config write because installing/removing a
+/// launchd, systemd, or Task Scheduler job is an explicit scheduler action.
+pub fn set_enabled(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
+    let mut config = crate::commands::load_config(app)?;
+    let normalized = validate_cron(&config.scheduler.cron)?;
+    config.scheduler.enabled = enabled;
+    crate::commands::save_config(app, &config)?;
+    sync_system_unit(&normalized, enabled);
+    Ok(())
+}
+
 /// Install (or remove) the platform unit so it matches the persisted schedule.
 ///
 /// Best effort by design — see [`set_cron`]. An expression the unit formats

@@ -392,6 +392,19 @@ pub enum RenderDecision {
     },
 }
 
+/// Whether a compile is a durable run or an isolated regeneration candidate.
+///
+/// Preview compiles still exercise the exact gather/render/validation pipeline,
+/// but must not deliver user notifications. Their output, audit and hash paths
+/// point at an isolated temporary directory owned by the regeneration command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilePurpose {
+    /// Normal scheduler or manual compile.
+    Persist,
+    /// Candidate generation before an explicit user resolution.
+    Preview,
+}
+
 impl RenderDecision {
     /// The validated LLM body, when there is one.
     pub fn llm_body(&self) -> Option<&str> {
@@ -1173,7 +1186,8 @@ async fn run(
         AppError::Lock(message)
     })?;
 
-    // 2. Announce, then sync the dailies repo (warn-only: the local copy wins).
+    // 2. Announce, then sync the dailies repo when the user explicitly enabled
+    // Repo Sync and both authenticated CLI prerequisites remain available.
     emit(
         app,
         "pipeline-started",
@@ -1183,48 +1197,54 @@ async fn run(
             trigger: last_trigger(source),
         },
     );
-    emit_log(
-        app,
-        &primary_str,
-        &env.host,
-        Step::Gather,
-        PipelineLogLevel::Info,
-        format!("git pull — {}", env.repo_dir.display()),
-        None,
+    let repo_sync = crate::commands::sync::should_run_repo_sync(
+        &env.config,
+        crate::commands::sync::repo_sync_prerequisites().await,
     );
-    if let Err(err) = crate::git_ops::sync_pull(&env.repo_dir).await {
-        tracing::warn!(error = %err, "dailies sync skipped; continuing with the local copy");
+    if repo_sync {
         emit_log(
             app,
             &primary_str,
             &env.host,
             Step::Gather,
-            PipelineLogLevel::Warn,
-            format!("git pull skipped — {err}"),
+            PipelineLogLevel::Info,
+            format!("git pull — {}", env.repo_dir.display()),
             None,
         );
-    } else {
-        emit_log(
-            app,
-            &primary_str,
-            &env.host,
-            Step::Gather,
-            PipelineLogLevel::Done,
-            "git pull ok",
-            None,
-        );
-    }
-    if let Err(err) = crate::git_ops::ensure_gitattributes(&env.repo_dir) {
-        tracing::warn!(error = %err, "could not install the union merge driver rule");
-        emit_log(
-            app,
-            &primary_str,
-            &env.host,
-            Step::Gather,
-            PipelineLogLevel::Warn,
-            format!(".gitattributes not installed — {err}"),
-            None,
-        );
+        if let Err(err) = crate::git_ops::sync_pull(&env.repo_dir).await {
+            tracing::warn!(error = %err, "dailies sync skipped; continuing with the local copy");
+            emit_log(
+                app,
+                &primary_str,
+                &env.host,
+                Step::Gather,
+                PipelineLogLevel::Warn,
+                format!("git pull skipped — {err}"),
+                None,
+            );
+        } else {
+            emit_log(
+                app,
+                &primary_str,
+                &env.host,
+                Step::Gather,
+                PipelineLogLevel::Done,
+                "git pull ok",
+                None,
+            );
+        }
+        if let Err(err) = crate::git_ops::ensure_gitattributes(&env.repo_dir) {
+            tracing::warn!(error = %err, "could not install the union merge driver rule");
+            emit_log(
+                app,
+                &primary_str,
+                &env.host,
+                Step::Gather,
+                PipelineLogLevel::Warn,
+                format!(".gitattributes not installed — {err}"),
+                None,
+            );
+        }
     }
 
     // 3-5. Compile each target; the second one is the self-heal slot.
@@ -1241,15 +1261,22 @@ async fn run(
             results.push(skip_result(date, &env.host, &env.file_path(date), reason));
             continue;
         }
-        let result = compile_one(app, state, &env, date, target_source)
-            .await
-            .unwrap_or_else(|err| {
-                let message = err.to_string();
-                tracing::error!(date = %date, error = %message, "compile failed");
-                let date_str = date.format(DATE_FORMAT).to_string();
-                fail(app, state, &date_str, Step::Write, "io", &message);
-                error_result(date, &env.host, message)
-            });
+        let result = compile_one(
+            app,
+            state,
+            &env,
+            date,
+            target_source,
+            CompilePurpose::Persist,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            let message = err.to_string();
+            tracing::error!(date = %date, error = %message, "compile failed");
+            let date_str = date.format(DATE_FORMAT).to_string();
+            fail(app, state, &date_str, Step::Write, "io", &message);
+            error_result(date, &env.host, message)
+        });
         if result.status == CompileStatus::Ok {
             touched.push(env.file_path(date));
         }
@@ -1257,42 +1284,44 @@ async fn run(
     }
 
     // 6. Commit + push (warn-only), then announce every result.
-    match crate::git_ops::commit_push(&env.repo_dir, &touched).await {
-        Ok(outcome) => {
-            tracing::info!(
-                committed = outcome.committed,
-                pushed = outcome.pushed,
-                message = %outcome.message,
-                "commit_push finished"
-            );
-            emit_log(
-                app,
-                &primary_str,
-                &env.host,
-                Step::Done,
-                if outcome.committed || outcome.pushed {
-                    PipelineLogLevel::Done
-                } else {
-                    PipelineLogLevel::Info
-                },
-                outcome.message.clone(),
-                Some(format!(
-                    "committed={}, pushed={}",
-                    outcome.committed, outcome.pushed
-                )),
-            );
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "commit_push skipped");
-            emit_log(
-                app,
-                &primary_str,
-                &env.host,
-                Step::Done,
-                PipelineLogLevel::Warn,
-                format!("commit_push skipped — {err}"),
-                None,
-            );
+    if repo_sync {
+        match crate::git_ops::commit_push(&env.repo_dir, &touched).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    committed = outcome.committed,
+                    pushed = outcome.pushed,
+                    message = %outcome.message,
+                    "commit_push finished"
+                );
+                emit_log(
+                    app,
+                    &primary_str,
+                    &env.host,
+                    Step::Done,
+                    if outcome.committed || outcome.pushed {
+                        PipelineLogLevel::Done
+                    } else {
+                        PipelineLogLevel::Info
+                    },
+                    outcome.message.clone(),
+                    Some(format!(
+                        "committed={}, pushed={}",
+                        outcome.committed, outcome.pushed
+                    )),
+                );
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "commit_push skipped");
+                emit_log(
+                    app,
+                    &primary_str,
+                    &env.host,
+                    Step::Done,
+                    PipelineLogLevel::Warn,
+                    format!("commit_push skipped — {err}"),
+                    None,
+                );
+            }
         }
     }
 
@@ -1343,6 +1372,7 @@ pub async fn compile_one(
     env: &RunEnv,
     date: NaiveDate,
     source: TriggerSource,
+    purpose: CompilePurpose,
 ) -> Result<CompileResult, AppError> {
     let date_str = date.format(DATE_FORMAT).to_string();
     let file_path = env.file_path(date);
@@ -1535,21 +1565,25 @@ pub async fn compile_one(
     )
     .await;
     crate::commands::llm::record_provider_attempts(&render_outcome.attempts);
-    for notification in crate::notifications::provider_notifications(
-        &render_outcome.attempts,
-        render_outcome
-            .rendered
-            .as_ref()
-            .map(|body| body.provider.as_str()),
-    ) {
-        let delivered = match app {
-            Some(app) => {
-                crate::notifications::notify_gui(app, &env.config.notifications, &notification)
+    if purpose == CompilePurpose::Persist {
+        for notification in crate::notifications::provider_notifications(
+            &render_outcome.attempts,
+            render_outcome
+                .rendered
+                .as_ref()
+                .map(|body| body.provider.as_str()),
+        ) {
+            let delivered = match app {
+                Some(app) => {
+                    crate::notifications::notify_gui(app, &env.config.notifications, &notification)
+                }
+                None => {
+                    crate::notifications::notify_headless(&env.config.notifications, &notification)
+                }
+            };
+            if let Err(err) = delivered {
+                tracing::warn!(error = %err, "could not deliver provider notification");
             }
-            None => crate::notifications::notify_headless(&env.config.notifications, &notification),
-        };
-        if let Err(err) = delivered {
-            tracing::warn!(error = %err, "could not deliver provider notification");
         }
     }
     let rendered = render_outcome.rendered.clone();

@@ -74,6 +74,12 @@ const COMMANDS: CommandCase[] = [
     call: () => tauriApi.listProviderModels("claude"),
     args: { provider: "claude" },
   },
+  { command: "get_provider_health", call: () => tauriApi.getProviderHealth() },
+  {
+    command: "refresh_provider_health",
+    call: () => tauriApi.refreshProviderHealth("grok"),
+    args: { provider: "grok" },
+  },
   {
     command: "compile_standup",
     call: () => tauriApi.compileStandup("2026-08-03"),
@@ -81,6 +87,16 @@ const COMMANDS: CommandCase[] = [
   },
   { command: "compile_all", call: () => tauriApi.compileAll() },
   { command: "trigger_run_now", call: () => tauriApi.triggerRunNow() },
+  {
+    command: "preview_regeneration",
+    call: () => tauriApi.previewRegeneration("2026-08-03"),
+    args: { date: "2026-08-03" },
+  },
+  {
+    command: "apply_regeneration",
+    call: () => tauriApi.applyRegeneration("token", "merge", "- merged"),
+    args: { token: "token", resolution: "merge", mergedAuto: "- merged" },
+  },
   {
     command: "read_standup_file",
     call: () => tauriApi.readStandupFile("2026-08-03"),
@@ -118,10 +134,26 @@ const COMMANDS: CommandCase[] = [
     call: () => tauriApi.setSchedulerSchedule("0 9 * * 1-5"),
     args: { cron: "0 9 * * 1-5" },
   },
+  {
+    command: "set_scheduler_enabled",
+    call: () => tauriApi.setSchedulerEnabled(true),
+    args: { enabled: true },
+  },
   { command: "discover_repos", call: () => tauriApi.discoverRepos() },
   { command: "get_settings_paths", call: () => tauriApi.getSettingsPaths() },
   { command: "validate_paths", call: () => tauriApi.validatePaths() },
   { command: "detect_cloud_folders", call: () => tauriApi.detectCloudFolders() },
+  {
+    command: "configure_cloud_sync",
+    call: () => tauriApi.configureCloudSync("/cloud"),
+    args: { rootPath: "/cloud" },
+  },
+  { command: "get_repo_sync_status", call: () => tauriApi.getRepoSyncStatus() },
+  {
+    command: "setup_repo_sync",
+    call: () => tauriApi.setupRepoSync("standups"),
+    args: { repoName: "standups" },
+  },
   {
     command: "store_api_key",
     call: () => tauriApi.storeApiKey("claude", "sk-test-value"),
@@ -137,6 +169,44 @@ const COMMANDS: CommandCase[] = [
     call: () => tauriApi.detectCli("claude"),
     args: { provider: "claude" },
   },
+  {
+    command: "get_notification_status",
+    call: () => tauriApi.getNotificationStatus(),
+  },
+  {
+    command: "request_notification_permission",
+    call: () => tauriApi.requestNotificationPermission(),
+  },
+  {
+    command: "send_test_notification",
+    call: () => tauriApi.sendTestNotification(),
+  },
+  { command: "list_local_models", call: () => tauriApi.listLocalModels() },
+  {
+    command: "download_local_model",
+    call: () => tauriApi.downloadLocalModel("gemma-3-1b"),
+    args: { modelId: "gemma-3-1b" },
+  },
+  {
+    command: "cancel_local_model_download",
+    call: () => tauriApi.cancelLocalModelDownload("gemma-3-1b"),
+    args: { modelId: "gemma-3-1b" },
+  },
+  {
+    command: "delete_local_model",
+    call: () => tauriApi.deleteLocalModel("gemma-3-1b"),
+    args: { modelId: "gemma-3-1b" },
+  },
+  {
+    command: "select_local_model",
+    call: () => tauriApi.selectLocalModel("gemma-3-1b"),
+    args: { modelId: "gemma-3-1b" },
+  },
+  {
+    command: "accept_local_model_terms",
+    call: () => tauriApi.acceptLocalModelTerms("gemma-3-1b"),
+    args: { modelId: "gemma-3-1b" },
+  },
 ];
 
 beforeEach(() => {
@@ -144,10 +214,10 @@ beforeEach(() => {
 });
 
 describe("tauriApi", () => {
-  it("exposes exactly the 28 documented commands", () => {
-    expect(COMMANDS).toHaveLength(28);
-    expect(Object.keys(tauriApi)).toHaveLength(28);
-    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(28);
+  it("exposes exactly the 45 documented commands", () => {
+    expect(COMMANDS).toHaveLength(45);
+    expect(Object.keys(tauriApi)).toHaveLength(45);
+    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(45);
   });
 
   it.each(COMMANDS)(
@@ -165,6 +235,20 @@ describe("tauriApi", () => {
     await tauriApi.compileStandup();
 
     expect(mockInvoke).toHaveBeenCalledWith("compile_standup", { date: null });
+  });
+
+  it("passes null optional regeneration fields", async () => {
+    await tauriApi.previewRegeneration();
+    expect(mockInvoke).toHaveBeenLastCalledWith("preview_regeneration", {
+      date: null,
+    });
+
+    await tauriApi.applyRegeneration("token", "keep_current");
+    expect(mockInvoke).toHaveBeenLastCalledWith("apply_regeneration", {
+      token: "token",
+      resolution: "keep_current",
+      mergedAuto: null,
+    });
   });
 
   it("resolves with whatever the backend returned", async () => {

@@ -8,6 +8,7 @@ pub mod data_sources;
 pub mod llm;
 pub mod local_models;
 pub mod pipeline;
+pub mod regeneration;
 pub mod repos;
 pub mod settings;
 pub mod standup;

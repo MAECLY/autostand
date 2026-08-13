@@ -18,6 +18,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::error::AppError;
 
+const LOCAL_PROVIDER_ID: &str = "builtin-local";
+
 /// Event emitted while a model is downloaded or verified.
 pub const LOCAL_MODEL_PROGRESS_EVENT: &str = "local-model-progress";
 
@@ -174,6 +176,72 @@ pub(crate) fn available_model_ids(app: &AppHandle) -> Vec<String> {
         .filter(|model| status_for(&dir, model).0 == LocalModelStatus::Available)
         .map(|model| model.id.to_string())
         .collect()
+}
+
+/// Return the model selected by the managed local-model catalogue.
+pub(crate) fn selected_model_id(app: &AppHandle) -> Option<String> {
+    read_selected(&models_dir(app))
+}
+
+fn activate_local_provider(config: &mut crate::commands::types::AppConfig, model_id: &str) {
+    use crate::commands::types::{ProviderConfig, ProviderMode};
+
+    if let Some(provider) = config
+        .llm
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == LOCAL_PROVIDER_ID)
+    {
+        provider.enabled = true;
+        provider.mode = ProviderMode::CliOnly;
+        provider.model = model_id.to_string();
+        provider.timeout_secs = provider.timeout_secs.max(300);
+    } else {
+        config.llm.providers.push(ProviderConfig {
+            id: LOCAL_PROVIDER_ID.to_string(),
+            enabled: true,
+            mode: ProviderMode::CliOnly,
+            model: model_id.to_string(),
+            timeout_secs: 300,
+            ..ProviderConfig::default()
+        });
+    }
+    config.llm.preferred_provider = LOCAL_PROVIDER_ID.to_string();
+    config
+        .llm
+        .provider_order
+        .retain(|provider| provider != LOCAL_PROVIDER_ID);
+    config
+        .llm
+        .provider_order
+        .insert(0, LOCAL_PROVIDER_ID.to_string());
+}
+
+fn deactivate_local_provider(config: &mut crate::commands::types::AppConfig, model_id: &str) {
+    if let Some(provider) = config
+        .llm
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == LOCAL_PROVIDER_ID)
+    {
+        if provider.model == model_id {
+            provider.enabled = false;
+            provider.model.clear();
+        }
+    }
+    if config.llm.preferred_provider == LOCAL_PROVIDER_ID {
+        config.llm.preferred_provider = config
+            .llm
+            .provider_order
+            .iter()
+            .find(|provider| provider.as_str() != LOCAL_PROVIDER_ID)
+            .cloned()
+            .unwrap_or_default();
+    }
+    config
+        .llm
+        .provider_order
+        .retain(|provider| provider != LOCAL_PROVIDER_ID);
 }
 
 fn selected_path(models_dir: &Path) -> PathBuf {
@@ -516,15 +584,29 @@ pub async fn delete_local_model(app_handle: AppHandle, model_id: String) -> Resu
     let model = definition(&model_id)?;
     let _ = cancel_local_model_download(model_id.clone()).await?;
     let dir = models_dir(&app_handle);
+    let was_selected = read_selected(&dir).as_deref() == Some(model.id);
+    if was_selected {
+        let mut config = crate::commands::load_config(&app_handle)?;
+        deactivate_local_provider(&mut config, model.id);
+        crate::commands::save_config(&app_handle, &config)?;
+    }
     let (final_path, partial_path) = model_paths(&dir, model);
-    for path in [final_path, partial_path, error_path(&dir, model)] {
+    let runtime_cache = dir
+        .join("runtime-cache")
+        .join(format!("{}.prompt-cache", model.file_name));
+    for path in [
+        final_path,
+        partial_path,
+        error_path(&dir, model),
+        runtime_cache,
+    ] {
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
     }
-    if read_selected(&dir).as_deref() == Some(model.id) {
+    if was_selected {
         let mut state = read_model_state(&dir);
         state.selected_model = None;
         atomic_write_json(&selected_path(&dir), &state)?;
@@ -545,8 +627,20 @@ pub async fn select_local_model(app_handle: AppHandle, model_id: String) -> Resu
     }
     std::fs::create_dir_all(&dir)?;
     let mut state = read_model_state(&dir);
+    let previous_state = state.clone();
     state.selected_model = Some(model.id.to_string());
-    atomic_write_json(&selected_path(&dir), &state)
+    atomic_write_json(&selected_path(&dir), &state)?;
+
+    let config_result = (|| {
+        let mut config = crate::commands::load_config(&app_handle)?;
+        activate_local_provider(&mut config, model.id);
+        crate::commands::save_config(&app_handle, &config)
+    })();
+    if let Err(error) = config_result {
+        let _ = atomic_write_json(&selected_path(&dir), &previous_state);
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String, AppError> {
@@ -648,5 +742,50 @@ mod tests {
             sha256_file(&path).unwrap(),
             "56576f1ec71f3dfa63a18fd020d6adfc11ae83c61114dbdf442161c8102fa9bd"
         );
+    }
+
+    #[test]
+    fn selecting_a_model_activates_and_prioritizes_the_local_provider() {
+        let mut config = crate::commands::types::AppConfig::default();
+        config.llm.preferred_provider = "claude".to_string();
+        config.llm.provider_order = vec!["claude".to_string(), "openai".to_string()];
+
+        activate_local_provider(&mut config, "qwen3.5:2b");
+
+        assert_eq!(config.llm.preferred_provider, LOCAL_PROVIDER_ID);
+        assert_eq!(config.llm.provider_order[0], LOCAL_PROVIDER_ID);
+        let provider = config
+            .llm
+            .providers
+            .iter()
+            .find(|provider| provider.id == LOCAL_PROVIDER_ID)
+            .unwrap();
+        assert!(provider.enabled);
+        assert_eq!(provider.model, "qwen3.5:2b");
+        assert_eq!(provider.mode, crate::commands::types::ProviderMode::CliOnly);
+    }
+
+    #[test]
+    fn deleting_the_selected_model_disables_and_unprioritizes_local_ai() {
+        let mut config = crate::commands::types::AppConfig::default();
+        activate_local_provider(&mut config, "qwen3.5:2b");
+        config.llm.provider_order.push("claude".to_string());
+
+        deactivate_local_provider(&mut config, "qwen3.5:2b");
+
+        assert_eq!(config.llm.preferred_provider, "claude");
+        assert!(!config
+            .llm
+            .provider_order
+            .iter()
+            .any(|provider| provider == LOCAL_PROVIDER_ID));
+        let provider = config
+            .llm
+            .providers
+            .iter()
+            .find(|provider| provider.id == LOCAL_PROVIDER_ID)
+            .unwrap();
+        assert!(!provider.enabled);
+        assert!(provider.model.is_empty());
     }
 }

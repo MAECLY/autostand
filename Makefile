@@ -56,7 +56,11 @@ setup: install ## First-time setup: JS deps, Rust build, Playwright browser
 
 .PHONY: dev
 dev: $(NODE_MODULES) ## Run the desktop app with hot reload (Vite + Rust)
-	$(PNPM) tauri dev
+	$(CARGO) build -p autostand-local-llm
+	# Tauri's long-lived watcher can overlap with workspace test/check jobs.
+	# Disabling rustc incremental state here prevents stale LLVM object symbols
+	# from poisoning the final macOS link while preserving normal Cargo caches.
+	CARGO_INCREMENTAL=0 $(PNPM) tauri dev
 
 .PHONY: dev-web
 dev-web: $(NODE_MODULES) ## Run only the Vite dev server, no Tauri window (UI work)

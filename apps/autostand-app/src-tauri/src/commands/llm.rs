@@ -159,6 +159,10 @@ pub async fn list_llm_providers(app_handle: AppHandle) -> Result<Vec<LlmProvider
         );
         if def.id == "builtin-local" {
             stored.mode = crate::commands::types::ProviderMode::CliOnly;
+            if let Some(selected) = crate::commands::local_models::selected_model_id(&app_handle) {
+                stored.model = selected;
+                stored.enabled = true;
+            }
         }
         let cli = if let Some(adapter) = crate::render::adapter_for(def.id) {
             adapter.detect_cli().await
@@ -283,8 +287,11 @@ pub async fn test_llm_provider(
         .ok_or_else(|| AppError::Invalid(format!("unknown provider: {provider}")))?;
 
     let app_config = crate::commands::load_config(&app_handle)?;
-    let mut adapter_config =
-        crate::render::provider_config(&stored_entry(&app_config, &provider), None);
+    let mut adapter_config = crate::render::provider_config_with_local_policy(
+        &stored_entry(&app_config, &provider),
+        None,
+        app_config.llm.local_runtime_policy,
+    );
     adapter_config.mode = probe;
 
     match adapter.test_connection(&adapter_config).await {

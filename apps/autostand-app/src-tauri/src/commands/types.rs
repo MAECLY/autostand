@@ -53,6 +53,29 @@ pub struct AppConfig {
     /// Native system-notification preferences.
     #[serde(default)]
     pub notifications: NotificationConfig,
+    /// Cloud-folder selection and optional GitHub repository sync.
+    #[serde(default)]
+    pub sync: SyncConfig,
+    /// Manual Compile Now review behaviour.
+    #[serde(default)]
+    pub regeneration: RegenerationConfig,
+}
+
+/// Controls whether a manual regeneration pauses for comparison.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RegenerationConfig {
+    /// Apply a fresh candidate immediately instead of opening the merge review.
+    pub replace_immediately: bool,
+}
+
+/// The two sync transports are intentionally independent: a cloud provider
+/// mirrors the working directory while GitHub supplies versioned history.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SyncConfig {
+    /// Selected provider root. Standups live in its `autostand/` child.
+    pub cloud_root: Option<String>,
+    /// Whether the pipeline may pull/commit/push the dailies directory.
+    pub repo_enabled: bool,
 }
 
 /// Render mode preference.
@@ -86,6 +109,12 @@ pub struct LlmConfig {
     /// Bounded retry behaviour before advancing to the next provider.
     #[serde(default)]
     pub fallback_policy: ProviderFallbackPolicy,
+    /// Lifecycle policy for the managed built-in local runtime.
+    ///
+    /// This is deliberately part of the render configuration (rather than UI
+    /// state), so manual, scheduled, and headless compiles take the same path.
+    #[serde(default)]
+    pub local_runtime_policy: LocalRuntimePolicy,
 }
 
 impl Default for LlmConfig {
@@ -96,8 +125,20 @@ impl Default for LlmConfig {
             fallback_enabled: true,
             provider_order: Vec::new(),
             fallback_policy: ProviderFallbackPolicy::default(),
+            local_runtime_policy: LocalRuntimePolicy::default(),
         }
     }
+}
+
+/// How built-in local inference handles reusable llama.cpp state.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalRuntimePolicy {
+    /// Start clean for every render and leave no prompt-state cache behind.
+    #[default]
+    OnDemand,
+    /// Reuse an on-disk llama.cpp prompt/KV cache between render processes.
+    KeepReady,
 }
 
 const fn default_fallback_enabled() -> bool {
@@ -552,6 +593,68 @@ pub enum RenderUsed {
     LlmFallback,
 }
 
+/// A fresh Compile Now candidate paired with the currently persisted AUTO body.
+///
+/// The token refers to backend-owned pending state; callers never submit a file
+/// path. `base_hash` lets the UI explain why Apply can fail when another process
+/// edits the standup while the comparison is open.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegenerationPreview {
+    /// Opaque, short-lived identifier consumed by `apply_regeneration`.
+    pub token: String,
+    /// Filing date (`YYYY-MM-DD`).
+    pub date: String,
+    /// Host whose AUTO block is being compared.
+    pub host: String,
+    /// AUTO body present when the preview started.
+    pub current_auto: String,
+    /// Freshly generated AUTO body; never written by the preview command.
+    pub candidate_auto: String,
+    /// SHA-256 of the exact current file bytes.
+    pub base_hash: String,
+    /// RFC 3339 expiry for the pending preview.
+    pub expires_at: String,
+    /// Renderer that produced the candidate.
+    pub render_used: RenderUsed,
+    /// Whether candidate generation used deterministic fallback.
+    pub fellback: bool,
+    /// Human-readable candidate render outcome.
+    pub message: String,
+}
+
+/// Explicit user choice applied to a pending regeneration candidate.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RegenerationResolution {
+    /// Dismiss the candidate without writing anything.
+    KeepCurrent,
+    /// Replace this host's AUTO block with the generated candidate.
+    UseCandidate,
+    /// Replace this host's AUTO block with user-edited merged text.
+    Merge,
+}
+
+/// Result of applying or dismissing a regeneration preview.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegenerationApplied {
+    /// Filing date (`YYYY-MM-DD`).
+    pub date: String,
+    /// Host whose AUTO block was resolved.
+    pub host: String,
+    /// Final standup file path.
+    pub file_path: String,
+    /// Explicit resolution that was applied.
+    pub resolution: RegenerationResolution,
+    /// Final AUTO body, or the unchanged current body when dismissed.
+    pub auto_body: String,
+    /// Whether Repo Sync created a commit.
+    pub committed: bool,
+    /// Whether Repo Sync pushed that commit.
+    pub pushed: bool,
+    /// Human-readable local/Repo Sync outcome.
+    pub message: String,
+}
+
 /// Standup file content returned by `read_standup_file`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StandupFileContent {
@@ -923,9 +1026,9 @@ pub struct PathValidation {
 mod tests {
     use super::{
         ApiKeyMode, ApiKeyStatus, AppConfig, AuditData, AuditRenderMode, AuditSidecar,
-        CompileResult, CompileStatus, LastTrigger, PipelineLogLevel, PipelineLogLine, ProviderMode,
-        RenderMode, RenderUsed, SchedulerSource, SchedulerStatus, StandupFormatConfig,
-        StandupPreset, Verbosity,
+        CompileResult, CompileStatus, LastTrigger, LlmConfig, LocalRuntimePolicy, PipelineLogLevel,
+        PipelineLogLine, ProviderMode, RegenerationResolution, RenderMode, RenderUsed,
+        SchedulerSource, SchedulerStatus, StandupFormatConfig, StandupPreset, Verbosity,
     };
     use serde::{de::DeserializeOwned, Serialize};
     use serde_json::json;
@@ -1018,6 +1121,8 @@ mod tests {
             serde_json::to_string(&SchedulerSource::TaskScheduler).unwrap(),
             serde_json::to_string(&LastTrigger::SelfHeal).unwrap(),
             serde_json::to_string(&AuditRenderMode::Auto).unwrap(),
+            serde_json::to_string(&LocalRuntimePolicy::KeepReady).unwrap(),
+            serde_json::to_string(&RegenerationResolution::UseCandidate).unwrap(),
         ];
         for value in leaked {
             assert!(
@@ -1025,6 +1130,23 @@ mod tests {
                 "{value} still carries a PascalCase variant name"
             );
         }
+    }
+
+    #[test]
+    fn local_runtime_policy_is_snake_case_and_defaults_to_on_demand() {
+        assert_wire(&LocalRuntimePolicy::OnDemand, "on_demand");
+        assert_wire(&LocalRuntimePolicy::KeepReady, "keep_ready");
+        assert_eq!(
+            LlmConfig::default().local_runtime_policy,
+            LocalRuntimePolicy::OnDemand
+        );
+    }
+
+    #[test]
+    fn regeneration_resolution_is_snake_case() {
+        assert_wire(&RegenerationResolution::KeepCurrent, "keep_current");
+        assert_wire(&RegenerationResolution::UseCandidate, "use_candidate");
+        assert_wire(&RegenerationResolution::Merge, "merge");
     }
 
     #[test]
@@ -1135,11 +1257,13 @@ mod tests {
                 "jira_base",
                 "llm",
                 "notifications",
+                "regeneration",
                 "render_mode",
                 "review",
                 "scheduler",
                 "scrub",
                 "standup_authors",
+                "sync",
             ]
         );
     }

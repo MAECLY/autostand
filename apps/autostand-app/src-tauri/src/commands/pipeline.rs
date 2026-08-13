@@ -135,6 +135,12 @@ pub async fn set_scheduler_schedule(app_handle: AppHandle, cron: String) -> Resu
     crate::scheduler_runtime::set_cron(&app_handle, &cron)
 }
 
+/// Enable or disable scheduled runs and reconcile the platform scheduler.
+#[tauri::command]
+pub async fn set_scheduler_enabled(app_handle: AppHandle, enabled: bool) -> Result<(), AppError> {
+    crate::scheduler_runtime::set_enabled(&app_handle, enabled)
+}
+
 /// Payload for `pipeline-started`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PipelineStarted {

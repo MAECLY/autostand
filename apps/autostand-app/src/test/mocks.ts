@@ -194,6 +194,7 @@ export function makeAppConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         retry_rate_limits: true,
         max_retry_after_secs: 30,
       },
+      local_runtime_policy: "on_demand",
     },
     data_sources: makeDataSourceConfigs(),
     scheduler: { enabled: true, cron: "0 9 * * 1-5", self_heal: true },
@@ -215,6 +216,8 @@ export function makeAppConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       standup_complete: false,
       standup_failed: true,
     },
+    sync: { cloud_root: null, repo_enabled: false },
+    regeneration: { replace_immediately: false },
     format: {
       preset: "classic-scrum",
       verbosity: "standard",
@@ -347,6 +350,8 @@ export function makeCloudFolder(
     id: "icloud-drive",
     label: "iCloud Drive",
     path: "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs",
+    dailies_path:
+      "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs/autostand",
     exists: true,
     provider: "iCloud",
     ...overrides,

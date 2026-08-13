@@ -12,8 +12,8 @@ pub mod traits;
 
 pub use detect::detect_cli_binary;
 pub use traits::{
-    CliInfo, LlmAdapter, LlmError, ProviderConfig, ProviderMode, RenderModeUsed, RenderOutput,
-    TestResult,
+    CliInfo, LlmAdapter, LlmError, LocalRuntimePolicy, ProviderConfig, ProviderMode,
+    RenderModeUsed, RenderOutput, TestResult,
 };
 
 /// Return all supported provider adapters as trait objects.

@@ -28,6 +28,9 @@ enum Request {
         max_tokens: u32,
         #[serde(default)]
         temperature: f32,
+        /// Optional llama.cpp prompt/KV cache. Absence is true one-shot mode.
+        #[serde(default)]
+        prompt_cache_path: Option<PathBuf>,
     },
 }
 
@@ -77,14 +80,38 @@ fn runtime_path() -> Option<PathBuf> {
         .filter(|path| path.is_file())
         .or_else(|| {
             std::env::current_exe().ok().and_then(|executable| {
-                let sibling = executable.with_file_name(if cfg!(windows) {
-                    "llama-cli.exe"
-                } else {
-                    "llama-cli"
-                });
-                sibling.is_file().then_some(sibling)
+                runtime_binary_names()
+                    .into_iter()
+                    .map(|name| executable.with_file_name(name))
+                    .find(|candidate| candidate.is_file())
             })
         })
+        // Source/development builds intentionally do not copy Homebrew or a
+        // distro-provided llama-cli into target/debug. Resolve it from PATH
+        // without invoking a shell; production bundles still win via sibling.
+        .or_else(|| {
+            std::env::var_os("PATH").and_then(|path| {
+                std::env::split_paths(&path)
+                    .flat_map(|directory| {
+                        runtime_binary_names()
+                            .into_iter()
+                            .map(move |name| directory.join(name))
+                    })
+                    .find(|candidate| candidate.is_file())
+            })
+        })
+}
+
+/// New llama.cpp releases split the one-shot completion program out of
+/// `llama-cli`; older/pinned releases expose the same flags on `llama-cli`.
+/// Prefer the dedicated binary when present while retaining release-bundle
+/// compatibility.
+const fn runtime_binary_names() -> [&'static str; 2] {
+    if cfg!(windows) {
+        ["llama-completion.exe", "llama-cli.exe"]
+    } else {
+        ["llama-completion", "llama-cli"]
+    }
 }
 
 fn generate(
@@ -93,6 +120,7 @@ fn generate(
     context_length: u32,
     max_tokens: u32,
     temperature: f32,
+    prompt_cache_path: Option<&Path>,
 ) -> Result<String, RuntimeError> {
     if !model_path.is_file()
         || model_path.extension().and_then(|value| value.to_str()) != Some("gguf")
@@ -100,27 +128,52 @@ fn generate(
         return Err(RuntimeError::InvalidModel);
     }
     let runtime = runtime_path().ok_or(RuntimeError::RuntimeMissing)?;
-    let output = Command::new(runtime)
-        .args([
-            "--model",
-            &model_path.to_string_lossy(),
-            "--prompt",
-            prompt,
-            "--ctx-size",
-            &context_length.clamp(2_048, 32_768).to_string(),
-            "--n-predict",
-            &max_tokens.clamp(1, 4_096).to_string(),
-            "--temp",
-            &temperature.clamp(0.0, 2.0).to_string(),
-            "--no-display-prompt",
-            "--simple-io",
-        ])
+    let dedicated_completion = runtime
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "llama-completion");
+    if let Some(cache_path) = prompt_cache_path {
+        prepare_cache_parent(cache_path).map_err(RuntimeError::Spawn)?;
+    }
+    let mut command = Command::new(runtime);
+    command
+        .arg("--model")
+        .arg(model_path)
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--ctx-size")
+        .arg(context_length.clamp(2_048, 32_768).to_string())
+        .arg("--n-predict")
+        .arg(max_tokens.clamp(1, 4_096).to_string())
+        .arg("--temp")
+        .arg(temperature.clamp(0.0, 2.0).to_string())
+        .arg("--no-display-prompt")
+        // Recent llama.cpp releases infer conversation mode from a model's
+        // chat template. Explicitly disable it so n-predict ends the process;
+        // --single-turn would enable the chat UI and echo banners/prompts.
+        .arg("--no-conversation")
+        .arg("--simple-io");
+    if !dedicated_completion {
+        // The legacy unified CLI writes its banner through the logger. The
+        // dedicated completion program also writes generated tokens through
+        // that channel, so disabling it there would produce an empty body.
+        command.arg("--log-disable");
+    }
+    if let Some(cache_path) = prompt_cache_path {
+        // Do not use --prompt-cache-all: generated standup text should not be
+        // retained, and the stable system/prompt prefix is the useful part.
+        command.arg("--prompt-cache").arg(cache_path);
+    }
+    let output = command
         .env("AUTOSTAND_RENDER", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .map_err(RuntimeError::Spawn)?;
+    if let Some(cache_path) = prompt_cache_path {
+        secure_cache_permissions(cache_path);
+    }
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
@@ -128,6 +181,28 @@ fn generate(
             code: output.status.code().unwrap_or(-1),
             message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         })
+    }
+}
+
+fn prepare_cache_parent(path: &Path) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(())
+}
+
+fn secure_cache_permissions(path: &Path) {
+    #[cfg(unix)]
+    if path.is_file() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            eprintln!("could not restrict prompt cache permissions: {error}");
+        }
     }
 }
 
@@ -158,12 +233,14 @@ fn main() {
                     context_length,
                     max_tokens,
                     temperature,
+                    prompt_cache_path,
                 }) => match generate(
                     &model_path,
                     &prompt,
                     context_length,
                     max_tokens,
                     temperature,
+                    prompt_cache_path.as_deref(),
                 ) {
                     Ok(body) => Response::Result { request_id, body },
                     Err(error) => Response::Error {
@@ -199,6 +276,12 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use std::sync::Mutex;
+
+    #[cfg(unix)]
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn request_defaults_are_bounded_for_standup_rendering() {
         let request: Request = serde_json::from_str(
@@ -222,7 +305,47 @@ mod tests {
 
     #[test]
     fn refuses_missing_models_before_starting_runtime() {
-        let error = generate(Path::new("missing.gguf"), "prompt", 4_096, 16, 0.0).unwrap_err();
+        let error =
+            generate(Path::new("missing.gguf"), "prompt", 4_096, 16, 0.0, None).unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidModel));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prompt_cache_is_forwarded_only_when_requested() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("llama-cli");
+        let args = temp.path().join("args.txt");
+        let model = temp.path().join("model.gguf");
+        let cache = temp.path().join("cache/model.prompt-cache");
+        std::fs::write(
+            &runtime,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AUTOSTAND_TEST_LLAMA_ARGS\"\nprintf 'OK\\n'\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&runtime).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&runtime, permissions).unwrap();
+        std::fs::write(&model, b"GGUF").unwrap();
+        std::env::set_var("AUTOSTAND_LLAMA_CLI", &runtime);
+        std::env::set_var("AUTOSTAND_TEST_LLAMA_ARGS", &args);
+
+        let body = generate(&model, "hello", 2_048, 1, 0.0, Some(&cache)).unwrap();
+        assert_eq!(body, "OK");
+        let forwarded = std::fs::read_to_string(&args).unwrap();
+        assert!(forwarded.contains("--prompt-cache\n"));
+        assert!(forwarded.contains(cache.to_str().unwrap()));
+        assert!(cache.parent().unwrap().is_dir());
+
+        let _ = std::fs::remove_file(&args);
+        let _ = generate(&model, "hello", 2_048, 1, 0.0, None).unwrap();
+        let forwarded = std::fs::read_to_string(&args).unwrap();
+        assert!(!forwarded.contains("--prompt-cache\n"));
+
+        std::env::remove_var("AUTOSTAND_LLAMA_CLI");
+        std::env::remove_var("AUTOSTAND_TEST_LLAMA_ARGS");
     }
 }
