@@ -152,7 +152,7 @@ export function ManualEditor({ date, initialContent = "" }: ManualEditorProps) {
 
         <div className="space-y-2">
           <p className="text-sm font-medium text-foreground">Preview</p>
-          <div className="rounded-md border border-border bg-inset p-3">
+          <div className="max-h-64 overflow-auto rounded-md border border-border bg-inset p-3">
             {bullets.length > 0 ? (
               <StandupMarkdown>{bullets}</StandupMarkdown>
             ) : (

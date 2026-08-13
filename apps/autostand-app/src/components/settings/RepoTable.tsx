@@ -71,10 +71,16 @@ export function RepoTable() {
               {repos.map((repo) => (
                 <TableRow key={repo.path}>
                   <TableCell className="font-medium">{repo.name}</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
+                  <TableCell
+                    className="max-w-xs truncate font-mono text-xs text-muted-foreground"
+                    title={repo.path}
+                  >
                     {repo.path}
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
+                  <TableCell
+                    className="max-w-xs truncate font-mono text-xs text-muted-foreground"
+                    title={repo.remote ?? undefined}
+                  >
                     {repo.remote ?? "—"}
                   </TableCell>
                   <TableCell className="text-muted-foreground">

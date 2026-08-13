@@ -82,7 +82,7 @@ export function TerminalViewer({ className }: TerminalViewerProps) {
                   {line.message}
                 </span>
                 {line.detail && (
-                  <span className="min-w-0 shrink-0 text-subtle">{line.detail}</span>
+                  <span className="min-w-0 truncate text-subtle">{line.detail}</span>
                 )}
               </div>
             ))}

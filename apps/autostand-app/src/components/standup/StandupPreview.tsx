@@ -56,7 +56,7 @@ const markdownComponents: Components = {
     </code>
   ),
   pre: ({ children }) => (
-    <pre className="overflow-x-auto rounded-md bg-inset p-3 font-mono text-sm">
+    <pre className="max-h-[40rem] overflow-auto rounded-md bg-inset p-3 font-mono text-sm">
       {children}
     </pre>
   ),
@@ -106,7 +106,7 @@ export function StandupPreview({ content, hostSlug }: StandupPreviewProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <header className="flex items-start justify-between gap-3 space-y-1">
         <div className="min-w-0 space-y-1">
           <h2 className="text-lg font-semibold text-foreground">
