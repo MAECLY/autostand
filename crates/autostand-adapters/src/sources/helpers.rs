@@ -167,6 +167,11 @@ pub fn is_keepable_prompt(s: &str) -> bool {
     if autostand_core::meta::is_meta_work(trimmed, None) {
         return false;
     }
+    // Second anti-recursion layer: a fragment of our own prompt that survived
+    // re-chunking by the CLI's logger, so the message-level guard never saw it whole.
+    if autostand_core::prompt_echo::is_scaffolding_line(trimmed) {
+        return false;
+    }
     true
 }
 
@@ -302,6 +307,13 @@ impl PromptCollector {
     /// Add a raw user-typed text. It is split into lines, each line is
     /// filtered, deduped against all prior lines, and truncated.
     pub fn add(&mut self, raw: &str) {
+        // Anti-recursion: autostand drives `claude`/`codex`/`grok`/`gemini` to render a
+        // standup, and those CLIs log the invocation into the very session files this
+        // collector reads. Drop the whole message rather than filtering it line by line —
+        // a half-kept render prompt still teaches the model to emit our own scaffolding.
+        if autostand_core::prompt_echo::is_render_prompt_echo(raw) {
+            return;
+        }
         let stripped = strip_preamble(raw);
         // A Claude Code "review this change" dump is one user message: a short
         // intent, then `Changed files` + a unified diff. Keep only the intent.
@@ -572,6 +584,53 @@ mod tests {
         assert!(snips
             .iter()
             .all(|s| !s.contains("DIFF") && !s.contains("@@")));
+    }
+
+    /// Regression for the anti-recursion hole found in the 2026-08-13 audit sidecar:
+    /// `grok_sessions` carried autostand's own render prompt — system prompt, context
+    /// labels, section headings, the fence, and the preset skeleton — and every line was
+    /// fed back to the model as work the user had done.
+    #[test]
+    fn prompt_collector_drops_our_own_render_prompt() {
+        let mut pc = PromptCollector::default();
+        pc.add(
+            "## Source hierarchy (most authoritative first)\n\
+             1. GIT FACTS — committed work. Authoritative for what was committed and when.\n\
+             ## Rules\n\
+             - Past tense, concrete, English.\n\
+             - NEVER attribute to AI. Write as if the human did the work.\n\
+             Filing date: 2026-08-03\n\
+             Subtitle: _Work completed August 01–02, 2026._\n\
+             ## GIT FACTS\n\
+             ## OUTPUT\n\
+             Format your output using this structure:\n\
+             ```\n\
+             **Yesterday**\n\
+             - <what you did>\n",
+        );
+        assert!(
+            pc.snippets().is_empty(),
+            "render prompt leaked back as work: {:?}",
+            pc.snippets()
+        );
+    }
+
+    #[test]
+    fn prompt_collector_drops_a_render_request_by_its_sentinel() {
+        let mut pc = PromptCollector::default();
+        pc.add("# Standup render request\n\nFiling date: 2026-08-13\n");
+        assert!(pc.snippets().is_empty());
+    }
+
+    /// The guard must not swallow real work that merely mentions a standup.
+    #[test]
+    fn prompt_collector_keeps_real_work_alongside_the_guard() {
+        let mut pc = PromptCollector::default();
+        pc.add("Implementing August 13th fix for POST /api/v1/external/gorgias/tickets/claim");
+        assert_eq!(
+            pc.snippets(),
+            ["Implementing August 13th fix for POST /api/v1/external/gorgias/tickets/claim"]
+        );
     }
 
     #[test]

@@ -143,7 +143,8 @@ const PREV_RENDER_HEADING: &str = "## PREVIOUS RENDER (already reported — do n
 /// GITHUB → PR REVIEWS → EDITED FILES → NOTES), and empty ones are skipped.
 pub fn build_prompt(inputs: &PromptInputs<'_>) -> String {
     let mut out = String::with_capacity(1024);
-    out.push_str("# Standup render request\n\n");
+    out.push_str(autostand_core::prompt_echo::RENDER_REQUEST_SENTINEL);
+    out.push_str("\n\n");
 
     push_context_line(&mut out, "Filing date", inputs.file_date);
     if !inputs.range_start.trim().is_empty() && !inputs.range_end.trim().is_empty() {

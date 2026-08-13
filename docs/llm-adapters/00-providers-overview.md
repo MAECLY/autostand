@@ -102,6 +102,21 @@ AUTOSTAND_RENDER=1
 
 The app's own SessionEnd hook checks `AUTOSTAND_RENDER` and aborts re-entry if it is set. This applies to all providers and both CLI variants. Additional provider-specific guard env vars may also be set (e.g. Claude sets `CLAUDE_STANDUP_RENDER=1` for backward-compat with the original App Script).
 
+### Transcript recursion
+
+`AUTOSTAND_RENDER` stops a render subprocess from re-invoking autostand. It does **not** stop the CLI from *logging* that invocation — and the `claude-code`, `codex`, `gemini-cli`, `grok-cli`, and `opencode` data sources read exactly those logs. Without a second guard the render prompt returns on the next run disguised as work the user did, and the model is shown its own output format as activity.
+
+This was observed in the wild: the 2026-08-13 audit sidecar's `grok_sessions` carried autostand's system prompt (`## Source hierarchy`, `- Past tense, concrete, English.`), its context labels (`Filing date:`, `Subtitle: _Work completed …_`), its section headings (`## GIT FACTS`, `## OUTPUT`), a bare code fence, and the preset skeleton (`**Yesterday**`, `- <what you did>`) — all fed back as notes.
+
+The guard is [`autostand_core::prompt_echo`](../../crates/autostand-core/src/prompt_echo.rs), applied in `PromptCollector::add`, which every session source funnels through:
+
+| Layer | Function | Behaviour |
+| --- | --- | --- |
+| Message | `is_render_prompt_echo` | Drops the **whole** message when it carries `RENDER_REQUEST_SENTINEL` (`# Standup render request`, the first line `build_prompt` emits) or ≥2 distinct scaffolding markers. A partially-kept render prompt still teaches the model our scaffolding, so half-filtering is not enough. |
+| Line | `is_scaffolding_line` | Catches fragments that survive re-chunking by a CLI's logger. Deliberately conservative — generic labels like `Title:` are excluded so a real note is never eaten. |
+
+`build_prompt` and the filter share `RENDER_REQUEST_SENTINEL`, so changing the heading cannot silently disarm the guard.
+
 ## Render flow
 
 Per `render()` call:
