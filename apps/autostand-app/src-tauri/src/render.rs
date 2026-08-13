@@ -116,10 +116,10 @@ pub struct PromptInputs<'a> {
     pub range_start: &'a str,
     /// Inclusive end of the work window (`YYYY-MM-DD`).
     pub range_end: &'a str,
-    /// Standup title, e.g. `Daily Standup — August 03, 2026`.
-    pub title: &'a str,
-    /// Standup subtitle, e.g. `_Work completed August 01–02, 2026._`.
-    pub subtitle: &'a str,
+    // NOTE: the document title and subtitle are deliberately absent. They belong
+    // to the file skeleton `fileops::set_auto` writes, and showing them here made
+    // small models restate them as bullets ("- Filed August 13, 2026") or, worse,
+    // reproduce the whole document instead of answering.
     /// This host's previous AUTO body, if any.
     ///
     /// Shown to the model so it does not restate bullets `accumulate` will re-inject anyway.
@@ -154,8 +154,6 @@ pub fn build_prompt(inputs: &PromptInputs<'_>) -> String {
         out.push_str(inputs.range_end.trim());
         out.push('\n');
     }
-    push_context_line(&mut out, "Title", inputs.title);
-    push_context_line(&mut out, "Subtitle", inputs.subtitle);
     push_context_line(&mut out, "Jira base", inputs.jira_base);
 
     push_section(&mut out, "## GIT FACTS", Some(inputs.facts));
@@ -745,6 +743,167 @@ fn strip_code_fence(body: &str) -> &str {
     }
 }
 
+/// Runtime decorations a model or its runtime can leave in the completion.
+///
+/// `[end of text]` is llama.cpp's own end-of-generation marker, printed on the
+/// same stdout stream as the tokens. The sidecar strips it at the source; this
+/// repeats the work because a CLI provider can leak the same class of artifact.
+const RUNTIME_ARTIFACTS: &[&str] = &[
+    "[end of text]",
+    "<end_of_turn>",
+    "<|im_end|>",
+    "<|endoftext|>",
+    "<|eot_id|>",
+    "</s>",
+];
+
+/// Repair a raw LLM body into something safe to write between the AUTO markers.
+///
+/// Deterministic and idempotent. It repairs mechanical damage only — artifacts,
+/// fences, the file skeleton the model was never asked to produce, a section
+/// emitted twice, an unclosed inline-code span. Anything semantic (invented
+/// tickets, an echoed prompt, a "no work done" claim) stays a
+/// [`ValidationFailure`], because silently rewriting meaning would be worse than
+/// falling back to the deterministic renderer.
+///
+/// Order matters: artifacts come off first, otherwise a trailing `[end of text]`
+/// sits after the closing fence and [`strip_code_fence`] no longer recognises the
+/// body as fenced — which is exactly how fences reached committed standup files.
+#[must_use]
+pub fn sanitize_body(raw: &str) -> String {
+    let stripped = strip_runtime_artifacts(raw);
+    let unfenced = strip_code_fence(&stripped).to_string();
+    let skeletonless = strip_file_skeleton(&unfenced);
+    let deduped = dedupe_sections(&skeletonless);
+    balance_inline_code(&deduped)
+}
+
+/// Remove runtime end-of-generation markers and leaked chat control tokens.
+fn strip_runtime_artifacts(raw: &str) -> String {
+    let mut out = raw.to_string();
+    for artifact in RUNTIME_ARTIFACTS {
+        out = out.replace(artifact, "");
+    }
+    out.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// Drop the surrounding standup-file structure that `fileops::set_auto` owns.
+///
+/// The model is asked for the AUTO body only. A small model handed a Markdown
+/// document sometimes continues it instead of answering, reproducing the H1
+/// title, the italic subtitle and even the AUTO markers — which would nest a
+/// block inside itself.
+fn strip_file_skeleton(body: &str) -> String {
+    body.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("<!-- AUTO:") || trimmed.starts_with("<!-- MANUAL:") {
+                return false;
+            }
+            // The document title: `# August 13, 2026`. `##` headings are not
+            // ours to remove — a preset may legitimately use them.
+            if trimmed.starts_with("# ") {
+                return false;
+            }
+            // The generated subtitle: `_Work completed August 11–12, 2026._`
+            !(trimmed.starts_with("_Work completed ") && trimmed.ends_with('_'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// Collapse a section header emitted more than once, merging its bullets.
+///
+/// Greedy decoding with penalties disabled makes small models repeat a whole
+/// section verbatim — the observed `**Blockers**` / `- None` twice. Bullets are
+/// deduped only within one header, so two sections that legitimately both read
+/// `- None` keep both.
+fn dedupe_sections(body: &str) -> String {
+    let mut preamble: Vec<String> = Vec::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut sections: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut current: Option<String> = None;
+
+    for line in body.lines() {
+        if is_section_header(line.trim()) {
+            let header = line.trim().to_string();
+            if !sections.contains_key(&header) {
+                order.push(header.clone());
+                sections.insert(header.clone(), Vec::new());
+            }
+            current = Some(header);
+            continue;
+        }
+        match current {
+            Some(ref header) => {
+                let entry = sections.entry(header.clone()).or_default();
+                let trimmed = line.trim();
+                if trimmed.is_empty() || !entry.iter().any(|kept| kept.trim() == trimmed) {
+                    entry.push(line.to_string());
+                }
+            }
+            None => preamble.push(line.to_string()),
+        }
+    }
+
+    if order.is_empty() {
+        return body.trim().to_string();
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let preamble = preamble.join("\n").trim().to_string();
+    if !preamble.is_empty() {
+        out.push(preamble);
+    }
+    for header in order {
+        let body = sections
+            .remove(&header)
+            .unwrap_or_default()
+            .join("\n")
+            .trim()
+            .to_string();
+        out.push(if body.is_empty() {
+            header
+        } else {
+            format!("{header}\n{body}")
+        });
+    }
+    out.join("\n\n")
+}
+
+/// A `**Bold**` line on its own is how every preset marks a section.
+fn is_section_header(trimmed: &str) -> bool {
+    trimmed.len() > 4
+        && trimmed.starts_with("**")
+        && trimmed.ends_with("**")
+        && !trimmed[2..trimmed.len() - 2].contains("**")
+}
+
+/// Close an inline-code span a model left open on a single line.
+///
+/// A 2B truncating mid-bullet leaves `` `repo #934 — "title" `` with one
+/// backtick, which turns the rest of the file into code when rendered.
+fn balance_inline_code(body: &str) -> String {
+    body.lines()
+        .map(|line| {
+            if line.trim() == "```" || line.matches('`').count() % 2 == 0 {
+                line.to_string()
+            } else {
+                format!("{}`", line.trim_end())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Produce the LLM standup body, or `None` when no provider in the chain succeeds.
 ///
 /// Step (m) of `docs/specs/pipeline.md`. `None` is returned — always after a
@@ -896,7 +1055,7 @@ async fn render_llm_outcome_inner(
         .await;
         attempts.extend(provider_outcome.attempts);
         if let Some(output) = provider_outcome.output {
-            let body = strip_code_fence(&output.body).to_string();
+            let body = sanitize_body(&output.body);
             if let Some((range_tickets, forbidden_tickets)) = validation {
                 if let Err(failure) = validate_render(&body, range_tickets, forbidden_tickets) {
                     let code = format!("validation_{}", failure.code());
@@ -1118,10 +1277,10 @@ mod tests {
     use super::{
         adapter_for, attempt_plan, build_prompt, error_kind, is_render_subprocess, parse_mode,
         provider_chain, provider_config, provider_config_with_local_policy, render_via_backend,
-        strip_code_fence, system_prompt, system_prompt_for, validate_render, AdapterConfig,
-        AdapterLocalRuntimePolicy, AdapterMode, LlmError, PromptInputs, ProviderAttemptStatus,
-        ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed, RenderOutput,
-        MAX_RENDER_CHARS, PROVIDER_ENV,
+        sanitize_body, strip_code_fence, system_prompt, system_prompt_for, validate_render,
+        AdapterConfig, AdapterLocalRuntimePolicy, AdapterMode, LlmError, PromptInputs,
+        ProviderAttemptStatus, ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed,
+        RenderOutput, MAX_RENDER_CHARS, PROVIDER_ENV,
     };
     use crate::commands::types::{
         AppConfig, LlmConfig, LocalRuntimePolicy, ProviderFallbackPolicy, StandupFormatConfig,
@@ -1143,8 +1302,6 @@ mod tests {
             file_date: "2026-08-03",
             range_start: "2026-08-01",
             range_end: "2026-08-02",
-            title: "Daily Standup — August 03, 2026",
-            subtitle: "_Work completed August 01–02, 2026._",
             prev_auto: Some("- Refactored the queue processor"),
             format: None,
         }
@@ -1158,14 +1315,23 @@ mod tests {
         assert_eq!(build_prompt(&inputs), build_prompt(&inputs));
     }
 
+    /// The title and subtitle belong to the file skeleton, not to the prompt.
+    /// Showing them made small models restate them as bullets, and a Gemma 4B
+    /// reproduce the whole document instead of answering.
+    #[test]
+    fn build_prompt_does_not_leak_the_file_skeleton() {
+        let prompt = build_prompt(&full_inputs());
+        assert!(!prompt.contains("Title:"), "got: {prompt}");
+        assert!(!prompt.contains("Subtitle:"), "got: {prompt}");
+        assert!(!prompt.contains("_Work completed"), "got: {prompt}");
+    }
+
     #[test]
     fn build_prompt_includes_every_non_empty_section() {
         let prompt = build_prompt(&full_inputs());
         for needle in [
             "Filing date: 2026-08-03",
             "Work window: 2026-08-01 .. 2026-08-02",
-            "Title: Daily Standup",
-            "Subtitle: _Work completed",
             "Jira base: https://jira.example.com/browse",
             "## GIT FACTS",
             "## GITHUB",
@@ -1323,6 +1489,110 @@ mod tests {
         let err = validate_render("**autostand — Core model**", &[], &[])
             .expect_err("prose without bullets is rejected");
         assert_eq!(err.code(), "no_bullets");
+    }
+
+    /// Observed with Gemma 3 1B (fast) and Qwen 3.5 2B: the last section is
+    /// emitted twice, the body is fenced, and llama.cpp's `[end of text]` sits
+    /// after the closing fence.
+    const OBSERVED_DUPLICATE_BLOCKERS: &str = "```\n\
+**Yesterday**\n\
+- Working on August 13th release.\n\
+\n\
+**Today**\n\
+- Reviewing Gorgias claim security vulnerabilities.\n\
+- Testing the new claim submission functionality.\n\
+\n\
+**Blockers**\n\
+- None\n\
+\n\
+**Blockers**\n\
+- None\n\
+``` [end of text]";
+
+    /// Observed with Gemma 3 4B (balanced): the model continued the document it
+    /// was shown instead of answering, reproducing the title, the subtitle and
+    /// the AUTO markers.
+    const OBSERVED_FULL_DOCUMENT: &str = "# August 13, 2026\n\
+\n\
+_Work completed August 11–12, 2026._\n\
+\n\
+<!-- AUTO:MacStudio-de-Miguel:START -->\n\
+**Yesterday**\n\
+- Reviewed security vulnerabilities in the Gorgias claim ticket payload.\n\
+\n\
+**Today**\n\
+- None\n\
+\n\
+**Blockers**\n\
+- None\n\
+<!-- AUTO:MacStudio-de-Miguel:END -->";
+
+    #[test]
+    fn sanitize_removes_the_runtime_end_of_text_marker() {
+        let out = sanitize_body("**Today**\n- Shipped the fix\n [end of text]\n");
+        assert!(!out.contains("[end of text]"), "got: {out}");
+        assert!(out.contains("- Shipped the fix"));
+    }
+
+    /// Regression: `strip_code_fence` requires the body to *end* with the fence,
+    /// so a trailing `[end of text]` used to leave the backticks in the file.
+    #[test]
+    fn sanitize_unwraps_a_fence_that_is_followed_by_the_end_of_text_marker() {
+        let out = sanitize_body(OBSERVED_DUPLICATE_BLOCKERS);
+        assert!(!out.contains("```"), "fence survived: {out}");
+        assert!(out.starts_with("**Yesterday**"), "got: {out}");
+    }
+
+    #[test]
+    fn sanitize_collapses_a_section_emitted_twice() {
+        let out = sanitize_body(OBSERVED_DUPLICATE_BLOCKERS);
+        assert_eq!(out.matches("**Blockers**").count(), 1, "got: {out}");
+        assert_eq!(out.matches("- None").count(), 1, "got: {out}");
+        // The other sections survive intact.
+        assert!(out.contains("- Working on August 13th release."));
+        assert!(out.contains("- Reviewing Gorgias claim security vulnerabilities."));
+    }
+
+    /// Two different sections may each legitimately read `- None`.
+    #[test]
+    fn sanitize_keeps_the_same_bullet_under_different_headers() {
+        let out = sanitize_body("**Today**\n- None\n\n**Blockers**\n- None\n");
+        assert_eq!(out.matches("- None").count(), 2, "got: {out}");
+    }
+
+    #[test]
+    fn sanitize_drops_the_file_skeleton_the_model_should_never_emit() {
+        let out = sanitize_body(OBSERVED_FULL_DOCUMENT);
+        assert!(!out.contains("<!-- AUTO:"), "AUTO marker survived: {out}");
+        assert!(!out.contains("# August 13, 2026"), "title survived: {out}");
+        assert!(!out.contains("_Work completed"), "subtitle survived: {out}");
+        assert!(out.starts_with("**Yesterday**"), "got: {out}");
+        assert!(out
+            .contains("- Reviewed security vulnerabilities in the Gorgias claim ticket payload."));
+    }
+
+    /// Observed with Qwen 3.5 2B (balanced): a PR Review bullet truncated
+    /// mid-span, leaving one backtick that would code-format the rest of the file.
+    #[test]
+    fn sanitize_closes_an_unbalanced_inline_code_span() {
+        let out = sanitize_body(
+            "**PR Review**\n- `shopify-theme2.0 #934 — \"update-navigation-consultations\"\n",
+        );
+        assert_eq!(out.matches('`').count() % 2, 0, "odd backticks: {out}");
+    }
+
+    #[test]
+    fn sanitize_leaves_a_clean_body_untouched() {
+        let clean = "**Yesterday**\n- Shipped the fix\n\n**Today**\n- Review the PR\n\n**Blockers**\n- None";
+        assert_eq!(sanitize_body(clean), clean);
+    }
+
+    #[test]
+    fn sanitize_is_idempotent() {
+        for raw in [OBSERVED_DUPLICATE_BLOCKERS, OBSERVED_FULL_DOCUMENT] {
+            let once = sanitize_body(raw);
+            assert_eq!(sanitize_body(&once), once, "not idempotent for: {raw}");
+        }
     }
 
     #[test]

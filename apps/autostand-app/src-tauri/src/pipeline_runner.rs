@@ -1844,9 +1844,6 @@ async fn render_body(
     let file_date = date.format(DATE_FORMAT).to_string();
     let range_start = window.range_start.format(DATE_FORMAT).to_string();
     let range_end = window.range_end.format(DATE_FORMAT).to_string();
-    let title = title_for(date);
-    let subtitle = subtitle_for(window);
-
     let inputs = PromptInputs {
         facts: &facts_clean,
         github: github.as_deref(),
@@ -1857,8 +1854,6 @@ async fn render_body(
         file_date: &file_date,
         range_start: &range_start,
         range_end: &range_end,
-        title: &title,
-        subtitle: &subtitle,
         prev_auto: Some(prev_auto).filter(|body| !body.trim().is_empty()),
         format: Some(&env.config.format),
     };
