@@ -47,6 +47,27 @@ for (const { width, height, label } of VIEWPORTS) {
   });
 }
 
+for (const { width, height, label } of VIEWPORTS) {
+  test(`regression_history_overflow — no horizontal scrollbar at ${label} (${width}x${height})`, async ({
+    page,
+    app,
+  }) => {
+    await page.setViewportSize({ width, height });
+    await app.start(makeScenario(), "/history");
+
+    await expect(page.getByRole("tablist", { name: "History view" })).toBeVisible();
+
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    }));
+
+    expect(overflow.scrollWidth, "no horizontal page overflow").toBeLessThanOrEqual(
+      overflow.innerWidth,
+    );
+  });
+}
+
 test("regression_dashboard_overflow — right column never exceeds viewport height", async ({
   page,
   app,

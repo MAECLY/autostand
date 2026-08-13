@@ -7,6 +7,10 @@
  * declares them, so a drift shows up here first.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", async () => (await import("@/test/mocks")).tauriCoreMock());
@@ -167,6 +171,20 @@ describe("tauriApi", () => {
     mockInvoke.mockResolvedValue(CONFIG);
 
     await expect(tauriApi.getConfig()).resolves.toBe(CONFIG);
+  });
+
+  it("stays in lockstep with the e2e mock-backend dispatcher", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const mockPath = resolve(
+      here,
+      "../../../../../tests/e2e/support/mock-backend.ts",
+    );
+    const source = readFileSync(mockPath, "utf8");
+    const handled = new Set(
+      [...source.matchAll(/case "([a-z0-9_]+)"/g)].map((match) => match[1]),
+    );
+    const documented = COMMANDS.map((entry) => entry.command);
+    expect([...handled].sort()).toEqual([...documented].sort());
   });
 
   it("rejects with the serialized AppError untouched", async () => {
