@@ -468,6 +468,7 @@ async fn render_via_backend<B: RenderBackend>(
     prompt: &str,
     system: &str,
     config: &AdapterConfig,
+    mut log: impl FnMut(&str),
 ) -> Option<RenderOutput> {
     // Only `ApiFallback` branches on CLI availability; probing for the other modes would
     // spawn a pointless `--version` subprocess on every render.
@@ -478,15 +479,37 @@ async fn render_via_backend<B: RenderBackend>(
     };
 
     for &step in attempt_plan(config.mode, cli_available) {
+        let channel = match step {
+            AdapterMode::CliOnly | AdapterMode::CliFirst => "CLI",
+            AdapterMode::ApiOnly | AdapterMode::ApiFallback => "API",
+        };
+        log(&format!(
+            "trying {channel} — model {} (timeout {}s)",
+            if config.model.is_empty() {
+                "(default)"
+            } else {
+                config.model.as_str()
+            },
+            config.timeout_secs.max(1)
+        ));
         let mut attempt = config.clone();
         attempt.mode = step;
         match backend.render(prompt, system, &attempt).await {
             Ok(output) if output.body.trim().is_empty() => {
                 tracing::warn!(mode = ?step, "LLM returned an empty body");
+                log(&format!("{channel} returned an empty body"));
             }
-            Ok(output) => return Some(output),
+            Ok(output) => {
+                log(&format!(
+                    "{channel} ok — {} ({} ms)",
+                    output.model, output.latency_ms
+                ));
+                return Some(output);
+            }
             Err(err) => {
-                tracing::warn!(mode = ?step, kind = error_kind(&err), "LLM render attempt failed");
+                let kind = error_kind(&err);
+                tracing::warn!(mode = ?step, kind, "LLM render attempt failed");
+                log(&format!("{channel} failed — {kind}"));
             }
         }
     }
@@ -518,20 +541,33 @@ fn strip_code_fence(body: &str) -> &str {
 /// `tracing::warn!` — when: the render mode is `Det`, no provider is configured, the provider
 /// id is unknown, the provider is disabled, this process is itself a render subprocess, or
 /// every attempt in the mode's plan failed. A failed LLM must never fail the compile.
-#[tracing::instrument(skip_all, fields(provider, mode))]
 pub async fn render_llm(inputs: &PromptInputs<'_>, config: &AppConfig) -> Option<RenderedBody> {
+    render_llm_logged(inputs, config, |_| {}).await
+}
+
+/// [`render_llm`] that reports each CLI/API attempt so the pipeline log can
+/// show *why* a render is still sitting at 72 %.
+#[tracing::instrument(skip_all, fields(provider, mode))]
+pub async fn render_llm_logged(
+    inputs: &PromptInputs<'_>,
+    config: &AppConfig,
+    mut log: impl FnMut(&str),
+) -> Option<RenderedBody> {
     if config.render_mode == RenderMode::Det {
         tracing::info!("render_mode=Det: skipping the LLM");
+        log("render mode = Det — skipping LLM");
         return None;
     }
     if is_render_subprocess(std::env::var(RENDER_ENV).ok().as_deref()) {
         tracing::warn!("{RENDER_ENV} is set: refusing to render from inside a render subprocess");
+        log("refusing to render: AUTOSTAND_RENDER is set");
         return None;
     }
 
     let provider_id = resolve_provider_id(config, std::env::var(PROVIDER_ENV).ok().as_deref());
     if provider_id.is_empty() {
         tracing::warn!("no LLM provider configured; using the deterministic renderer");
+        log("no preferred provider configured");
         return None;
     }
     tracing::Span::current().record("provider", provider_id.as_str());
@@ -539,10 +575,12 @@ pub async fn render_llm(inputs: &PromptInputs<'_>, config: &AppConfig) -> Option
     let entry = provider_entry(config, &provider_id);
     if !entry.enabled {
         tracing::warn!(provider = %provider_id, "preferred provider is disabled");
+        log(&format!("provider {provider_id} is disabled"));
         return None;
     }
     let Some(adapter) = adapter_for(&provider_id) else {
         tracing::warn!(provider = %provider_id, "unknown LLM provider id");
+        log(&format!("unknown provider id: {provider_id}"));
         return None;
     };
 
@@ -563,9 +601,13 @@ pub async fn render_llm(inputs: &PromptInputs<'_>, config: &AppConfig) -> Option
 
     let system = system_prompt_for(inputs.jira_base);
     let prompt = build_prompt(inputs);
+    log(&format!(
+        "prompt ready — {} chars, provider {provider_id}, mode {mode:?}",
+        prompt.len()
+    ));
 
     let backend = AdapterBackend(adapter.as_ref());
-    let output = render_via_backend(&backend, &prompt, &system, &adapter_cfg).await?;
+    let output = render_via_backend(&backend, &prompt, &system, &adapter_cfg, &mut log).await?;
 
     tracing::info!(
         provider = %provider_id,
@@ -1187,7 +1229,7 @@ mod tests {
     }
 
     async fn run(backend: &FakeBackend, mode: AdapterMode) -> Option<RenderOutput> {
-        render_via_backend(backend, "prompt", "system", &adapter_cfg(mode)).await
+        render_via_backend(backend, "prompt", "system", &adapter_cfg(mode), |_| {}).await
     }
 
     #[tokio::test]

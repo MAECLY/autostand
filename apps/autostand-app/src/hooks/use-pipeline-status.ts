@@ -13,12 +13,18 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { toast } from "sonner";
 
 import { auditSidecarsKey } from "@/hooks/use-audit";
+import {
+  clearPipelineLog,
+  pushPipelineLog,
+} from "@/hooks/use-pipeline-log";
 import { schedulerStatusKey } from "@/hooks/use-scheduler";
 import { standupKey } from "@/hooks/use-standup";
 import { handleInvokeError } from "@/lib/error";
+import { useUiStore } from "@/lib/store";
 import {
   onPipelineDone,
   onPipelineError,
+  onPipelineLog,
   onPipelineProgress,
   onPipelineStarted,
   onSchedulerTick,
@@ -117,6 +123,8 @@ export function usePipelineEvents(): void {
     track(
       onPipelineStarted((payload) => {
         trigger.current = payload.trigger;
+        clearPipelineLog();
+        useUiStore.getState().setTerminalPanel("open");
         queryClient.setQueryData<PipelineStatus>(pipelineStatusKey, (status) => ({
           ...(status ?? IDLE_STATUS),
           state: "gathering",
@@ -126,6 +134,12 @@ export function usePipelineEvents(): void {
           percent: 0,
           error: null,
         }));
+      }),
+    );
+
+    track(
+      onPipelineLog((line) => {
+        pushPipelineLog(line);
       }),
     );
 

@@ -1,53 +1,62 @@
 /**
- * Subscribes to `pipeline-log` events and accumulates them into a rolling
- * buffer for the TerminalViewer. Lines are kept in arrival order and capped at
- * `maxLines`; older lines are dropped. A `pipeline-started` / `pipeline-done`
- * cycle for the same date clears the buffer so each compile starts clean.
+ * Shared pipeline-log buffer.
+ *
+ * The viewer, the panel header and the status-bar pill all read this store.
+ * Tauri subscription lives in `usePipelineEvents` (mounted once on the root
+ * layout) so opening the panel mid-compile does not start an empty buffer.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
-import { onPipelineDone, onPipelineLog, onPipelineStarted } from "@/lib/tauri";
 import type { PipelineLogEvent } from "@/lib/types";
+
+const DEFAULT_MAX = 500;
+
+let lines: PipelineLogEvent[] = [];
+const listeners = new Set<() => void>();
+
+function emit(): void {
+  for (const listener of listeners) listener();
+}
+
+export function appendPipelineLog(
+  current: PipelineLogEvent[],
+  line: PipelineLogEvent,
+  max = DEFAULT_MAX,
+): PipelineLogEvent[] {
+  return [...current, line].slice(-max);
+}
+
+export function pushPipelineLog(line: PipelineLogEvent, max = DEFAULT_MAX): void {
+  lines = appendPipelineLog(lines, line, max);
+  emit();
+}
+
+export function clearPipelineLog(): void {
+  lines = [];
+  emit();
+}
+
+function subscribe(onStoreChange: () => void): () => void {
+  listeners.add(onStoreChange);
+  return () => {
+    listeners.delete(onStoreChange);
+  };
+}
+
+function getSnapshot(): PipelineLogEvent[] {
+  return lines;
+}
 
 export interface UsePipelineLogResult {
   lines: PipelineLogEvent[];
   clear: () => void;
 }
 
-export function usePipelineLog(maxLines = 500): UsePipelineLogResult {
-  const [lines, setLines] = useState<PipelineLogEvent[]>([]);
-  const buffer = useRef<PipelineLogEvent[]>([]);
-
-  const push = useCallback(
-    (line: PipelineLogEvent) => {
-      buffer.current = [...buffer.current, line].slice(-maxLines);
-      setLines(buffer.current);
-    },
-    [maxLines],
-  );
-
+export function usePipelineLog(): UsePipelineLogResult {
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const clear = useCallback(() => {
-    buffer.current = [];
-    setLines([]);
+    clearPipelineLog();
   }, []);
-
-  useEffect(() => {
-    const unlistenStarted = onPipelineStarted(() => {
-      buffer.current = [];
-      setLines([]);
-    });
-    const unlistenLog = onPipelineLog(push);
-    const unlistenDone = onPipelineDone(() => {
-      // Keep the buffer after done so the user can read the final output.
-      // A new `pipeline-started` clears it for the next run.
-    });
-    return () => {
-      void unlistenStarted.then((fn) => fn());
-      void unlistenLog.then((fn) => fn());
-      void unlistenDone.then((fn) => fn());
-    };
-  }, [push]);
-
-  return { lines, clear };
+  return { lines: snapshot, clear };
 }

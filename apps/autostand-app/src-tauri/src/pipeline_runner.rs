@@ -1460,7 +1460,27 @@ pub async fn compile_one(
             Some(format!("provider={provider}")),
         );
     }
-    let rendered = render_body(env, &facts, &gathered, &prov, &window, date, &prev_auto).await;
+    let rendered = render_body(
+        env,
+        &facts,
+        &gathered,
+        &prov,
+        &window,
+        date,
+        &prev_auto,
+        |message| {
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::RenderLlm,
+                PipelineLogLevel::Info,
+                message,
+                None,
+            );
+        },
+    )
+    .await;
     match &rendered {
         Some(body) => {
             emit_log(
@@ -1662,6 +1682,7 @@ pub async fn compile_one(
 /// The prompt gets *scrubbed and redacted* notes: the LLM must never see a
 /// clause the anti-backdating rules already dropped, nor a secret the final
 /// redaction pass would only have removed after the fact.
+#[allow(clippy::too_many_arguments)]
 async fn render_body(
     env: &RunEnv,
     facts: &str,
@@ -1670,6 +1691,7 @@ async fn render_body(
     window: &Window,
     date: NaiveDate,
     prev_auto: &str,
+    log: impl FnMut(&str),
 ) -> Option<RenderedBody> {
     if env.config.render_mode == RenderMode::Det {
         return None;
@@ -1718,7 +1740,7 @@ async fn render_body(
         prev_auto: Some(prev_auto).filter(|body| !body.trim().is_empty()),
         format: Some(&env.config.format),
     };
-    render::render_llm(&inputs, &env.config).await
+    render::render_llm_logged(&inputs, &env.config, log).await
 }
 
 /// Gather-only debug path (`preview_gather`): steps (a), (b), (c), (e) and (f).
