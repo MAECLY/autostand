@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { handleInvokeError } from "@/lib/error";
+import { configKey } from "@/hooks/use-config";
+import { llmProvidersKey } from "@/hooks/use-providers";
 import { onLocalModelProgress, tauriApi } from "@/lib/tauri";
 import type { LocalModelInfo } from "@/lib/types";
 
@@ -59,7 +61,11 @@ function useModelMutation(
   return useMutation({
     mutationFn: action,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: localModelsKey });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: localModelsKey }),
+        queryClient.invalidateQueries({ queryKey: configKey }),
+        queryClient.invalidateQueries({ queryKey: llmProvidersKey }),
+      ]);
     },
     onError: (error) => handleInvokeError(error, actionLabel),
   });

@@ -11,8 +11,8 @@
  * to config JSON — `ProviderConfig.api_key_ref` holds a keychain name, not a key.
  */
 
-import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, KeyRound, Zap } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronDown, KeyRound, Zap } from "lucide-react";
 
 import { Badge } from "@autostand/ui/components/badge";
 import { Button } from "@autostand/ui/components/button";
@@ -100,6 +100,9 @@ export interface ProviderCardProps {
   onSetTimeout: (seconds: number) => void;
   onTest: (mode: ProviderTestMode) => Promise<TestProviderResult>;
   onSaveKey: (key: string) => Promise<void>;
+  /** Only one provider should expose its advanced controls at a time. */
+  expanded?: boolean;
+  onToggleDetails?: () => void;
 }
 
 export function ProviderCard({
@@ -117,6 +120,8 @@ export function ProviderCard({
   onSetTimeout,
   onTest,
   onSaveKey,
+  expanded = true,
+  onToggleDetails,
 }: ProviderCardProps) {
   const [modelDraft, setModelDraft] = useState(provider.model);
   const [customModel, setCustomModel] = useState(false);
@@ -126,6 +131,12 @@ export function ProviderCard({
   const [keyDialogOpen, setKeyDialogOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [savingKey, setSavingKey] = useState(false);
+  const isBuiltinLocal = provider.id === "builtin-local";
+
+  useEffect(() => {
+    setModelDraft(provider.model);
+    setCustomModel(false);
+  }, [provider.model]);
 
   const modelsQuery = useProviderModels(provider.id);
   const discovered = modelsQuery.data;
@@ -245,15 +256,36 @@ export function ProviderCard({
             />
           </div>
           <Badge variant={provider.cli.found ? "success" : "secondary"}>
-            {provider.cli.found ? "CLI found" : "CLI not found"}
+            {provider.cli.found
+              ? isBuiltinLocal
+                ? "Runtime found"
+                : "CLI found"
+              : isBuiltinLocal
+                ? "Runtime missing"
+                : "CLI not found"}
           </Badge>
-          <Badge variant={provider.api_key.set ? "success" : "secondary"}>
-            {API_KEY_LABELS[provider.api_key.mode]}
-          </Badge>
+          {!isBuiltinLocal ? (
+            <Badge variant={provider.api_key.set ? "success" : "secondary"}>
+              {API_KEY_LABELS[provider.api_key.mode]}
+            </Badge>
+          ) : null}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-expanded={expanded}
+            onClick={onToggleDetails}
+          >
+            {expanded ? "Hide" : "Configure"}
+            <ChevronDown
+              className={cn("size-4 transition-transform", expanded && "rotate-180")}
+              aria-hidden="true"
+            />
+          </Button>
         </div>
       </CardHeader>
 
-      <CardContent className="flex flex-col gap-4">
+      {expanded ? <CardContent className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2">
           <p className="text-xs text-muted-foreground">
             Failover priority. Autostand tries providers from top to bottom.
@@ -289,7 +321,19 @@ export function ProviderCard({
           </p>
         ) : null}
 
-        <div className="grid gap-4 sm:grid-cols-3">
+        {isBuiltinLocal ? (
+          <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/45 px-4 py-3">
+            <div>
+              <p className="text-xs text-muted-foreground">Active model</p>
+              <p className="font-mono text-sm font-medium">
+                {provider.model || "No local model selected"}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Download and change models in the Local AI tab. Built-in AI is always local and never uses an API key.
+              </p>
+            </div>
+          </div>
+        ) : <div className="grid gap-4 sm:grid-cols-3">
           <div className="flex flex-col gap-2">
             <Label htmlFor={modelId}>Model</Label>
             {showModelSelect ? (
@@ -386,7 +430,7 @@ export function ProviderCard({
               }}
             />
           </div>
-        </div>
+        </div>}
 
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -398,17 +442,19 @@ export function ProviderCard({
             }}
           >
             <Zap className="size-4" aria-hidden="true" />
-            {testing ? "Testing…" : "Test"}
+            {testing ? "Testing…" : isBuiltinLocal ? "Test local AI" : "Test"}
           </Button>
 
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => setKeyDialog(true)}
-          >
-            <KeyRound className="size-4" aria-hidden="true" />
-            Store key
-          </Button>
+          {!isBuiltinLocal ? (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setKeyDialog(true)}
+            >
+              <KeyRound className="size-4" aria-hidden="true" />
+              Store key
+            </Button>
+          ) : null}
 
           {testResult !== null ? (
             <>
@@ -425,7 +471,7 @@ export function ProviderCard({
             </>
           ) : null}
         </div>
-      </CardContent>
+      </CardContent> : null}
 
       <Dialog open={keyDialogOpen} onOpenChange={setKeyDialog}>
         <DialogContent>

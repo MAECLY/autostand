@@ -1,4 +1,4 @@
-import { Check, Download, Pause, ShieldCheck, Trash2 } from "lucide-react";
+import { Check, Download, Gauge, Pause, ShieldCheck, Trash2, Zap } from "lucide-react";
 
 import { Badge } from "@autostand/ui/components/badge";
 import { Button } from "@autostand/ui/components/button";
@@ -12,7 +12,9 @@ import {
   useLocalModels,
   useSelectLocalModel,
 } from "@/hooks/use-local-models";
-import type { LocalModelInfo } from "@/lib/types";
+import { useConfig, useSetConfig } from "@/hooks/use-config";
+import type { LocalModelInfo, LocalRuntimePolicy } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 function formatBytes(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
@@ -28,12 +30,23 @@ function statusVariant(model: LocalModelInfo) {
 }
 
 export function LocalModelsTab() {
+  const config = useConfig();
+  const setConfig = useSetConfig();
   const models = useLocalModels();
   const download = useDownloadLocalModel();
   const cancel = useCancelLocalModelDownload();
   const remove = useDeleteLocalModel();
   const select = useSelectLocalModel();
   const acceptTerms = useAcceptLocalModelTerms();
+  const runtimePolicy = config.data?.llm.local_runtime_policy ?? "on_demand";
+
+  function setRuntimePolicy(local_runtime_policy: LocalRuntimePolicy) {
+    if (config.data === undefined) return;
+    setConfig.mutate({
+      ...config.data,
+      llm: { ...config.data.llm, local_runtime_policy },
+    });
+  }
 
   if (models.isPending) {
     return <p className="text-sm text-muted-foreground">Loading model catalog…</p>;
@@ -50,6 +63,62 @@ export function LocalModelsTab() {
           Models are never downloaded automatically. Files are resumed safely,
           verified with SHA-256 and stored in Autostand app data.
         </p>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <div>
+          <p className="font-medium">How should the local model run?</p>
+          <p className="text-sm text-muted-foreground">
+            This choice applies equally to Compile now and automatic scheduler runs.
+          </p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          {([
+            {
+              value: "keep_ready",
+              title: "Keep a reusable cache",
+              description:
+                "Keep the model's reusable prompt state on this device so later runs can start faster. Uses additional disk space.",
+              icon: Gauge,
+            },
+            {
+              value: "on_demand",
+              title: "Load on demand",
+              description:
+                "Start clean when a compile needs Local AI and remove reusable state afterwards. Slower, with the smallest footprint.",
+              icon: Zap,
+            },
+          ] as const).map((option) => {
+            const selected = runtimePolicy === option.value;
+            const Icon = option.icon;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={selected}
+                disabled={config.data === undefined || setConfig.isPending}
+                onClick={() => setRuntimePolicy(option.value)}
+                className={cn(
+                  "flex gap-3 rounded-lg border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  selected
+                    ? "border-primary bg-primary/5"
+                    : "border-border hover:bg-muted/50",
+                )}
+              >
+                <Icon className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+                <span>
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    {option.title}
+                    {selected ? <Badge variant="default">Selected</Badge> : null}
+                  </span>
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    {option.description}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {models.data.map((model) => {

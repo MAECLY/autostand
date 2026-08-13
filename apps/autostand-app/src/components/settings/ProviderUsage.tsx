@@ -67,9 +67,9 @@ function UsageWindowRow({ window }: { window: UsageWindow }) {
   );
 }
 
-function ProviderHealthRow({ health }: { health: ProviderHealth }) {
+function ProviderHealthRow({ health, compact = false }: { health: ProviderHealth; compact?: boolean }) {
   return (
-    <div className="flex flex-col gap-3 border-b border-border py-4 last:border-b-0">
+    <div className={compact ? "flex flex-col gap-2 border-b border-border py-3 last:border-b-0" : "flex flex-col gap-3 border-b border-border py-4 last:border-b-0"}>
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="font-medium capitalize">{health.provider}</p>
@@ -88,20 +88,26 @@ function ProviderHealthRow({ health }: { health: ProviderHealth }) {
         <UsageWindowRow key={window.id} window={window} />
       ))}
 
-      {health.reason !== null ? (
+      {!compact && health.reason !== null ? (
         <p className="text-xs text-muted-foreground">{health.reason}</p>
       ) : null}
     </div>
   );
 }
 
-export function ProviderUsage() {
+export function ProviderUsage({ compact = false }: { compact?: boolean }) {
   const health = useProviderHealth();
   const refresh = useRefreshProviderHealth();
 
   return (
     <div className="flex flex-col">
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between gap-3">
+        {compact ? (
+          <div>
+            <p className="text-sm font-semibold">Usage & availability</p>
+            <p className="text-xs text-muted-foreground">Provider-reported values only.</p>
+          </div>
+        ) : <span />}
         <Button
           type="button"
           variant="outline"
@@ -126,7 +132,7 @@ export function ProviderUsage() {
         </p>
       ) : null}
       {health.data?.map((item) => (
-        <ProviderHealthRow key={item.provider} health={item} />
+        <ProviderHealthRow key={item.provider} health={item} compact={compact} />
       ))}
     </div>
   );

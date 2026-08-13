@@ -56,6 +56,21 @@ beforeEach(() => {
 });
 
 describe("ProviderCard model field", () => {
+  it("shows only meaningful controls for Built-in Local AI", async () => {
+    renderCard(["gemma3:1b"], {
+      id: "builtin-local",
+      label: "Built-in Local AI",
+      mode: "CliOnly",
+      model: "gemma3:1b",
+      api_key: { set: false, mode: "none" },
+    });
+
+    expect(await screen.findByText("gemma3:1b")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test local AI" })).toBeInTheDocument();
+    expect(screen.queryByText("Mode")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Store key" })).toBeNull();
+  });
+
   it("keeps a free-text model input when the probe returns nothing", async () => {
     const { onSetModel } = renderCard([]);
 

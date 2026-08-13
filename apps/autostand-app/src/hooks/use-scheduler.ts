@@ -26,8 +26,8 @@ export function useSetSchedule() {
 
   return useMutation({
     mutationFn: (cron: string) => tauriApi.setSchedulerSchedule(cron),
-    onSuccess: async (_data, cron) => {
-      toast.success(`Schedule set to ${cron}`);
+    onSuccess: async () => {
+      toast.success("Schedule updated");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: schedulerStatusKey }),
         // `scheduler.cron` is persisted inside the app config as well.
@@ -40,3 +40,18 @@ export function useSetSchedule() {
 
 /** Alias spelled after the `set_scheduler_schedule` command. */
 export const useSetSchedulerSchedule = useSetSchedule;
+
+export function useSetSchedulerEnabled() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => tauriApi.setSchedulerEnabled(enabled),
+    onSuccess: async (_data, enabled) => {
+      toast.success(enabled ? "Schedule enabled" : "Schedule paused");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: schedulerStatusKey }),
+        queryClient.invalidateQueries({ queryKey: configKey }),
+      ]);
+    },
+    onError: (error) => handleInvokeError(error, "Update scheduler"),
+  });
+}

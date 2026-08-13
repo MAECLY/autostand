@@ -163,6 +163,7 @@ function upsertProvider(
 }
 
 function ProvidersTab() {
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const { data: config } = useConfig();
   const providers = useLlmProviders();
   const setConfig = useSetConfig();
@@ -205,44 +206,33 @@ function ProvidersTab() {
   ];
 
   return (
-    <div className="flex flex-col gap-4">
-      <Section
-        title="Automatic provider fallback"
-        description="When a provider cannot render, continue through the enabled providers in priority order."
-      >
-        <div className="flex items-center justify-between gap-4">
+    <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="flex min-w-0 flex-col gap-3">
+        <div className="flex items-start justify-between gap-5 rounded-xl border border-border bg-surface p-4">
           <div>
-            <Label htmlFor="provider-fallback-enabled">
-              Continue with the next provider
-            </Label>
-            <p className="text-xs text-muted-foreground">
-              Authentication, quota, model and service failures are isolated
-              to the provider that caused them.
+            <p className="text-sm font-semibold">Provider priority</p>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Autostand starts at the top and continues with the next enabled provider when usage, authentication or service availability blocks a render.
             </p>
           </div>
-          <Switch
-            id="provider-fallback-enabled"
-            checked={config?.llm.fallback_enabled ?? true}
-            disabled={config === undefined}
-            onCheckedChange={(fallback_enabled) => {
-              if (config === undefined) return;
-              setConfig.mutate({
-                ...config,
-                llm: { ...config.llm, fallback_enabled },
-              });
-            }}
-          />
+          <div className="flex shrink-0 items-center gap-3">
+            <Label htmlFor="provider-fallback-enabled" className="text-xs font-normal">
+              Automatic fallback
+            </Label>
+            <Switch
+              id="provider-fallback-enabled"
+              checked={config?.llm.fallback_enabled ?? true}
+              disabled={config === undefined}
+              onCheckedChange={(fallback_enabled) => {
+                if (config === undefined) return;
+                setConfig.mutate({ ...config, llm: { ...config.llm, fallback_enabled } });
+              }}
+            />
+          </div>
         </div>
-      </Section>
 
-      <Section
-        title="Provider usage"
-        description="Exact percentages are shown only when the provider exposes a supported programmatic source."
-      >
-        <ProviderUsage />
-      </Section>
-
-      {orderedIds.map((providerId, index) => {
+        <div className="flex flex-col gap-2" role="radiogroup" aria-label="Preferred AI provider">
+        {orderedIds.map((providerId, index) => {
         const provider = providerById.get(providerId);
         if (provider === undefined) return null;
         const stored = config?.llm.providers.find(
@@ -313,9 +303,19 @@ function ProvidersTab() {
             onSaveKey={(key) =>
               storeApiKey.mutateAsync({ provider: provider.id, key })
             }
+            expanded={expandedProvider === provider.id}
+            onToggleDetails={() =>
+              setExpandedProvider((current) => current === provider.id ? null : provider.id)
+            }
           />
         );
-      })}
+        })}
+        </div>
+      </div>
+
+      <aside className="sticky top-4 min-w-0 rounded-xl border border-border bg-surface p-4">
+        <ProviderUsage compact />
+      </aside>
     </div>
   );
 }
@@ -493,7 +493,7 @@ function SettingsPage() {
         <TabsContent value="scheduler">
           <Section
             title="Scheduler"
-            description="Cron expression, self-heal, and what the installed scheduler is doing."
+            description="Choose when Autostand runs in plain language. Advanced cron remains available when needed."
           >
             <SchedulerForm />
           </Section>
