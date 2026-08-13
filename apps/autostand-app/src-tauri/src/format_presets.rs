@@ -11,13 +11,39 @@
 use crate::commands::types::{StandupFormatConfig, StandupPreset, Verbosity};
 
 /// Verbosity guidance appended to every preset's output instruction.
+///
+/// Each level carries a hard ceiling. Guidance phrased only in the positive
+/// ("as normal") gave a 2B licence to write narrative paragraphs.
 fn verbosity_line(verbosity: Verbosity) -> &'static str {
     match verbosity {
-        Verbosity::Terse => "Keep each section to one short line or a single bullet.",
-        Verbosity::Standard => "Use one bullet per distinct item, as normal.",
-        Verbosity::Detailed => "Use multiple bullets per section with brief context when useful.",
+        Verbosity::Terse => {
+            "Keep each section to one short line or a single bullet. \
+             At most 12 words per bullet."
+        }
+        Verbosity::Standard => {
+            "Use one bullet per distinct item. At most 20 words per bullet. \
+             One sentence per bullet — never a paragraph."
+        }
+        Verbosity::Detailed => {
+            "Use multiple bullets per section with brief context when useful. \
+             At most 35 words per bullet, and never more than two sentences."
+        }
     }
 }
+
+/// Constraints stated as prohibitions.
+///
+/// The positive instruction "return only the body" was not enough: a small
+/// model handed a Markdown document reproduced its title, its subtitle and its
+/// AUTO markers rather than answering. Naming each forbidden artifact
+/// explicitly is what keeps it out.
+const OUTPUT_PROHIBITIONS: &str = "Do NOT write any of the following:\n\
+- a `# ` document title, or any date heading;\n\
+- an italic subtitle line such as `_Work completed …_`;\n\
+- HTML comments, in particular `<!-- AUTO:… -->` or `<!-- MANUAL:… -->`;\n\
+- code fences (```) anywhere, including around the whole answer;\n\
+- the same section header twice;\n\
+- anything at all after the final section.\n";
 
 /// Build the `## OUTPUT` section text for the given format configuration.
 ///
@@ -36,7 +62,9 @@ pub fn output_section(config: &StandupFormatConfig) -> String {
         "Every bold section header shown in the selected structure is REQUIRED, in the exact order shown. \
 Never omit an empty section: write `- None` beneath it. Every section must contain at least one `- ` bullet.\n\n",
     );
-    out.push_str("Format your output using this structure:\n\n");
+    out.push_str(OUTPUT_PROHIBITIONS);
+    out.push('\n');
+    out.push_str("Format your output using exactly this structure — the angle brackets are placeholders to replace, not text to keep:\n\n");
     out.push_str(preset);
     out.push_str("\n\n");
     out.push_str(verbosity);
@@ -152,19 +180,16 @@ fn preset_template(preset: StandupPreset) -> &'static str {
     }
 }
 
-const CLASSIC_SCRUM: &str = r#"```
-**Yesterday**
+const CLASSIC_SCRUM: &str = r#"**Yesterday**
 - <what you did>
 
 **Today**
 - <what you plan to do>
 
 **Blockers**
-- <impediments, or "None">
-```"#;
+- <impediments, or "None">"#;
 
-const FOUR_QUESTION: &str = r#"```
-**Yesterday**
+const FOUR_QUESTION: &str = r#"**Yesterday**
 - <what you did>
 
 **Today**
@@ -174,44 +199,36 @@ const FOUR_QUESTION: &str = r#"```
 - <impediments, or "None">
 
 **Help needed**
-- <help you need or can offer>
-```"#;
+- <help you need or can offer>"#;
 
-const MAD_SAD_GLAD: &str = r#"```
-**Mad**
+const MAD_SAD_GLAD: &str = r#"**Mad**
 - <frustrations / impediments>
 
 **Sad**
 - <demotivators / losses>
 
 **Glad**
-- <wins / things to celebrate>
-```"#;
+- <wins / things to celebrate>"#;
 
-const START_STOP_CONTINUE: &str = r#"```
-**Start**
+const START_STOP_CONTINUE: &str = r#"**Start**
 - <what we should start doing>
 
 **Stop**
 - <what we should stop doing>
 
 **Continue**
-- <what is working well>
-```"#;
+- <what is working well>"#;
 
-const KEEP_DROP_CREATE: &str = r#"```
-**Keep**
+const KEEP_DROP_CREATE: &str = r#"**Keep**
 - <practices to keep>
 
 **Drop**
 - <practices to drop>
 
 **Create**
-- <new things to try>
-```"#;
+- <new things to try>"#;
 
-const FIVE_QUESTION: &str = r#"```
-**Yesterday**
+const FIVE_QUESTION: &str = r#"**Yesterday**
 - <what you did>
 
 **Today**
@@ -224,11 +241,9 @@ const FIVE_QUESTION: &str = r#"```
 - <1-5>
 
 **Team health**
-- <1-5 or one-word mood>
-```"#;
+- <1-5 or one-word mood>"#;
 
-const SPOTIFY_4Q: &str = r#"```
-**Did**
+const SPOTIFY_4Q: &str = r#"**Did**
 - <what I did since last standup>
 
 **Doing**
@@ -238,11 +253,9 @@ const SPOTIFY_4Q: &str = r#"```
 - <what is blocking me>
 
 **Need**
-- <help / decisions / input from others>
-```"#;
+- <help / decisions / input from others>"#;
 
-const ASYNC_STATUS: &str = r#"```
-**Done yesterday**
+const ASYNC_STATUS: &str = r#"**Done yesterday**
 - <completed work>
 
 **Doing today**
@@ -252,33 +265,27 @@ const ASYNC_STATUS: &str = r#"```
 - <active impediments, @-mention owners>
 
 **FYI**
-- <non-blocking context for the team>
-```"#;
+- <non-blocking context for the team>"#;
 
-const WALKING_TIMEBOX: &str = r#"```
-**Yesterday**
+const WALKING_TIMEBOX: &str = r#"**Yesterday**
 - <one line max>
 
 **Today**
 - <one line max>
 
 **Blockers**
-- <one line max, or "None">
-```"#;
+- <one line max, or "None">"#;
 
-const WALK_THE_BOARD: &str = r#"```
-**In-flight cards**
+const WALK_THE_BOARD: &str = r#"**In-flight cards**
 - <card>: status / next step / blocker
 
 **Aging / WIP violations**
 - <card>: aging N days
 
 **Swarm needed?**
-- <card>: who pairs
-```"#;
+- <card>: who pairs"#;
 
-const YTBR: &str = r#"```
-**Yesterday**
+const YTBR: &str = r#"**Yesterday**
 - <completed work>
 
 **Today**
@@ -288,11 +295,9 @@ const YTBR: &str = r#"```
 - <active impediments, or "None">
 
 **Risks**
-- <anticipated impediments / deadlines at risk>
-```"#;
+- <anticipated impediments / deadlines at risk>"#;
 
-const DECISIONS_COMMITMENTS: &str = r#"```
-**Fulfilled**
+const DECISIONS_COMMITMENTS: &str = r#"**Fulfilled**
 - <commitment kept since last standup>
 
 **Committing today**
@@ -302,11 +307,9 @@ const DECISIONS_COMMITMENTS: &str = r#"```
 - <decisions made or needed>
 
 **Blockers**
-- <what blocks the commitment, or "None">
-```"#;
+- <what blocks the commitment, or "None">"#;
 
-const OKR_TIED: &str = r#"```
-**Key Result**
+const OKR_TIED: &str = r#"**Key Result**
 - <KR I am advancing today>
 
 **Yesterday's delta**
@@ -319,8 +322,7 @@ const OKR_TIED: &str = r#"```
 - <what blocks the KR, or "None">
 
 **Confidence**
-- <1-5 on hitting the KR this quarter>
-```"#;
+- <1-5 on hitting the KR this quarter>"#;
 
 #[cfg(test)]
 mod tests {
@@ -507,5 +509,57 @@ mod tests {
         assert!(section.contains("**PR Review**"));
         assert!(section.contains("**Confidence** — <1-5>"));
         assert!(section.contains("`**Risks**` section"));
+    }
+
+    /// The prompt used to say "no code fences" and then show the structure
+    /// wrapped in one. Small models copied what they saw.
+    #[test]
+    fn no_preset_template_is_wrapped_in_a_code_fence() {
+        for preset in [
+            StandupPreset::ClassicScrum,
+            StandupPreset::FourQuestion,
+            StandupPreset::MadSadGlad,
+            StandupPreset::StartStopContinue,
+            StandupPreset::KeepDropCreate,
+            StandupPreset::FiveQuestion,
+            StandupPreset::Spotify4q,
+            StandupPreset::AsyncStatus,
+            StandupPreset::WalkingTimebox,
+            StandupPreset::WalkTheBoard,
+            StandupPreset::Ytbr,
+            StandupPreset::DecisionsCommitments,
+            StandupPreset::OkrTied,
+        ] {
+            let template = preset_template(preset);
+            assert!(
+                !template.contains("```"),
+                "{preset:?} template still carries a fence"
+            );
+        }
+    }
+
+    #[test]
+    fn output_section_names_every_forbidden_artifact() {
+        let section = output_section(&StandupFormatConfig::default());
+        for needle in [
+            "Do NOT write any of the following",
+            "document title",
+            "_Work completed",
+            "<!-- AUTO:",
+            "code fences",
+            "the same section header twice",
+        ] {
+            assert!(section.contains(needle), "missing constraint: {needle}");
+        }
+    }
+
+    #[test]
+    fn every_verbosity_states_a_hard_ceiling() {
+        for verbosity in [Verbosity::Terse, Verbosity::Standard, Verbosity::Detailed] {
+            assert!(
+                verbosity_line(verbosity).contains("At most"),
+                "{verbosity:?} has no ceiling"
+            );
+        }
     }
 }
