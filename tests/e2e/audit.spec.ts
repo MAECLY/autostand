@@ -122,7 +122,9 @@ test("explains a date with no sidecar instead of showing a blank page", async ({
   await app.start(makeScenario(), "/audit");
   await expect(page.getByText("sha256:deadbeef")).toBeVisible();
 
-  await page.getByLabel("Filing date").fill("2026-07-31");
+  await page.getByLabel("Filing date").click();
+  await page.getByLabel("ISO date").fill("2026-07-31");
+  await page.getByLabel("ISO date").press("Enter");
 
   await expect(
     page.getByRole("heading", { name: "No audit sidecar for 2026-07-31" }),

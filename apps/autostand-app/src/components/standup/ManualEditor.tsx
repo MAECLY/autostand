@@ -26,11 +26,12 @@ import {
 import { Spinner } from "@autostand/ui/components/spinner";
 import { Textarea } from "@autostand/ui/components/textarea";
 
+import { DatePicker } from "@/components/common/DatePicker";
 import { StandupMarkdown } from "@/components/standup/StandupPreview";
 import { useAddManualItem } from "@/hooks/use-standup";
 import { ISO_DATE_FORMAT, formatIsoDate } from "@/lib/utils";
 
-type Target = "today" | "tomorrow";
+type Target = "today" | "tomorrow" | "custom";
 
 /** Filing date one day out; falls back to the input when it is not parseable. */
 function nextDay(date: string): string {
@@ -57,9 +58,11 @@ export interface ManualEditorProps {
 export function ManualEditor({ date, initialContent = "" }: ManualEditorProps) {
   const [text, setText] = useState(initialContent);
   const [target, setTarget] = useState<Target>("today");
+  const [customDate, setCustomDate] = useState(date);
   const addManualItem = useAddManualItem();
 
-  const targetDate = target === "today" ? date : nextDay(date);
+  const targetDate =
+    target === "today" ? date : target === "tomorrow" ? nextDay(date) : customDate;
   const bullets = toBullets(text);
   const pending = addManualItem.isPending;
   const canSubmit = bullets.length > 0 && !pending;
@@ -115,9 +118,22 @@ export function ManualEditor({ date, initialContent = "" }: ManualEditorProps) {
                 <SelectItem value="tomorrow" textValue="Tomorrow">
                   Tomorrow — {nextDay(date)}
                 </SelectItem>
+                <SelectItem value="custom" textValue="Custom">
+                  Custom…
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
+
+          {target === "custom" ? (
+            <DatePicker
+              id="manual-custom-date"
+              value={customDate}
+              disabled={pending}
+              className="w-56"
+              onChange={setCustomDate}
+            />
+          ) : null}
 
           <Button type="button" disabled={!canSubmit} onClick={handleAdd}>
             {pending ? (

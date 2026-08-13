@@ -19,7 +19,6 @@ import {
 } from "@autostand/ui/components/alert";
 import { Badge } from "@autostand/ui/components/badge";
 import { Button } from "@autostand/ui/components/button";
-import { Input } from "@autostand/ui/components/input";
 import { Label } from "@autostand/ui/components/label";
 import { Spinner } from "@autostand/ui/components/spinner";
 import {
@@ -31,11 +30,13 @@ import {
   TableRow,
 } from "@autostand/ui/components/table";
 
+import { DatePicker } from "@/components/common/DatePicker";
 import { GatherPanel } from "@/components/debug/GatherPanel";
 import { toAppError } from "@/lib/error";
+import { useUiStore } from "@/lib/store";
 import { tauriApi } from "@/lib/tauri";
 import type { GatherPreview, NoteRef, RepoFacts } from "@/lib/types";
-import { cn, formatIsoDate, todayIso } from "@/lib/utils";
+import { cn, formatIsoDate } from "@/lib/utils";
 
 export const Route = createFileRoute("/debug")({
   component: DebugPage,
@@ -191,7 +192,8 @@ function TicketList({ title, hint, tickets, tone }: TicketListProps) {
 }
 
 function DebugPage() {
-  const [dateInput, setDateInput] = useState(todayIso());
+  const dateInput = useUiStore((state) => state.selectedDate);
+  const setSelectedDate = useUiStore((state) => state.setSelectedDate);
   const [requestedDate, setRequestedDate] = useState("");
 
   const preview = useGatherPreview(requestedDate);
@@ -204,12 +206,11 @@ function DebugPage() {
       <div className="flex flex-wrap items-end gap-4">
         <div className="space-y-1.5">
           <Label htmlFor="debug-date">Filing date</Label>
-          <Input
+          <DatePicker
             id="debug-date"
-            type="date"
             value={dateInput}
-            className="w-48"
-            onChange={(event) => setDateInput(event.target.value)}
+            className="w-56"
+            onChange={setSelectedDate}
           />
         </div>
         <Button

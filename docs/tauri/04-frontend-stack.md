@@ -414,7 +414,7 @@ Browse past standups.
 
 Sidecar JSON viewer + phantom classification.
 
-- Date picker → `list_audit_sidecars(date)` returns one sidecar per host.
+- DatePicker (shared `useUiStore.selectedDate`) → `list_audit_sidecars(date)` returns one sidecar per host.
 - Per-bullet classification badges: green `commit`, blue `github`, yellow `note`, red `phantom`, gray `unverified`. Classification is computed by the backend (`read_audit_sidecar` returns `AuditData`; the audit page calls a `classify` helper that uses `textsim` semantics — see `docs/specs/audit.md`).
 - Sidecar JSON viewer with expand/collapse using `ScrollArea` + `react-markdown` for pretty-printed JSON.
 
