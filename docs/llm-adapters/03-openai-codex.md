@@ -84,9 +84,42 @@ Reasoning settings for CLI mode remain owned by the user's `~/.codex/config.toml
 
 ## Usage reporting
 
-Settings queries the installed Codex CLI through an isolated `codex app-server --stdio` process. After JSON-RPC initialization it calls `account/rateLimits/read` and parses only the documented rate-limit fields. `usedPercent`, window duration, and reset epoch are converted into `UsageWindow` values; exact remaining percentage is derived as `100 - usedPercent`.
+Settings reads the account's quota over HTTP, through the `openai` usage probe in
+`crates/autostand-adapters/src/usage/codex/`. This replaced the `codex app-server --stdio` spawn: no
+child process, no eight-second protocol handshake, and the reading works whether or not the `codex`
+CLI is on `PATH`.
 
-Autostand never reads or copies `~/.codex/auth.json` during this probe. Missing CLI, unavailable rate limits, protocol errors, or timeouts produce an honest `unknown` health result instead of a synthetic percentage. API-request token usage and ChatGPT subscription quota are not conflated.
+**Credentials — read-only.** `$CODEX_HOME/auth.json` when that variable is set (the CLI's own rule:
+the defaults are then not consulted at all), otherwise `~/.config/codex/auth.json` then
+`~/.codex/auth.json`; the macOS keychain service `Codex Auth` is the fallback, and it is read only on
+a refresh the user asked for. Plain or hex-encoded JSON is accepted. Autostand **never writes,
+refreshes or rotates** this credential: an access token within 300s of its JWT `exp` is reported as
+`session_expired`, not renewed. An `auth.json` carrying only `OPENAI_API_KEY` reports the typed
+reason `usage_requires_cli_login` — an API key can run inference but cannot see subscription quota.
+
+**Request.** `GET https://chatgpt.com/backend-api/wham/usage`, 10s timeout, with
+`Authorization: Bearer <access_token>`, `Accept: application/json`, autostand's own `User-Agent`, and
+`ChatGPT-Account-Id` when the credential names an account.
+
+**Mapping.** Windows are classified by **duration**, not slot position: `limit_window_seconds == 18000`
+is `session`, `== 604800` is `weekly`. The historical `primary`/`secondary` order is a fallback only
+for a window whose duration is absent or unfamiliar — the vendor sometimes drops one limit and
+promotes the weekly window into the primary slot, and reading the slot alone would label a 7-day
+quota "Session". `credits.balance` becomes the `credits` balance resource, and `plan_type` maps
+`prolite → Pro 5x`, `pro → Pro 20x`, otherwise title-case over `_`. Response headers
+`x-codex-primary-used-percent`, `x-codex-secondary-used-percent` and `x-codex-credits-balance` fill
+values the body omits, and the snapshot then reports `UsageSource::ResponseHeaders`; the body always
+wins where both are present, because a header can be a stale echo.
+
+Claiming rate-limit **reset credits** is deliberately out of scope: it is an irreversible account
+mutation and belongs nowhere near a usage panel.
+
+Tokens, headers and response bodies never reach a log, an error or a DTO. A failure carries only a
+reason code (`not_logged_in`, `session_expired`, `usage_requires_cli_login`,
+`credential_store_unavailable`, `rate_limited`, `network`, `timeout`, `unsupported_payload`,
+`unexpected_status`), and a payload that no longer carries the documented fields degrades to "no
+data" rather than a synthetic percentage. API-request token usage and ChatGPT subscription quota are
+not conflated.
 
 ## Anti-recursion
 

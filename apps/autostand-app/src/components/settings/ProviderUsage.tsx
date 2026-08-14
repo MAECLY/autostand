@@ -40,6 +40,19 @@ const REASON_LABELS: Record<string, string> = {
   probe_failed: "The usage check could not complete.",
   cli_not_found: "The provider CLI was not found on PATH.",
   not_logged_in: "Sign in with the provider CLI, then refresh.",
+  session_expired: "The saved sign-in expired — run the provider CLI once, then refresh.",
+  // Named rather than folded into "unavailable": an API key can run renders but
+  // cannot read subscription quota, and a generic message here sends the user
+  // hunting for a problem that does not exist.
+  usage_requires_cli_login:
+    "An API key cannot read subscription usage — sign in with the provider CLI.",
+  credential_store_unavailable:
+    "The saved sign-in could not be read on this pass — refresh to try again.",
+  rate_limited: "The provider is rate limiting usage checks — try again shortly.",
+  network: "No connection to the provider.",
+  timeout: "The usage check timed out.",
+  unsupported_payload: "The provider's usage response changed shape.",
+  unexpected_status: "The provider rejected the usage request.",
 };
 
 function reasonLabel(reason: string): string {
