@@ -4,6 +4,11 @@
     "externalBin": [
       "binaries/autostand-local-llm",
       "binaries/llama-cli"
+    ],
+    "targets": [
+      "dmg",
+      "nsis",
+      "appimage"
     ]
   }
 }

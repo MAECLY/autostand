@@ -41,7 +41,7 @@ authentication.
 | Tool | Version | Notes |
 | --- | --- | --- |
 | Rust | stable (workspace MSRV 1.80) | `rustup toolchain install stable` |
-| Node | ≥ 20 (CI uses 22) | one dev dependency wants ≥ 22, so 22 avoids an engine warning |
+| Node | ≥ 22.13 | pnpm 11.18 refuses to run below it; the old floor of 20 was wrong and broke the release build |
 | pnpm | 11.18.0 | pinned via `packageManager`; `corepack enable` picks it up automatically |
 
 Linux additionally needs the Tauri v2 system libraries (see the `Install Tauri v2 Linux system dependencies`
@@ -66,6 +66,23 @@ cargo build --workspace     # Rust crates only
 pnpm build:web              # the app's web bundle (Vite), the only web surface here
 pnpm build                  # production desktop bundles (tauri build)
 ```
+
+## Install
+
+Grab the installer for your platform from the
+[latest release](https://github.com/MAECLY/autostand/releases/latest) — one per
+platform, no build required.
+
+| Platform | File | Notes |
+| --- | --- | --- |
+| macOS | `.dmg` | Apple Silicon. Intel Macs run it through Rosetta 2. |
+| Windows | `-setup.exe` | |
+| Linux | `.AppImage` | `chmod +x` it and run — no package manager involved. |
+
+Every bundle carries its own inference sidecar and a pinned `llama-cli`, so
+Built-in Local AI works without Ollama, Homebrew, CUDA or a system llama.cpp.
+
+macOS users: read the next section first, or the app will appear to be broken.
 
 ## Blocked by Gatekeeper on macOS?
 

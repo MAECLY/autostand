@@ -48,12 +48,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-14 # Apple Silicon
+          # Apple Silicon only. Intel Macs are not built: an x86_64 bundle is a
+          # second macOS artifact to test, sign and explain, and Rosetta 2 runs
+          # the arm64 build on the Intel machines that are left.
+          - platform: macos-14
             target: aarch64-apple-darwin
             args: '--target aarch64-apple-darwin'
-          - platform: macos-13 # Intel
-            target: x86_64-apple-darwin
-            args: '--target x86_64-apple-darwin'
           - platform: ubuntu-22.04 # oldest glibc we support; do not bump casually
             target: x86_64-unknown-linux-gnu
             args: ''
@@ -106,9 +106,11 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          # The floor from `engines.node: ">=20"` — release bundles are built
-          # against the oldest runtime the repo claims to support.
-          node-version: 20
+          # Matches ci.yml, and matches reality: pnpm 11.18 refuses to run below
+          # Node 22.13. The old pin of 20 followed `engines.node`, which claimed
+          # a floor the repo could not actually be built on — every release leg
+          # died here before compiling anything.
+          node-version: "22"
           cache: pnpm
 
       # apps/autostand-app depends on @autostand/ui, a PRIVATE git dependency in
@@ -216,13 +218,25 @@ jobs:
           releaseBody: |
             See CHANGELOG.md for what changed in this release.
 
-            Bundles are attached below once every platform build finishes:
-            macOS `.dmg`/`.app` (Apple Silicon + Intel), Linux
-            `.deb`/`.rpm`/`.AppImage`, Windows `.msi`/`.exe`.
+            One installer per platform, attached once every build finishes:
 
-            Builds are unsigned until the codesigning secrets are configured —
-            macOS: right-click → Open; Windows: More info → Run anyway.
-            Install notes: docs/user/01-install.md
+            | Platform | File | Notes |
+            | --- | --- | --- |
+            | macOS | `.dmg` | Apple Silicon. Intel Macs run it through Rosetta 2. |
+            | Windows | `-setup.exe` | |
+            | Linux | `.AppImage` | `chmod +x` it and run; no package manager involved. |
+
+            **The bundles are unsigned.** macOS reports that the app *is damaged
+            and can't be opened*, which means it has no Developer ID signature,
+            not that the download failed. Clear the quarantine flag with:
+
+            ```
+            xattr -rd com.apple.quarantine /Applications/autostand.app
+            ```
+
+            On Windows, SmartScreen shows an unknown-publisher warning: More info
+            → Run anyway. Full notes: the README section "Blocked by Gatekeeper on
+            macOS?" and docs/user/01-install.md
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
