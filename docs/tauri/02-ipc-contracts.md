@@ -211,11 +211,36 @@ export type ProviderAvailability =
   | "unavailable"
   | "unknown";
 
+/** Whether a resource fills a meter (`consumption`) or drains (`balance`). */
+export type ResourceKind = "consumption" | "balance";
+
+export type UsageUnit =
+  | "percent"
+  | "usd"
+  | "credits"
+  | "requests"
+  | "tokens"
+  | "count";
+
+/** Burn-rate projection. Mirrors `autostand_core::pace::Pace`. */
+export type Pace = "ahead" | "on_track" | "behind";
+
 export interface UsageWindow {
   id: string;
   used_percent: number | null;
   remaining_percent: number | null;
   resets_at: string | null;
+  kind?: ResourceKind | null;
+  unit?: UsageUnit | null;
+  /** Raw consumed amount, in `unit`. */
+  used?: number | null;
+  /** Raw cap, in `unit`. */
+  limit?: number | null;
+  /** Raw remaining amount, in `unit`, for `balance` resources. */
+  available?: number | null;
+  period_duration_ms?: number | null;
+  label?: string | null;
+  pace?: Pace | null;
 }
 
 export interface ProviderHealth {
@@ -225,6 +250,11 @@ export interface ProviderHealth {
   windows: UsageWindow[];
   reason: string | null;
   checked_at: string;
+  /** Subscription tier as the provider names it (`"Max 20x"`). */
+  plan?: string | null;
+  /** True when this snapshot was served from cache after a failed refresh. */
+  stale?: boolean;
+  notice?: string | null;
 }
 
 export type LocalModelStatus =
