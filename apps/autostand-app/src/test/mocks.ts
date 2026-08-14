@@ -22,6 +22,7 @@ import type {
   CompileResult,
   DataSourceConfig,
   DataSourceConfigs,
+  FilingTarget,
   PipelineStatus,
   ProviderConfig,
   ProviderHealth,
@@ -147,6 +148,29 @@ export const FIXTURE_DATE = "2026-08-03";
 export const FIXTURE_HOST = "mbp-miguel";
 export const FIXTURE_OTHER_HOST = "linux-lab";
 
+/**
+ * The file {@link FIXTURE_DATE}'s work is filed in under the default policy.
+ *
+ * Mon 2026-08-03 → Tue 2026-08-04. Spelled out as its own constant because the
+ * two dates are exactly what the dashboard has to keep apart, and a fixture that
+ * reused one for both could not catch them being confused.
+ */
+export const FIXTURE_FILING_DATE = "2026-08-04";
+
+/** `get_filing_target` for {@link FIXTURE_DATE} under the default policy. */
+export function makeFilingTarget(
+  overrides: Partial<FilingTarget> = {},
+): FilingTarget {
+  return {
+    work_day: FIXTURE_DATE,
+    filing_date: FIXTURE_FILING_DATE,
+    archive_mode: "next_business_day",
+    window: { range_start: FIXTURE_DATE, range_end: FIXTURE_DATE },
+    window_empty: false,
+    ...overrides,
+  };
+}
+
 export function makeProviderConfig(
   overrides: Partial<ProviderConfig> = {},
 ): ProviderConfig {
@@ -253,6 +277,7 @@ export function makeAppConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     },
     sync: { cloud_root: null, repo_enabled: false },
     regeneration: { replace_immediately: false },
+    dates: { archive_mode: "next_business_day" },
     format: {
       preset: "classic-scrum",
       verbosity: "standard",
@@ -366,6 +391,7 @@ export function makeAuditData(overrides: Partial<AuditData> = {}): AuditData {
     covered_tickets: ["FIF-136"],
     skew: [],
     ticket_days: { "FIF-136": ["2026-08-02"] },
+    archive_mode: "next_business_day",
     render_mode: "auto",
     render_used: "llm",
     provider: "claude",

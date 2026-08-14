@@ -32,7 +32,9 @@ import { ManualEditor } from "@/components/standup/ManualEditor";
 import { PipelineCard } from "@/components/standup/PipelineCard";
 import { RenderProvenanceNote } from "@/components/standup/RenderProvenanceNote";
 import { StandupPreview } from "@/components/standup/StandupPreview";
+import { StandupTargetHeader } from "@/components/standup/StandupTargetHeader";
 import { useHostSlug } from "@/hooks/use-config";
+import { useFilingTarget } from "@/hooks/use-filing-target";
 import { usePipelineStatus } from "@/hooks/use-pipeline-status";
 import { useSchedulerStatus } from "@/hooks/use-scheduler";
 import { useStandupFile } from "@/hooks/use-standup";
@@ -171,8 +173,19 @@ function TodayStandup({ date, regenerating }: TodayStandupProps) {
 
 type DashboardTab = "today" | "manual" | "pipeline";
 
+/** Header placeholder while the backend resolves which file today files into. */
+function TargetHeaderSkeleton() {
+  return (
+    <div className="flex flex-col gap-2" aria-busy="true" aria-label="Resolving today's standup file">
+      <div className="h-6 w-56 animate-pulse rounded-md bg-muted" />
+      <div className="h-4 w-72 animate-pulse rounded-sm bg-muted" />
+    </div>
+  );
+}
+
 function DashboardPage() {
-  const date = todayIso();
+  const workDay = todayIso();
+  const target = useFilingTarget(workDay);
   const [tab, setTab] = useState<DashboardTab>("today");
   const pipeline = usePipelineStatus();
 
@@ -182,18 +195,33 @@ function DashboardPage() {
 
   return (
     <div className="flex min-h-0 flex-col gap-6 p-6">
+      {/* Everything below addresses `filing_date`, never the calendar day: the
+          preview, the manual editor and Compile now all have to act on the file
+          the pipeline will actually write. Nothing renders until the backend
+          has resolved it — a fallback to `workDay` would compile the wrong file
+          for anyone who clicked during the first frame, which is the bug this
+          screen exists to end. */}
       <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-foreground">
-            Today — {formatIsoDate(date)}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Filed as <span className="font-mono">{date}</span> in the dailies
-            directory.
-          </p>
-        </div>
-        <CompileButton date={date} />
+        {target.data === undefined ? (
+          <TargetHeaderSkeleton />
+        ) : (
+          <>
+            <StandupTargetHeader target={target.data} />
+            <CompileButton date={target.data.filing_date} />
+          </>
+        )}
       </header>
+
+      {target.isError ? (
+        <Alert variant="destructive">
+          <AlertTriangle />
+          <AlertTitle>Could not resolve today&apos;s standup file</AlertTitle>
+          <AlertDescription>
+            <p className="font-mono text-xs">{toAppError(target.error).code}</p>
+            <p>{toAppError(target.error).message}</p>
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <Tabs
         value={tab}
@@ -201,17 +229,31 @@ function DashboardPage() {
         className="min-h-0"
       >
         <TabsList>
-          <TabsTrigger value="today">Today</TabsTrigger>
+          {/* Not "Today": the header directly above spends two lines keeping
+              the work day and the destination file apart, and a tab labelled
+              with a day would hand the ambiguity straight back. */}
+          <TabsTrigger value="today">Standup</TabsTrigger>
           <TabsTrigger value="manual">Manual item</TabsTrigger>
           <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
         </TabsList>
 
         <TabsContent value="today" className="min-h-0">
-          <TodayStandup date={date} regenerating={isCompiling} />
+          {target.data === undefined ? (
+            <PreviewSkeleton />
+          ) : (
+            <TodayStandup
+              date={target.data.filing_date}
+              regenerating={isCompiling}
+            />
+          )}
         </TabsContent>
 
         <TabsContent value="manual" className="min-h-0">
-          <ManualEditor date={date} />
+          {/* A manual item belongs to the standup being written, which is the
+              same file Compile now targets — not to the calendar day. */}
+          {target.data === undefined ? null : (
+            <ManualEditor date={target.data.filing_date} />
+          )}
         </TabsContent>
 
         <TabsContent value="pipeline" className="min-h-0">
