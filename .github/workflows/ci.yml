@@ -174,17 +174,20 @@ jobs:
           node-version: "22"
           cache: pnpm
 
-      # apps/autostand-app depends on @autostand/ui, which lives in the PRIVATE
-      # repo MAECLY/autostand-ui. pnpm-lock.yaml pins it over SSH
-      # (git+ssh://git@github.com/MAECLY/autostand-ui.git), and the built-in
-      # GITHUB_TOKEN is scoped to THIS repository and cannot read another one.
+      # apps/autostand-app depends on @autostand/ui, a PRIVATE git dependency in
+      # MAECLY/autostand-ui. pnpm-lock.yaml pins it over SSH, and GITHUB_TOKEN is
+      # scoped to THIS repository and cannot read another one.
       #
-      # The credential is a READ-ONLY DEPLOY KEY on autostand-ui, stored here as
-      # AUTOSTAND_UI_DEPLOY_KEY. Deliberately not a PAT: a deploy key is scoped
-      # to one repository, carries no write access, is not tied to a person's
-      # account, and is revoked from that repo's Deploy keys page the moment it
-      # is not wanted.
+      # The credential is a READ-ONLY DEPLOY KEY, stored as the repository secret
+      # AUTOSTAND_UI_DEPLOY_KEY. Scoped to one repository, no write access, tied
+      # to no person's account, revoked from that repo's Deploy keys page.
+      #
+      # `shell: bash` is required: the release matrix includes a Windows runner,
+      # where `run:` defaults to PowerShell and none of this would parse.
+      # GIT_SSH_COMMAND rather than ~/.ssh/config because it is one line, needs no
+      # host-key scan, and behaves identically on all three runners.
       - name: Authenticate to MAECLY/autostand-ui
+        shell: bash
         env:
           AUTOSTAND_UI_DEPLOY_KEY: ${{ secrets.AUTOSTAND_UI_DEPLOY_KEY }}
         run: |
@@ -192,23 +195,14 @@ jobs:
             echo "::error::secret AUTOSTAND_UI_DEPLOY_KEY is not set. @autostand/ui is a private git dependency pinned over SSH, and GITHUB_TOKEN cannot read another repository. Add a read-only deploy key for MAECLY/autostand-ui as a repository secret named AUTOSTAND_UI_DEPLOY_KEY."
             exit 1
           fi
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$AUTOSTAND_UI_DEPLOY_KEY" > ~/.ssh/autostand_ui
-          chmod 600 ~/.ssh/autostand_ui
-          # Trust on first use is the usual CI compromise; pinning the host key
-          # instead would break every run the day GitHub rotates it.
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          # IdentitiesOnly: a runner carrying any other agent identity would
-          # otherwise offer that one first and be refused before this key is tried.
-          {
-            echo "Host github.com"
-            echo "  HostName github.com"
-            echo "  User git"
-            echo "  IdentityFile ~/.ssh/autostand_ui"
-            echo "  IdentitiesOnly yes"
-          } >> ~/.ssh/config
-          chmod 600 ~/.ssh/config
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$AUTOSTAND_UI_DEPLOY_KEY" > "$HOME/.ssh/autostand_ui"
+          chmod 600 "$HOME/.ssh/autostand_ui"
+          # accept-new trusts an unseen host once but still refuses a CHANGED key,
+          # which is the property that matters. IdentitiesOnly stops a runner's
+          # own agent identity being offered first and refused.
+          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/autostand_ui -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -244,17 +238,20 @@ jobs:
           node-version: "22"
           cache: pnpm
 
-      # apps/autostand-app depends on @autostand/ui, which lives in the PRIVATE
-      # repo MAECLY/autostand-ui. pnpm-lock.yaml pins it over SSH
-      # (git+ssh://git@github.com/MAECLY/autostand-ui.git), and the built-in
-      # GITHUB_TOKEN is scoped to THIS repository and cannot read another one.
+      # apps/autostand-app depends on @autostand/ui, a PRIVATE git dependency in
+      # MAECLY/autostand-ui. pnpm-lock.yaml pins it over SSH, and GITHUB_TOKEN is
+      # scoped to THIS repository and cannot read another one.
       #
-      # The credential is a READ-ONLY DEPLOY KEY on autostand-ui, stored here as
-      # AUTOSTAND_UI_DEPLOY_KEY. Deliberately not a PAT: a deploy key is scoped
-      # to one repository, carries no write access, is not tied to a person's
-      # account, and is revoked from that repo's Deploy keys page the moment it
-      # is not wanted.
+      # The credential is a READ-ONLY DEPLOY KEY, stored as the repository secret
+      # AUTOSTAND_UI_DEPLOY_KEY. Scoped to one repository, no write access, tied
+      # to no person's account, revoked from that repo's Deploy keys page.
+      #
+      # `shell: bash` is required: the release matrix includes a Windows runner,
+      # where `run:` defaults to PowerShell and none of this would parse.
+      # GIT_SSH_COMMAND rather than ~/.ssh/config because it is one line, needs no
+      # host-key scan, and behaves identically on all three runners.
       - name: Authenticate to MAECLY/autostand-ui
+        shell: bash
         env:
           AUTOSTAND_UI_DEPLOY_KEY: ${{ secrets.AUTOSTAND_UI_DEPLOY_KEY }}
         run: |
@@ -262,23 +259,14 @@ jobs:
             echo "::error::secret AUTOSTAND_UI_DEPLOY_KEY is not set. @autostand/ui is a private git dependency pinned over SSH, and GITHUB_TOKEN cannot read another repository. Add a read-only deploy key for MAECLY/autostand-ui as a repository secret named AUTOSTAND_UI_DEPLOY_KEY."
             exit 1
           fi
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$AUTOSTAND_UI_DEPLOY_KEY" > ~/.ssh/autostand_ui
-          chmod 600 ~/.ssh/autostand_ui
-          # Trust on first use is the usual CI compromise; pinning the host key
-          # instead would break every run the day GitHub rotates it.
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          # IdentitiesOnly: a runner carrying any other agent identity would
-          # otherwise offer that one first and be refused before this key is tried.
-          {
-            echo "Host github.com"
-            echo "  HostName github.com"
-            echo "  User git"
-            echo "  IdentityFile ~/.ssh/autostand_ui"
-            echo "  IdentitiesOnly yes"
-          } >> ~/.ssh/config
-          chmod 600 ~/.ssh/config
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$AUTOSTAND_UI_DEPLOY_KEY" > "$HOME/.ssh/autostand_ui"
+          chmod 600 "$HOME/.ssh/autostand_ui"
+          # accept-new trusts an unseen host once but still refuses a CHANGED key,
+          # which is the property that matters. IdentitiesOnly stops a runner's
+          # own agent identity being offered first and refused.
+          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/autostand_ui -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
