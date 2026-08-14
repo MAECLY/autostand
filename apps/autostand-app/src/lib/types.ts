@@ -48,6 +48,20 @@ export type AuditRenderMode = "auto" | "llm" | "det";
 /** Transport probed by `test_llm_provider`. */
 export type ProviderTestMode = "cli" | "api";
 
+/**
+ * `AppConfig.dates.archive_mode` — which day a compile files its standup under.
+ *
+ * - `next_business_day`: work done on D is filed in the next business day's
+ *   file, so Friday/Saturday/Sunday all land in Monday's. This is the App
+ *   Script's behaviour and the default.
+ * - `same_day`: work done on D is filed in D's own file; a weekend still rolls
+ *   forward to Monday, because no standup is named after a Saturday.
+ *
+ * Either way the windows tile the calendar: a file's range always starts the day
+ * after the previous file's range ended, so no work is lost or double-reported.
+ */
+export type ArchiveMode = "next_business_day" | "same_day";
+
 // ── App configuration ─────────────────────────────────────────────────────
 
 export interface AppConfig {
@@ -67,10 +81,16 @@ export interface AppConfig {
   notifications: NotificationConfig;
   sync: SyncConfig;
   regeneration: RegenerationConfig;
+  dates: DatesConfig;
 }
 
 export interface RegenerationConfig {
   replace_immediately: boolean;
+}
+
+/** Filing-date policy. Absent from configs written before this block existed. */
+export interface DatesConfig {
+  archive_mode: ArchiveMode;
 }
 
 export interface SyncConfig {
@@ -471,6 +491,8 @@ export interface AuditData {
   skew: SkewRecord[];
   /** Ticket key → commit days. */
   ticket_days: Record<string, string[]>;
+  /** Filing policy in force when this standup was rendered. */
+  archive_mode: ArchiveMode;
   render_mode: AuditRenderMode;
   render_used: RenderUsed;
   provider: string | null;
@@ -495,6 +517,27 @@ export interface DateRange {
   range_start: string;
   /** Inclusive, `YYYY-MM-DD`. */
   range_end: string;
+}
+
+/**
+ * Answer to `get_filing_target`: which standup file a day of work belongs to.
+ *
+ * The UI asks the backend rather than deriving this from `archive_mode` itself.
+ * The filing rule is what decides which file the pipeline writes, and a second
+ * implementation of it here could label the dashboard with a file no compile
+ * ever touches — which is the bug the command exists to prevent.
+ */
+export interface FilingTarget {
+  /** Calendar day whose work is being filed, `YYYY-MM-DD`. */
+  work_day: string;
+  /** Standup file that work lands in — `<filing_date>.md`. */
+  filing_date: string;
+  /** Policy that produced {@link filing_date}. */
+  archive_mode: ArchiveMode;
+  /** Days of work a compile of {@link filing_date} would claim. */
+  window: DateRange;
+  /** True when the filing date is further ahead than the calendar has reached. */
+  window_empty: boolean;
 }
 
 export interface RepoFacts {

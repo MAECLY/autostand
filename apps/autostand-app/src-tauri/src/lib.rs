@@ -73,6 +73,7 @@ pub fn run() {
             commands::pipeline::compile_all,
             commands::pipeline::trigger_run_now,
             commands::pipeline::get_pipeline_status,
+            commands::pipeline::get_filing_target,
             commands::pipeline::preview_gather,
             commands::pipeline::get_scheduler_status,
             commands::pipeline::set_scheduler_schedule,

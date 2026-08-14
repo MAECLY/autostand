@@ -20,6 +20,11 @@ use serde::{Deserialize, Serialize};
 // the domain crate, and two copies would drift.
 pub use autostand_core::pace::Pace;
 
+// Same reasoning, and it matters more here: `ArchiveMode` decides which file a
+// day of work lands in. A mirrored copy that drifted by one variant would file
+// standups under the wrong date, so the domain enum *is* the wire enum.
+pub use autostand_core::dates::ArchiveMode;
+
 use crate::notifications::NotificationConfig;
 
 // ── AppConfig + nested config ─────────────────────────────────────────────
@@ -63,6 +68,44 @@ pub struct AppConfig {
     /// Manual Compile Now review behaviour.
     #[serde(default)]
     pub regeneration: RegenerationConfig,
+    /// Filing-date policy: which day a compile archives its standup under.
+    #[serde(default)]
+    pub dates: DatesConfig,
+}
+
+/// Filing-date policy.
+///
+/// `#[serde(default)]` on both the field and the section: a `config.json`
+/// written before this block existed must keep loading, and it must load into
+/// the App Script's behaviour rather than silently switching the user's filing
+/// date.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DatesConfig {
+    /// Which calendar day a compile files its standup under.
+    #[serde(default)]
+    pub archive_mode: ArchiveMode,
+}
+
+/// Which standup file a day of work is destined for, and what that file claims.
+///
+/// Returned by `get_filing_target`. The UI needs this as a *backend* answer
+/// rather than as arithmetic of its own: the filing rule is the one thing in
+/// this app that decides which file gets written, and a second implementation of
+/// it in TypeScript could label the dashboard with a file the pipeline never
+/// touches — which is exactly the bug this command exists to make impossible.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FilingTarget {
+    /// Calendar day whose work is being filed (`YYYY-MM-DD`).
+    pub work_day: String,
+    /// Standup file that work lands in (`YYYY-MM-DD`, i.e. `<date>.md`).
+    pub filing_date: String,
+    /// Policy that produced [`Self::filing_date`].
+    pub archive_mode: ArchiveMode,
+    /// Days of work the compile for [`Self::filing_date`] would claim.
+    pub window: DateRangeDto,
+    /// True when the window covers no day at all, because the filing date is
+    /// further ahead than the calendar has reached. Compiling it writes nothing.
+    pub window_empty: bool,
 }
 
 /// Controls whether a manual regeneration pauses for comparison.
@@ -827,6 +870,13 @@ pub struct AuditData {
     pub skew: Vec<SkewRecord>,
     /// Ticket → commit days map.
     pub ticket_days: std::collections::BTreeMap<String, Vec<String>>,
+    /// Filing policy in force when this standup was rendered.
+    ///
+    /// `#[serde(default)]` because sidecars written before the policy existed
+    /// have no such key, and every one of them was produced under the App
+    /// Script's rule — which is what the default is.
+    #[serde(default)]
+    pub archive_mode: ArchiveMode,
     /// Render mode preference recorded at render time.
     pub render_mode: AuditRenderMode,
     /// Which renderer actually produced the body.
@@ -864,7 +914,7 @@ pub enum AuditRenderMode {
 }
 
 /// Date range DTO used in audit + gather preview.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct DateRangeDto {
     /// Inclusive start (`YYYY-MM-DD`).
     pub range_start: String,
@@ -1119,10 +1169,11 @@ pub struct PathValidation {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApiKeyMode, ApiKeyStatus, AppConfig, AuditData, AuditRenderMode, AuditSidecar,
-        CompileResult, CompileStatus, LastTrigger, LlmConfig, LocalRuntimePolicy, PipelineLogLevel,
-        PipelineLogLine, ProviderMode, RegenerationResolution, RenderMode, RenderUsed,
-        SchedulerSource, SchedulerStatus, StandupFormatConfig, StandupPreset, Verbosity,
+        ApiKeyMode, ApiKeyStatus, AppConfig, ArchiveMode, AuditData, AuditRenderMode, AuditSidecar,
+        CompileResult, CompileStatus, DateRangeDto, DatesConfig, FilingTarget, LastTrigger,
+        LlmConfig, LocalRuntimePolicy, PipelineLogLevel, PipelineLogLine, ProviderMode,
+        RegenerationResolution, RenderMode, RenderUsed, SchedulerSource, SchedulerStatus,
+        StandupFormatConfig, StandupPreset, Verbosity,
     };
     use serde::{de::DeserializeOwned, Serialize};
     use serde_json::json;
@@ -1217,6 +1268,7 @@ mod tests {
             serde_json::to_string(&AuditRenderMode::Auto).unwrap(),
             serde_json::to_string(&LocalRuntimePolicy::KeepReady).unwrap(),
             serde_json::to_string(&RegenerationResolution::UseCandidate).unwrap(),
+            serde_json::to_string(&ArchiveMode::NextBusinessDay).unwrap(),
         ];
         for value in leaked {
             assert!(
@@ -1241,6 +1293,104 @@ mod tests {
         assert_wire(&RegenerationResolution::KeepCurrent, "keep_current");
         assert_wire(&RegenerationResolution::UseCandidate, "use_candidate");
         assert_wire(&RegenerationResolution::Merge, "merge");
+    }
+
+    #[test]
+    fn archive_mode_is_snake_case_and_defaults_to_next_business_day() {
+        assert_wire(&ArchiveMode::NextBusinessDay, "next_business_day");
+        assert_wire(&ArchiveMode::SameDay, "same_day");
+        assert_eq!(
+            DatesConfig::default().archive_mode,
+            ArchiveMode::NextBusinessDay
+        );
+        assert_eq!(
+            AppConfig::default().dates.archive_mode,
+            ArchiveMode::NextBusinessDay
+        );
+    }
+
+    #[test]
+    fn a_config_written_before_the_dates_block_still_loads() {
+        // The whole point of `#[serde(default)]`: an existing `config.json` has
+        // no `dates` key at all, and must come back in the App Script's mode
+        // rather than failing to deserialize or flipping the user's filing date.
+        let legacy = json!({
+            "github_dir": "/Users/tester/Github",
+            "dailies_dir": "/Users/tester/Sync/Github_Dailies",
+            "standup_authors": [],
+            "git_refs": "--all",
+            "jira_base": "",
+            "host_slug_override": null,
+            "render_mode": "Auto",
+            "llm": { "preferred_provider": "claude", "providers": [] },
+            "data_sources": {
+                "local_git": true, "github": true, "claude_code": true, "remember": true,
+                "opencode": true, "codex": false, "gemini_cli": false, "grok_cli": false
+            },
+            "scheduler": { "enabled": false, "cron": "0 7-19 * * 1-5", "self_heal": true },
+            "review": {
+                "reviewer": "", "pr_org": "", "max_prs": 20,
+                "comment_len": 280, "include_self_reviews": false
+            },
+            "scrub": { "alias_scrub": false, "alias_scrub_min": 0, "meta_extra": null }
+        });
+        let config: AppConfig = serde_json::from_value(legacy).expect("legacy config loads");
+        assert_eq!(config.dates.archive_mode, ArchiveMode::NextBusinessDay);
+
+        // And an explicit same-day config round-trips.
+        let explicit = json!({ "archive_mode": "same_day" });
+        let dates: DatesConfig = serde_json::from_value(explicit).expect("dates block loads");
+        assert_eq!(dates.archive_mode, ArchiveMode::SameDay);
+    }
+
+    #[test]
+    fn filing_target_serializes_the_documented_shape() {
+        let value = serde_json::to_value(FilingTarget {
+            work_day: "2026-08-13".to_string(),
+            filing_date: "2026-08-14".to_string(),
+            archive_mode: ArchiveMode::NextBusinessDay,
+            window: DateRangeDto {
+                range_start: "2026-08-13".to_string(),
+                range_end: "2026-08-13".to_string(),
+            },
+            window_empty: false,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "work_day": "2026-08-13",
+                "filing_date": "2026-08-14",
+                "archive_mode": "next_business_day",
+                "window": { "range_start": "2026-08-13", "range_end": "2026-08-13" },
+                "window_empty": false,
+            })
+        );
+    }
+
+    #[test]
+    fn audit_data_defaults_archive_mode_for_sidecars_written_before_the_policy() {
+        // Every sidecar already on disk predates the field and was produced
+        // under the App Script's rule, so silence must read as that rule.
+        let legacy = json!({
+            "file": "2026-08-03",
+            "host": "mbp",
+            "rendered_at": "2026-08-03T07:00:00Z",
+            "window": { "range_start": "2026-07-31", "range_end": "2026-08-02" },
+            "facts": [], "notes": [], "github": null, "conv": null, "prrev": null,
+            "claude_files": [], "opencode_sessions": [], "codex_sessions": [],
+            "gemini_sessions": [], "grok_sessions": [],
+            "forbidden_tickets": [], "covered_tickets": [], "skew": [], "ticket_days": {},
+            "render_mode": "det", "render_used": "det",
+            "provider": null, "model": null, "fellback": false,
+            "hash": "sha256:x", "accumulated_count": 0
+        });
+        let audit: AuditData = serde_json::from_value(legacy).expect("legacy sidecar loads");
+        assert_eq!(audit.archive_mode, ArchiveMode::NextBusinessDay);
+        assert_eq!(
+            serde_json::to_value(&audit).unwrap()["archive_mode"],
+            json!("next_business_day")
+        );
     }
 
     #[test]
@@ -1350,6 +1500,7 @@ mod tests {
             [
                 "dailies_dir",
                 "data_sources",
+                "dates",
                 "format",
                 "git_refs",
                 "github_dir",

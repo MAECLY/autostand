@@ -22,6 +22,7 @@ import type {
   DataSourceConfig,
   Dependency,
   DependencyGroup,
+  FilingTarget,
   GatherPreview,
   LlmProviderConfig,
   LocalModelInfo,
@@ -108,6 +109,9 @@ export const tauriApi = {
     invoke<AuditData>("read_audit_sidecar", { path }),
 
   getPipelineStatus: () => invoke<PipelineStatus>("get_pipeline_status"),
+  // `date` is a *work day*; null means today. The answer is the filing date.
+  getFilingTarget: (date?: string) =>
+    invoke<FilingTarget>("get_filing_target", { date: date ?? null }),
   previewGather: (date: string) =>
     invoke<GatherPreview>("preview_gather", { date }),
 

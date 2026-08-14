@@ -37,9 +37,9 @@ use autostand_app::commands::types::{
 };
 use autostand_app::gather::{self, Gathered};
 use autostand_app::git_ops;
-use autostand_app::pipeline_runner::{self, RenderDecision};
+use autostand_app::pipeline_runner::{self, AuditPatchInputs, RenderDecision};
 use autostand_app::render::RenderedBody;
-use autostand_core::dates::{self, Window};
+use autostand_core::dates::{ArchiveMode, Window};
 use autostand_core::pipeline::{self as core_pipeline, CompileInputs};
 use autostand_core::provenance::{self, Provenance};
 use autostand_core::{fileops, format, hashes};
@@ -78,7 +78,7 @@ const MANUAL_ITEM: &str = "- Booked the Q4 planning offsite with the platform te
 /// A populated AUTO block belonging to another machine.
 const FOREIGN_AUTO: &str = "**laptop-repo — nightly export**\n- Tuned the nightly export job";
 
-/// The narrative note gathered for `2026-08-03`.
+/// The narrative note gathered for `2026-08-02`.
 ///
 /// The second clause names `FIF-900`, whose only commit landed on `2026-07-20` —
 /// outside the window. Anti-backdating must drop that clause and keep the first.
@@ -92,12 +92,22 @@ fn d(year: i32, month: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(year, month, day).expect("valid date")
 }
 
-/// The filing date every test compiles: Tuesday 2026-08-04.
+/// The filing date every test compiles: Monday 2026-08-03.
 ///
-/// Its window is Fri 2026-07-31 … Mon 2026-08-03, which straddles both a weekend
-/// and a month boundary — the two cases the subtitle wording has to get right.
+/// Its window is Fri 2026-07-31 … Sun 2026-08-02, which straddles both a month
+/// boundary and a whole weekend — the case the App Script exists to handle and
+/// the one autostand used to drop on the floor.
 fn filing_date() -> NaiveDate {
-    d(2026, 8, 4)
+    d(2026, 8, 3)
+}
+
+/// The calendar day the fixture pretends the run fires on.
+///
+/// Pinned rather than read off the wall clock so `range_end`'s `min(_, today)`
+/// clamp is deterministic: a Monday-morning run sees the whole weekend and
+/// nothing past it.
+fn run_day() -> NaiveDate {
+    d(2026, 8, 3)
 }
 
 // ── git helpers ───────────────────────────────────────────────────────────
@@ -233,7 +243,7 @@ fn fixture() -> Fixture {
         "billing.rs",
         "feat(billing): FIF-900 import legacy invoices",
     );
-    // range_start (Friday) and range_end (Monday).
+    // range_start (Friday) and a Saturday inside the weekend it swallows.
     commit(
         &work,
         AUTHOR_ONE,
@@ -244,7 +254,7 @@ fn fixture() -> Fixture {
     commit(
         &work,
         AUTHOR_TWO,
-        "2026-08-03 12:00:00",
+        "2026-08-01 12:00:00",
         "inventory.rs",
         "feat(inventory): FIF-202 retry failed syncs",
     );
@@ -252,14 +262,14 @@ fn fixture() -> Fixture {
     commit(
         &work,
         AUTHOR_TWO,
-        "2026-08-04 09:00:00",
+        "2026-08-03 09:00:00",
         "shipping.rs",
         "feat(shipping): FIF-950 add an express tier",
     );
 
     let notes_dir = work.join(".remember");
     fs::create_dir_all(&notes_dir).expect("remember dir");
-    fs::write(notes_dir.join("today-2026-08-03.md"), NOTES).expect("write note");
+    fs::write(notes_dir.join("today-2026-08-02.md"), NOTES).expect("write note");
 
     init_repo(dailies.path());
     fs::create_dir_all(dailies.path().join("dailies")).expect("dailies dir");
@@ -303,8 +313,8 @@ fn seed_existing_file(fx: &Fixture, date: NaiveDate) {
     fileops::set_auto(
         &path,
         FOREIGN_HOST,
-        "August 04, 2026",
-        "_Work completed July 31–August 03, 2026._",
+        "August 03, 2026",
+        "_Work completed Fri Jul 31 \u{2013} Sun Aug 02, 2026._",
         FOREIGN_AUTO,
     )
     .expect("seed foreign AUTO block");
@@ -381,7 +391,7 @@ async fn compile_headless(fx: &Fixture, date: NaiveDate, source: TriggerSource) 
     let file_path = fx.file_path(date);
 
     // (a) window
-    let window = dates::compute_window(date);
+    let window = pipeline_runner::window_for(&fx.config, date, run_day());
 
     // (b, c, e) gather
     let gathered = gather::gather_all(
@@ -454,8 +464,16 @@ async fn compile_headless(fx: &Fixture, date: NaiveDate, source: TriggerSource) 
 
     // (q) patch in what the pure core could not know.
     if let Some(path) = outputs.audit_path.as_ref() {
-        let overlay =
-            pipeline_runner::audit_patch(&window, &facts, &gathered, &decision, None, &[], &hash);
+        let overlay = pipeline_runner::audit_patch(&AuditPatchInputs {
+            window: &window,
+            mode: fx.config.dates.archive_mode,
+            facts: &facts,
+            gathered: &gathered,
+            decision: &decision,
+            rendered: None,
+            provider_attempts: &[],
+            hash: &hash,
+        });
         merge_json(path, &overlay);
     }
 
@@ -552,20 +570,25 @@ async fn compiles_a_real_repo_into_a_well_formed_standup() {
     assert_eq!(run.result.status, CompileStatus::Ok);
     assert_eq!(run.result.render_used, RenderUsed::Det);
     assert!(!run.result.fellback);
-    assert_eq!(run.result.date, "2026-08-04");
+    assert_eq!(run.result.date, "2026-08-03");
     assert_eq!(run.result.host, HOST);
     assert_eq!(run.window.range_start, d(2026, 7, 31));
-    assert_eq!(run.window.range_end, d(2026, 8, 3));
+    assert_eq!(run.window.range_end, d(2026, 8, 2));
+    assert_eq!(
+        run.window.dates,
+        vec![d(2026, 7, 31), d(2026, 8, 1), d(2026, 8, 2)],
+        "the window walks natural days, so the weekend is gathered"
+    );
 
     let body = read_file(&fx, date);
 
     // Title + subtitle per `docs/specs/standup-file-format.md`.
     assert!(
-        body.contains("# Daily Standup — August 04, 2026"),
+        body.contains("# Daily Standup — August 03, 2026"),
         "title missing: {body}"
     );
     assert!(
-        body.contains("_Work completed July 31–August 03, 2026._"),
+        body.contains("_Work completed Fri Jul 31 \u{2013} Sun Aug 02, 2026._"),
         "subtitle missing or misworded: {body}"
     );
 
@@ -634,6 +657,123 @@ async fn compiles_a_real_repo_into_a_well_formed_standup() {
 }
 
 #[tokio::test]
+async fn the_filing_policy_decides_which_file_a_days_work_lands_in() {
+    // The whole point of the setting, proved against real commits rather than
+    // against arithmetic. The fixture's run day is Mon 2026-08-03 and it has a
+    // commit on Fri 2026-07-31 (FIF-201) and one on that Monday (FIF-950).
+    //
+    //   next_business_day → Tue 2026-08-04.md, claiming Fri..Sun (FIF-201)
+    //   same_day          → Mon 2026-08-03.md, claiming Sat..Mon (FIF-950)
+    //
+    // Same machine, same commits, same button: a different file with different
+    // contents. If either half of that stops being true, the setting is a lie.
+    let mut fx = fixture();
+
+    fx.config.dates.archive_mode = ArchiveMode::NextBusinessDay;
+    let next_targets = pipeline_runner::targets(run_day(), None, ArchiveMode::NextBusinessDay);
+    assert_eq!(
+        next_targets[0],
+        d(2026, 8, 4),
+        "F_TODAY under the App Script's rule"
+    );
+
+    fx.config.dates.archive_mode = ArchiveMode::SameDay;
+    let same_targets = pipeline_runner::targets(run_day(), None, ArchiveMode::SameDay);
+    assert_eq!(
+        same_targets[0],
+        d(2026, 8, 3),
+        "F_TODAY under same-day filing"
+    );
+    assert_ne!(
+        next_targets[0], same_targets[0],
+        "the two policies must not resolve to the same file, or nothing was configured"
+    );
+
+    // Compile the same-day target and check the window really moved forward.
+    let date = same_targets[0];
+    let run = compile_headless(&fx, date, TriggerSource::Manual).await;
+
+    assert_eq!(run.result.status, CompileStatus::Ok);
+    assert_eq!(run.result.date, "2026-08-03");
+    assert_eq!(
+        run.window.range_start,
+        d(2026, 8, 1),
+        "starts on the Saturday"
+    );
+    assert_eq!(
+        run.window.range_end,
+        d(2026, 8, 3),
+        "and claims the run day itself"
+    );
+    assert_eq!(
+        run.window.dates,
+        vec![d(2026, 8, 1), d(2026, 8, 2), d(2026, 8, 3)],
+        "natural days, weekend included"
+    );
+    assert!(
+        run.result.file_path.ends_with("2026-08-03.md"),
+        "wrote {}",
+        run.result.file_path
+    );
+
+    let body = read_file(&fx, date);
+    assert!(
+        body.contains("express tier"),
+        "the run day's own commit belongs to a same-day standup: {body}"
+    );
+    assert!(
+        !body.contains("total rounding"),
+        "Friday belongs to the previous same-day standup, not this one: {body}"
+    );
+
+    // And the sidecar says which policy produced that window, so the range can
+    // be explained later without guessing at the config of the day.
+    let doc: serde_json::Value = serde_json::from_slice(
+        &fs::read(sidecar_path(&fx.state_dir(), date, HOST)).expect("read sidecar"),
+    )
+    .expect("sidecar json");
+    assert_eq!(doc["archive_mode"], "same_day");
+    assert_eq!(doc["window"]["start"], "2026-08-01");
+    assert_eq!(doc["window"]["end"], "2026-08-03");
+}
+
+#[tokio::test]
+async fn the_default_policy_files_todays_work_under_the_next_business_day() {
+    // The default arm of the test above, end to end: with no `dates` block
+    // configured at all, Monday's work is written to `2026-08-04.md` and that
+    // file's window is Monday alone.
+    let fx = fixture();
+    assert_eq!(
+        fx.config.dates.archive_mode,
+        ArchiveMode::NextBusinessDay,
+        "an untouched config must keep the App Script's rule"
+    );
+
+    let date = pipeline_runner::targets(run_day(), None, fx.config.dates.archive_mode)[0];
+    let run = compile_headless(&fx, date, TriggerSource::Manual).await;
+
+    assert_eq!(run.result.date, "2026-08-04");
+    assert!(
+        run.result.file_path.ends_with("2026-08-04.md"),
+        "wrote {}",
+        run.result.file_path
+    );
+    assert_eq!(run.window.range_start, d(2026, 8, 3));
+    assert_eq!(run.window.range_end, d(2026, 8, 3));
+
+    let body = read_file(&fx, date);
+    assert!(body.contains("# Daily Standup — August 04, 2026"), "{body}");
+    assert!(
+        body.contains("_Work completed Monday, August 03, 2026._"),
+        "single-day windows spell the weekday out in full: {body}"
+    );
+    assert!(
+        body.contains("express tier"),
+        "Monday's commit belongs to Tuesday's standup: {body}"
+    );
+}
+
+#[tokio::test]
 async fn writes_an_audit_sidecar_with_the_real_window_and_facts() {
     let fx = fixture();
     let date = filing_date();
@@ -651,7 +791,7 @@ async fn writes_an_audit_sidecar_with_the_real_window_and_facts() {
     let doc: serde_json::Value =
         serde_json::from_slice(&fs::read(&expected).expect("read sidecar")).expect("sidecar json");
 
-    assert_eq!(doc["file"], "2026-08-04");
+    assert_eq!(doc["file"], "2026-08-03");
     assert_eq!(doc["host"], HOST);
     assert_eq!(doc["render_mode"], "det");
     assert_eq!(doc["render_used"], "det");
@@ -661,16 +801,16 @@ async fn writes_an_audit_sidecar_with_the_real_window_and_facts() {
     // The real gather window — not core's `F..F` placeholder, which would make
     // `audit::classify` call every honest bullet `unverified`.
     assert_eq!(doc["window"]["start"], "2026-07-31");
-    assert_eq!(doc["window"]["end"], "2026-08-03");
+    assert_eq!(doc["window"]["end"], "2026-08-02");
 
     // Provenance.
     assert_eq!(strings(&doc["covered_tickets"]), ["FIF-201", "FIF-202"]);
     assert_eq!(strings(&doc["forbidden_tickets"]), ["FIF-900"]);
     assert_eq!(strings(&doc["ticket_days"]["FIF-201"]), ["2026-07-31"]);
-    assert_eq!(strings(&doc["ticket_days"]["FIF-202"]), ["2026-08-03"]);
+    assert_eq!(strings(&doc["ticket_days"]["FIF-202"]), ["2026-08-01"]);
     assert_eq!(strings(&doc["ticket_days"]["FIF-900"]), ["2026-07-20"]);
     assert_eq!(doc["skew"][0]["ticket"], "FIF-900");
-    assert_eq!(doc["skew"][0]["note_date"], "2026-08-03");
+    assert_eq!(doc["skew"][0]["note_date"], "2026-08-02");
 
     // Gathered facts, as the async layer patched them in.
     let facts = doc["facts"].as_array().expect("facts array");
@@ -682,7 +822,7 @@ async fn writes_an_audit_sidecar_with_the_real_window_and_facts() {
         "only the two in-window commits: {:?}",
         facts[0]
     );
-    assert_eq!(doc["notes"][0]["date"], "2026-08-03");
+    assert_eq!(doc["notes"][0]["date"], "2026-08-02");
     assert!(
         doc["gather_failures"]
             .as_array()
@@ -705,7 +845,7 @@ async fn a_backdated_note_clause_is_scrubbed_end_to_end() {
     assert_eq!(run.provenance.range_tickets, ["FIF-201", "FIF-202"]);
     assert_eq!(run.provenance.skew.len(), 1, "{:?}", run.provenance.skew);
     assert_eq!(run.provenance.skew[0].ticket, "FIF-900");
-    assert_eq!(run.provenance.skew[0].note_date, d(2026, 8, 3));
+    assert_eq!(run.provenance.skew[0].note_date, d(2026, 8, 2));
     assert_eq!(run.provenance.skew[0].commit_days, [d(2026, 7, 20)]);
 
     // The raw gathered note still carries the clause; the written file must not.
@@ -757,7 +897,7 @@ async fn an_unchanged_rerun_skips_and_a_new_commit_makes_it_dirty() {
     commit(
         &fx.work_repo(),
         AUTHOR_TWO,
-        "2026-08-03 15:00:00",
+        "2026-08-02 15:00:00",
         "pricing.rs",
         "fix(pricing): FIF-203 clamp the discount ceiling",
     );
@@ -849,10 +989,10 @@ async fn the_dailies_repo_gets_a_standup_commit_without_a_coauthor_trailer() {
         !outcome.pushed,
         "there is no remote, so the push must fail non-fatally"
     );
-    assert_eq!(outcome.message, "standup: 2026-08-04");
+    assert_eq!(outcome.message, "standup: 2026-08-03");
 
     let message = git(&repo_dir, &["log", "-1", "--format=%B"]);
-    assert_eq!(message, "standup: 2026-08-04", "no trailers of any kind");
+    assert_eq!(message, "standup: 2026-08-03", "no trailers of any kind");
     assert!(
         !message.to_ascii_lowercase().contains("co-authored-by"),
         "the App Script forbids coauthor trailers: {message:?}"
@@ -860,7 +1000,7 @@ async fn the_dailies_repo_gets_a_standup_commit_without_a_coauthor_trailer() {
 
     let listed = git(&repo_dir, &["show", "--name-only", "--format=", "HEAD"]);
     assert_eq!(
-        listed, "dailies/2026-08-04.md",
+        listed, "dailies/2026-08-03.md",
         "only the standup file may be staged"
     );
 }
@@ -888,7 +1028,7 @@ fn llm_rendered_body() -> String {
 /// path, which never contacts a provider at all.
 async fn compile_with_llm(fx: &Fixture, date: NaiveDate, rendered: &RenderedBody) -> RunOutcome {
     let file_path = fx.file_path(date);
-    let window = dates::compute_window(date);
+    let window = pipeline_runner::window_for(&fx.config, date, run_day());
     let gathered = gather::gather_all(
         &gather::to_date_window(&window),
         &fx.config,
@@ -931,15 +1071,16 @@ async fn compile_with_llm(fx: &Fixture, date: NaiveDate, rendered: &RenderedBody
     .expect("compile_file writes the standup");
 
     if let Some(path) = outputs.audit_path.as_ref() {
-        let overlay = pipeline_runner::audit_patch(
-            &window,
-            &facts,
-            &gathered,
-            &decision,
-            Some(rendered),
-            &[],
-            &hash,
-        );
+        let overlay = pipeline_runner::audit_patch(&AuditPatchInputs {
+            window: &window,
+            mode: fx.config.dates.archive_mode,
+            facts: &facts,
+            gathered: &gathered,
+            decision: &decision,
+            rendered: Some(rendered),
+            provider_attempts: &[],
+            hash: &hash,
+        });
         merge_json(path, &overlay);
     }
 

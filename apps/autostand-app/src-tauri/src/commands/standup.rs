@@ -13,7 +13,8 @@ use tauri::AppHandle;
 use crate::commands::{
     load_config, resolve_dir, state_dir,
     types::{
-        AuditData, AuditRenderMode, AuditSidecar, DateRangeDto, RenderUsed, StandupFileContent,
+        ArchiveMode, AuditData, AuditRenderMode, AuditSidecar, DateRangeDto, RenderUsed,
+        StandupFileContent,
     },
 };
 use crate::error::AppError;
@@ -78,6 +79,18 @@ fn parse_render_mode(raw: &str) -> AuditRenderMode {
         "llm" => AuditRenderMode::Llm,
         "det" => AuditRenderMode::Det,
         _ => AuditRenderMode::Auto,
+    }
+}
+
+/// Map the sidecar's `archive_mode` string onto the IPC enum.
+///
+/// Anything unrecognised — including the key being absent, which is what every
+/// sidecar written before the policy existed looks like — reads as the App
+/// Script's rule, because that is the only rule those runs could have used.
+fn parse_archive_mode(raw: &str) -> ArchiveMode {
+    match raw {
+        "same_day" => ArchiveMode::SameDay,
+        _ => ArchiveMode::NextBusinessDay,
     }
 }
 
@@ -289,6 +302,12 @@ fn audit_data_from_json(value: &Value) -> AuditData {
         covered_tickets: Vec::new(),
         skew: Vec::new(),
         ticket_days: std::collections::BTreeMap::new(),
+        archive_mode: parse_archive_mode(
+            value
+                .get("archive_mode")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        ),
         render_mode: parse_render_mode(
             value
                 .get("render_mode")
@@ -363,11 +382,11 @@ fn parse_sidecar_fields(path: &Path) -> Result<SidecarFields, AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        audit_data_from_json, collect_standup_dates, date_from_standup_filename, parse_render_mode,
-        parse_render_used, parse_window, resolve_dailies_dir, sidecar_fields_from_json,
-        sidecar_host, SidecarFields,
+        audit_data_from_json, collect_standup_dates, date_from_standup_filename,
+        parse_archive_mode, parse_render_mode, parse_render_used, parse_window,
+        resolve_dailies_dir, sidecar_fields_from_json, sidecar_host, SidecarFields,
     };
-    use crate::commands::types::{AuditRenderMode, RenderUsed};
+    use crate::commands::types::{ArchiveMode, AuditRenderMode, RenderUsed};
     use serde_json::json;
     use std::path::{Path, PathBuf};
 
@@ -463,6 +482,32 @@ mod tests {
         assert_eq!(parse_render_mode("llm"), AuditRenderMode::Llm);
         assert_eq!(parse_render_mode("det"), AuditRenderMode::Det);
         assert_eq!(parse_render_mode("nonsense"), AuditRenderMode::Auto);
+    }
+
+    #[test]
+    fn archive_mode_parses_the_two_contract_values() {
+        assert_eq!(parse_archive_mode("same_day"), ArchiveMode::SameDay);
+        assert_eq!(
+            parse_archive_mode("next_business_day"),
+            ArchiveMode::NextBusinessDay
+        );
+        // A sidecar with no such key, or a garbled one, was written under the
+        // App Script's rule — claiming same-day would misdate its window.
+        assert_eq!(parse_archive_mode(""), ArchiveMode::NextBusinessDay);
+        assert_eq!(parse_archive_mode("nonsense"), ArchiveMode::NextBusinessDay);
+    }
+
+    #[test]
+    fn audit_data_surfaces_the_filing_policy_a_run_used() {
+        let value = json!({ "archive_mode": "same_day" });
+        assert_eq!(
+            audit_data_from_json(&value).archive_mode,
+            ArchiveMode::SameDay
+        );
+        assert_eq!(
+            audit_data_from_json(&json!({})).archive_mode,
+            ArchiveMode::NextBusinessDay
+        );
     }
 
     #[test]
