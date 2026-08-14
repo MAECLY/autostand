@@ -1,4 +1,13 @@
-import { Check, Download, Gauge, Pause, ShieldCheck, Trash2, Zap } from "lucide-react";
+import {
+  Check,
+  Download,
+  Gauge,
+  MemoryStick,
+  Pause,
+  ShieldCheck,
+  Trash2,
+  Zap,
+} from "lucide-react";
 
 import { Badge } from "@autostand/ui/components/badge";
 import { Button } from "@autostand/ui/components/button";
@@ -11,13 +20,44 @@ import {
   useDownloadLocalModel,
   useLocalModels,
   useSelectLocalModel,
+  useUnloadLocalModels,
 } from "@/hooks/use-local-models";
 import { useConfig, useSetConfig } from "@/hooks/use-config";
-import type { LocalModelInfo, LocalRuntimePolicy } from "@/lib/types";
+import type {
+  LocalModelInfo,
+  LocalRuntimePolicy,
+  LocalRuntimeUnload,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 function formatBytes(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+}
+
+/** Caches are megabyte-scale, so the GiB-only model formatter would read 0.00. */
+function formatFreed(bytes: number): string {
+  if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KiB`;
+  if (bytes < 1024 ** 3) return `${Math.round(bytes / 1024 ** 2)} MiB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+}
+
+/** Report the two effects separately; claiming neither happened is the honest
+ * outcome when the runtime was already cold. */
+function describeUnload(result: LocalRuntimeUnload): string {
+  const freed: string[] = [];
+  if (result.processes_terminated > 0) {
+    freed.push(
+      `${result.processes_terminated} runtime ${
+        result.processes_terminated === 1 ? "process" : "processes"
+      } stopped`,
+    );
+  }
+  if (result.caches_removed > 0) {
+    freed.push(`${formatFreed(result.bytes_freed)} of cached state deleted`);
+  }
+  return freed.length === 0
+    ? "Nothing was loaded: no runtime process was running and no cache existed."
+    : `Freed ${freed.join(" and ")}.`;
 }
 
 function statusVariant(model: LocalModelInfo) {
@@ -38,7 +78,17 @@ export function LocalModelsTab() {
   const remove = useDeleteLocalModel();
   const select = useSelectLocalModel();
   const acceptTerms = useAcceptLocalModelTerms();
+  const unload = useUnloadLocalModels();
   const runtimePolicy = config.data?.llm.local_runtime_policy ?? "on_demand";
+  const cachedBytes = (models.data ?? []).reduce(
+    (total, model) => total + model.runtime_cache_bytes,
+    0,
+  );
+  // An installed model is the precondition for a runtime process too: nothing
+  // can be holding weights that are not on disk.
+  const nothingToUnload =
+    cachedBytes === 0 &&
+    !(models.data ?? []).some((model) => model.status === "available");
 
   function setRuntimePolicy(local_runtime_policy: LocalRuntimePolicy) {
     if (config.data === undefined) return;
@@ -119,6 +169,32 @@ export function LocalModelsTab() {
             );
           })}
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-start justify-between gap-4 rounded-lg border border-border p-4">
+        <div>
+          <p className="font-medium">Unload all models</p>
+          <p className="text-sm text-muted-foreground">
+            Stops any inference process still holding a model in memory and
+            deletes the reusable prompt caches
+            {cachedBytes > 0 ? ` (${formatFreed(cachedBytes)})` : ""}. Downloaded
+            model files are kept.
+          </p>
+          {unload.data !== undefined && !unload.isPending ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {describeUnload(unload.data)}
+            </p>
+          ) : null}
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={nothingToUnload || unload.isPending}
+          onClick={() => unload.mutate()}
+        >
+          <MemoryStick aria-hidden="true" />
+          {unload.isPending ? "Unloading…" : "Unload all models"}
+        </Button>
       </div>
 
       {models.data.map((model) => {

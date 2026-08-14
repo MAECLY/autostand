@@ -48,6 +48,15 @@ Runtime lookup expects `autostand-local-llm` plus either llama.cpp's `llama-comp
 
 Release builds use `tauri.release.conf.json`: the release workflow compiles the Rust sidecar for the exact target, builds the pinned llama.cpp `llama-cli`, copies both into Tauri's target-suffixed `binaries/` layout, and enables them as `externalBin` entries. Ordinary source/development runs do not invoke that release-only build step; place both binaries as siblings (or put the sidecar on `PATH` and set `AUTOSTAND_LLAMA_CLI`).
 
+## Unloading the runtime
+
+`unload_local_models` releases what the local runtime can still be holding. Nothing is resident *by design* — every render is a one-shot `llama-completion` process — so the command does exactly two concrete things and reports both:
+
+1. **Terminates processes that still hold a managed GGUF.** The adapter kills the sidecar on timeout, but the sidecar's own llama.cpp grandchild is not in that process group and can survive with the full model mapped into memory. Candidates come from the process table (`ps -A -o pid=,args=`; `Get-CimInstance Win32_Process` on Windows) and are selected by matching the *managed models directory* in the command line, so a `llama-cli` the user started on their own weights is never touched.
+2. **Deletes every file under `<state_dir>/models/local/runtime-cache`.** This is the `--prompt-cache` state written on every `keep_ready` run; it is what keeps a model warm and it never expires on its own.
+
+Processes are terminated before the caches are deleted, because a run still exiting would rewrite its cache. Downloaded GGUF files, selection, and terms acceptance are untouched — unloading is not deleting. The returned `LocalRuntimeUnload` carries `processes_terminated`, `caches_removed`, and `bytes_freed`; an all-zero result is a legitimate answer meaning the runtime was already cold, and the UI says so rather than claiming a phantom unload. `list_local_models` exposes the per-model `runtime_cache_bytes` this command reclaims.
+
 ## Security boundary
 
 - GGUF and state paths are chosen from the built-in catalog or an existing absolute `.gguf` path; download callers cannot inject a destination.
@@ -61,7 +70,9 @@ Release builds use `tauri.release.conf.json`: the release workflow compiles the 
 
 The Local AI tab shows tier, quality, GGUF size, context, license, status,
 progress, selection, and the two lifecycle choices described above. Actions are
-Download/Resume, Cancel, Use model, and Delete. Gemma displays the required
+Download/Resume, Cancel, Use model, Delete, and **Unload all models** — the last
+one is disabled while no model is installed and nothing is cached, since there
+would be nothing to free. Gemma displays the required
 terms action before download. Models are never downloaded or selected
 automatically. Selecting an installed model atomically synchronizes Providers:
 `builtin-local` becomes enabled, preferred, first in failover order, and points

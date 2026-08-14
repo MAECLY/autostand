@@ -39,7 +39,20 @@ pub struct LocalModelInfo {
     pub license_url: String,
     pub terms_required: bool,
     pub downloaded_bytes: u64,
+    /// Size of this model's reusable llama.cpp prompt/KV cache, `0` when cold.
+    pub runtime_cache_bytes: u64,
     pub error: Option<String>,
+}
+
+/// What [`unload_local_models`] actually released.
+///
+/// Every field is a real, observable effect: no field reports work the local
+/// architecture cannot perform.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+pub struct LocalRuntimeUnload {
+    pub processes_terminated: u32,
+    pub caches_removed: u32,
+    pub bytes_freed: u64,
 }
 
 /// Durable model lifecycle state derived from files on disk.
@@ -273,6 +286,24 @@ fn error_path(models_dir: &Path, model: &ModelDefinition) -> PathBuf {
     models_dir.join(format!("{}.error", model.file_name))
 }
 
+/// Directory holding the llama.cpp prompt/KV caches written under `keep_ready`.
+///
+/// Mirrors `autostand_adapters::llm::builtin_local::prompt_cache_path`, which
+/// resolves the same location from the adapter side.
+fn runtime_cache_dir(models_dir: &Path) -> PathBuf {
+    models_dir.join("runtime-cache")
+}
+
+fn runtime_cache_path(models_dir: &Path, model: &ModelDefinition) -> PathBuf {
+    runtime_cache_dir(models_dir).join(format!("{}.prompt-cache", model.file_name))
+}
+
+fn runtime_cache_bytes(models_dir: &Path, model: &ModelDefinition) -> u64 {
+    runtime_cache_path(models_dir, model)
+        .metadata()
+        .map_or(0, |metadata| metadata.len())
+}
+
 fn status_for(
     models_dir: &Path,
     model: &ModelDefinition,
@@ -328,6 +359,7 @@ pub async fn list_local_models(app_handle: AppHandle) -> Result<Vec<LocalModelIn
                     state.terms.accepted.get(model.id).map(String::as_str) != Some(version)
                 }),
                 downloaded_bytes,
+                runtime_cache_bytes: runtime_cache_bytes(&dir, model),
                 error,
             }
         })
@@ -591,9 +623,7 @@ pub async fn delete_local_model(app_handle: AppHandle, model_id: String) -> Resu
         crate::commands::save_config(&app_handle, &config)?;
     }
     let (final_path, partial_path) = model_paths(&dir, model);
-    let runtime_cache = dir
-        .join("runtime-cache")
-        .join(format!("{}.prompt-cache", model.file_name));
+    let runtime_cache = runtime_cache_path(&dir, model);
     for path in [
         final_path,
         partial_path,
@@ -641,6 +671,182 @@ pub async fn select_local_model(app_handle: AppHandle, model_id: String) -> Resu
         return Err(error);
     }
     Ok(())
+}
+
+/// Release everything the built-in local runtime can still be holding.
+///
+/// WHY this is not a no-op even though inference is one-shot: nothing stays
+/// resident *by design*, but two things survive a render anyway.
+/// 1. `keep_ready` hands llama.cpp a per-model `--prompt-cache` file that is
+///    written on every run and never expires — that file, not RAM, is what
+///    keeps the model "warm", and it is several hundred MiB per model.
+/// 2. The adapter kills the sidecar on timeout, but the sidecar's own
+///    `llama-completion`/`llama-cli` grandchild is not in that process group and
+///    survives with the full GGUF mapped into memory.
+///
+/// So: terminate every process that still references the managed models
+/// directory, then delete the caches. The returned summary reports only what
+/// really happened.
+#[tauri::command]
+pub async fn unload_local_models(app_handle: AppHandle) -> Result<LocalRuntimeUnload, AppError> {
+    let dir = models_dir(&app_handle);
+    tokio::task::spawn_blocking(move || unload_runtime(&dir))
+        .await
+        .map_err(|error| AppError::Io(format!("unload task failed: {error}")))?
+}
+
+/// Processes first: a live run would rewrite the prompt cache as it exits.
+fn unload_runtime(models_dir: &Path) -> Result<LocalRuntimeUnload, AppError> {
+    let processes_terminated = terminate_model_processes(models_dir);
+    let (caches_removed, bytes_freed) = purge_runtime_caches(models_dir)?;
+    Ok(LocalRuntimeUnload {
+        processes_terminated,
+        caches_removed,
+        bytes_freed,
+    })
+}
+
+fn purge_runtime_caches(models_dir: &Path) -> Result<(u32, u64), AppError> {
+    let entries = match std::fs::read_dir(runtime_cache_dir(models_dir)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(error) => return Err(error.into()),
+    };
+    let mut removed = 0_u32;
+    let mut bytes = 0_u64;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let size = entry.metadata().map_or(0, |metadata| metadata.len());
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => {
+                removed = removed.saturating_add(1);
+                bytes = bytes.saturating_add(size);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok((removed, bytes))
+}
+
+fn terminate_model_processes(models_dir: &Path) -> u32 {
+    let Some(needle) = models_dir.to_str() else {
+        return 0;
+    };
+    let Some(table) = process_table() else {
+        return 0;
+    };
+    let terminated = model_holding_pids(&table, needle, std::process::id())
+        .into_iter()
+        .filter(|pid| {
+            let killed = terminate(*pid);
+            if !killed {
+                tracing::warn!(pid, "could not terminate a local runtime process");
+            }
+            killed
+        })
+        .count();
+    u32::try_from(terminated).unwrap_or(u32::MAX)
+}
+
+/// PIDs from a `pid<space>command-line` table whose command line references
+/// `models_dir`.
+///
+/// WHY the models directory instead of a binary name: llama.cpp is started as
+/// `llama-completion --model <models_dir>/<file>.gguf`, so the path is the only
+/// signal that separates *our* runtime from a `llama-cli` the user launched
+/// themselves — which this command must never kill.
+fn model_holding_pids(table: &str, models_dir: &str, self_pid: u32) -> Vec<u32> {
+    if models_dir.is_empty() {
+        return Vec::new();
+    }
+    table
+        .lines()
+        .filter_map(|line| {
+            let (pid, command) = line.trim_start().split_once(char::is_whitespace)?;
+            let pid = pid.parse::<u32>().ok()?;
+            (pid != self_pid && command.contains(models_dir)).then_some(pid)
+        })
+        .collect()
+}
+
+/// Snapshot of `pid` + full command line for every process, or `None` when the
+/// platform would not answer.
+///
+/// WHY a subprocess: the workspace pulls in no `libc`/`sysinfo` dependency, the
+/// same reason `autostand-scheduler::lock` probes liveness with `kill -0`.
+#[cfg(unix)]
+fn process_table() -> Option<String> {
+    use std::process::{Command, Stdio};
+
+    let output = Command::new("ps")
+        .arg("-A")
+        .arg("-o")
+        .arg("pid=,args=")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Windows variant. `tasklist` cannot print command lines, and `wmic` is
+/// deprecated, so the CIM provider is the only source of the model path.
+#[cfg(windows)]
+fn process_table() -> Option<String> {
+    use std::process::{Command, Stdio};
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(unix)]
+fn terminate(pid: u32) -> bool {
+    use std::process::{Command, Stdio};
+
+    Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(windows)]
+fn terminate(pid: u32) -> bool {
+    use std::process::{Command, Stdio};
+
+    Command::new("taskkill")
+        .arg("/PID")
+        .arg(pid.to_string())
+        .arg("/T")
+        .arg("/F")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn sha256_file(path: &Path) -> Result<String, AppError> {
@@ -763,6 +969,125 @@ mod tests {
         assert!(provider.enabled);
         assert_eq!(provider.model, "qwen3.5:2b");
         assert_eq!(provider.mode, crate::commands::types::ProviderMode::CliOnly);
+    }
+
+    /// Seed `runtime-cache/<file>.prompt-cache` for `model` with `bytes` bytes.
+    fn seed_cache(models_dir: &Path, model: &ModelDefinition, bytes: usize) -> PathBuf {
+        let path = runtime_cache_path(models_dir, model);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, vec![0_u8; bytes]).unwrap();
+        path
+    }
+
+    #[test]
+    fn purging_removes_every_prompt_cache_and_reports_the_bytes_freed() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = seed_cache(temp.path(), &CATALOG[0], 512);
+        let second = seed_cache(temp.path(), &CATALOG[1], 1_024);
+
+        let (removed, bytes) = purge_runtime_caches(temp.path()).unwrap();
+
+        assert_eq!(removed, 2);
+        assert_eq!(bytes, 1_536);
+        assert!(!first.exists());
+        assert!(!second.exists());
+    }
+
+    /// The cache directory only exists once `keep_ready` has run at least once.
+    #[test]
+    fn purging_a_cold_runtime_is_a_no_op_rather_than_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(purge_runtime_caches(temp.path()).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn purging_leaves_the_model_weights_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let model = &CATALOG[0];
+        let (final_path, _) = model_paths(temp.path(), model);
+        std::fs::write(&final_path, b"GGUF").unwrap();
+        seed_cache(temp.path(), model, 8);
+
+        assert_eq!(purge_runtime_caches(temp.path()).unwrap(), (1, 8));
+        assert!(
+            final_path.is_file(),
+            "unload frees runtime state, it never deletes a downloaded model"
+        );
+    }
+
+    #[test]
+    fn list_reports_the_warm_cache_size_per_model() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(runtime_cache_bytes(temp.path(), &CATALOG[0]), 0);
+        seed_cache(temp.path(), &CATALOG[0], 64);
+        assert_eq!(runtime_cache_bytes(temp.path(), &CATALOG[0]), 64);
+        assert_eq!(runtime_cache_bytes(temp.path(), &CATALOG[1]), 0);
+    }
+
+    /// A `llama-cli` the user started on their own models must survive; only a
+    /// process pointed at the managed directory is ours to kill.
+    #[test]
+    fn only_processes_referencing_the_managed_models_directory_are_selected() {
+        let table = concat!(
+            "  101 /usr/local/bin/llama-cli --model /home/me/my-own/model.gguf\n",
+            "  202 /opt/autostand/llama-completion --model /state/autostand/models/local/x.gguf\n",
+            "  303 /Applications/Autostand.app/Contents/MacOS/autostand-app\n",
+        );
+
+        assert_eq!(
+            model_holding_pids(table, "/state/autostand/models/local", 1),
+            vec![202]
+        );
+    }
+
+    #[test]
+    fn pid_selection_skips_the_calling_process_and_unparsable_rows() {
+        let table = concat!(
+            "not-a-pid /state/models/local/x.gguf\n",
+            "\n",
+            "  777 llama-completion --model /state/models/local/x.gguf\n",
+            "  888 llama-completion --model /state/models/local/y.gguf\n",
+        );
+
+        assert_eq!(
+            model_holding_pids(table, "/state/models/local", 777),
+            vec![888]
+        );
+    }
+
+    /// An empty needle would match every command line on the machine.
+    #[test]
+    fn an_unresolvable_models_directory_selects_nothing() {
+        assert!(model_holding_pids("  1 anything\n", "", 0).is_empty());
+    }
+
+    #[test]
+    fn unload_reports_only_what_it_actually_released() {
+        let temp = tempfile::tempdir().unwrap();
+        seed_cache(temp.path(), &CATALOG[0], 256);
+
+        let summary = unload_runtime(temp.path()).unwrap();
+
+        assert_eq!(summary.caches_removed, 1);
+        assert_eq!(summary.bytes_freed, 256);
+        // Nothing on the machine can reference this fresh temp directory.
+        assert_eq!(summary.processes_terminated, 0);
+        assert_eq!(
+            unload_runtime(temp.path()).unwrap(),
+            LocalRuntimeUnload::default()
+        );
+    }
+
+    #[test]
+    fn unload_summary_serializes_with_the_contract_field_names() {
+        let value = serde_json::to_value(LocalRuntimeUnload::default()).unwrap();
+        let object = value.as_object().unwrap();
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["bytes_freed", "caches_removed", "processes_terminated"]
+        );
     }
 
     #[test]

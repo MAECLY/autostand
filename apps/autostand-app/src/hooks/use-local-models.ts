@@ -96,3 +96,19 @@ export function useAcceptLocalModelTerms() {
     "Accept local model terms",
   );
 }
+
+/**
+ * Free the local runtime: kill anything still holding a GGUF and drop the
+ * reusable prompt caches. The catalog query carries `runtime_cache_bytes`, so it
+ * has to be refetched for the freed state to show up.
+ */
+export function useUnloadLocalModels() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: tauriApi.unloadLocalModels,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: localModelsKey });
+    },
+    onError: (error) => handleInvokeError(error, "Unload local models"),
+  });
+}

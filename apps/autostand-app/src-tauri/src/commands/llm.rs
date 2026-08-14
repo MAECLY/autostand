@@ -736,16 +736,16 @@ pub async fn refresh_provider_health(
         let id = id.clone();
         probes.spawn(async move { (index, provider_health(&config, &id).await) });
     }
-    let mut probed: Vec<Option<ProviderHealth>> = vec![None; ids.len()];
+    let mut snapshots: Vec<Option<ProviderHealth>> = vec![None; ids.len()];
     while let Some(joined) = probes.join_next().await {
         match joined {
-            Ok((index, health)) => probed[index] = Some(health),
+            Ok((index, health)) => snapshots[index] = Some(health),
             Err(err) => tracing::warn!(error = %err, "provider health probe panicked"),
         }
     }
     let health: Vec<ProviderHealth> = ids
         .iter()
-        .zip(probed)
+        .zip(snapshots)
         .map(|(id, result)| result.unwrap_or_else(|| unknown_health(id, "probe_failed")))
         .collect();
 
