@@ -9,11 +9,12 @@ and files a structured standup every working day. Nothing leaves your machine un
 at a provider yourself.
 
 [![CI](https://github.com/MAECLY/autostand/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MAECLY/autostand/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v1.0.0-2563eb)](https://github.com/MAECLY/autostand/releases/latest)
+[![Release](https://img.shields.io/github/v/release/MAECLY/autostand?color=2563eb)](https://github.com/MAECLY/autostand/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/MAECLY/autostand/total?color=7c3aed)](https://github.com/MAECLY/autostand/releases)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-6b7280)](#install)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24c8db)](https://tauri.app)
 [![Rust](https://img.shields.io/badge/rust-stable-b7410e)](https://www.rust-lang.org)
-[![License](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
+[![License](https://img.shields.io/github/license/MAECLY/autostand?color=16a34a)](LICENSE)
 
 **[Download](#install)** · **[Documentation](docs/README.md)** · **[Changelog](CHANGELOG.md)** · **[autostand.maecly.com](https://autostand.maecly.com)**
 
