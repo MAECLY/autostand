@@ -10,6 +10,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+use autostand_runlog::proc::{run_process, ProcSpec};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
@@ -17,8 +19,17 @@ use tauri_plugin_notification::NotificationExt;
 use crate::commands;
 use crate::commands::types::{CompileResult, CompileStatus};
 use crate::error::AppError;
+use crate::run_log::{Run, RunKind};
 
 const HISTORY_FILE: &str = "notification-history.json";
+
+/// Step the headless transports are filed under.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+const NOTIFY_STEP: &str = "notification";
+
+/// A notification the OS has not accepted in this long is not going to be shown.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(20);
 const DEDUP_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const HISTORY_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -190,14 +201,21 @@ pub enum Delivery {
     Duplicate,
 }
 
+/// Where one alert is handed to the operating system.
+///
+/// `async fn` in a private trait (stable since 1.75, and the workspace targets
+/// 1.80): the headless transport spawns `osascript`/`notify-send`/`powershell`,
+/// and every spawn in this workspace goes through the async spawner. `dispatch`
+/// takes `impl NotificationSink`, so no `dyn` is involved and no `async_trait`
+/// dependency is needed.
 trait NotificationSink {
-    fn send(&self, title: &str, body: &str) -> Result<(), String>;
+    async fn send(&self, title: &str, body: &str) -> Result<(), String>;
 }
 
 struct TauriSink<'a>(&'a AppHandle);
 
 impl NotificationSink for TauriSink<'_> {
-    fn send(&self, title: &str, body: &str) -> Result<(), String> {
+    async fn send(&self, title: &str, body: &str) -> Result<(), String> {
         self.0
             .notification()
             .builder()
@@ -211,40 +229,41 @@ impl NotificationSink for TauriSink<'_> {
 struct HeadlessSink;
 
 impl NotificationSink for HeadlessSink {
-    fn send(&self, title: &str, body: &str) -> Result<(), String> {
-        send_headless_native(title, body)
+    async fn send(&self, title: &str, body: &str) -> Result<(), String> {
+        send_headless_native(title, body).await
     }
 }
 
+/// The title and the body travel as **arguments**, and `ProcSpec` never logs an
+/// argv — which is the whole reason a notification can be routed through the
+/// spawner at all: the panel gets "osascript ok", not the alert's text.
 #[cfg(target_os = "macos")]
-fn send_headless_native(title: &str, body: &str) -> Result<(), String> {
+async fn send_headless_native(title: &str, body: &str) -> Result<(), String> {
     let script =
         "on run argv\n display notification (item 2 of argv) with title (item 1 of argv)\nend run";
-    command_succeeded(
-        std::process::Command::new("/usr/bin/osascript")
-            .args(["-e", script, "--", title, body])
-            .status(),
+    run_notifier(
+        ProcSpec::new("/usr/bin/osascript", NOTIFY_STEP).args(["-e", script, "--", title, body]),
         "osascript",
     )
+    .await
 }
 
 #[cfg(target_os = "linux")]
-fn send_headless_native(title: &str, body: &str) -> Result<(), String> {
-    command_succeeded(
-        std::process::Command::new("notify-send")
-            .args(["--app-name=Autostand", title, body])
-            .status(),
+async fn send_headless_native(title: &str, body: &str) -> Result<(), String> {
+    run_notifier(
+        ProcSpec::new("notify-send", NOTIFY_STEP).args(["--app-name=Autostand", title, body]),
         "notify-send",
     )
+    .await
 }
 
 #[cfg(target_os = "windows")]
-fn send_headless_native(title: &str, body: &str) -> Result<(), String> {
+async fn send_headless_native(title: &str, body: &str) -> Result<(), String> {
     // Fixed script, dynamic text only through environment variables. Encoding
     // plus SecurityElement::Escape keeps provider/model labels out of code/XML.
     const SCRIPT: &str = r#"$t=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:AUTOSTAND_NOTIFICATION_TITLE));$b=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:AUTOSTAND_NOTIFICATION_BODY));$t=[Security.SecurityElement]::Escape($t);$b=[Security.SecurityElement]::Escape($b);[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]>$null;$x=New-Object Windows.Data.Xml.Dom.XmlDocument;$x.LoadXml(\"<toast><visual><binding template='ToastGeneric'><text>$t</text><text>$b</text></binding></visual></toast>\");$n=[Windows.UI.Notifications.ToastNotification]::new($x);[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('com.miguel50flowers.autostand').Show($n)"#;
-    command_succeeded(
-        std::process::Command::new("powershell.exe")
+    run_notifier(
+        ProcSpec::new("powershell.exe", NOTIFY_STEP)
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -253,27 +272,38 @@ fn send_headless_native(title: &str, body: &str) -> Result<(), String> {
                 SCRIPT,
             ])
             .env("AUTOSTAND_NOTIFICATION_TITLE", base64(title.as_bytes()))
-            .env("AUTOSTAND_NOTIFICATION_BODY", base64(body.as_bytes()))
-            .status(),
+            .env("AUTOSTAND_NOTIFICATION_BODY", base64(body.as_bytes())),
         "Windows notification service",
     )
+    .await
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn send_headless_native(_title: &str, _body: &str) -> Result<(), String> {
+#[allow(clippy::unused_async)]
+async fn send_headless_native(_title: &str, _body: &str) -> Result<(), String> {
     Err("headless notifications are unsupported on this operating system".into())
 }
 
+/// Spawn one notification transport and reduce it to "delivered" or a reason.
+///
+/// The reason never carries the child's output: it is handed to the caller as an
+/// `AppError`, and the alert's own text is already in the argv the spawner
+/// refuses to log.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-fn command_succeeded(
-    status: Result<std::process::ExitStatus, std::io::Error>,
-    service: &str,
-) -> Result<(), String> {
-    let status = status.map_err(|err| format!("start {service}: {err}"))?;
-    if status.success() {
+async fn run_notifier(spec: ProcSpec, service: &str) -> Result<(), String> {
+    let output = run_process(spec.timeout(NOTIFY_TIMEOUT))
+        .await
+        .map_err(|err| match err {
+            autostand_runlog::proc::ProcError::Timeout { .. } => format!("{service} timed out"),
+            _ => format!("start {service}: unavailable"),
+        })?;
+    if output.success {
         Ok(())
     } else {
-        Err(format!("{service} exited with {status}"))
+        Err(match output.code {
+            Some(code) => format!("{service} exited with {code}"),
+            None => format!("{service} was terminated"),
+        })
     }
 }
 
@@ -302,7 +332,7 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 /// Deliver through the official Tauri plugin when the app runtime is active.
-pub fn notify_gui(
+pub async fn notify_gui(
     app: &AppHandle,
     config: &NotificationConfig,
     notification: &SystemNotification,
@@ -314,10 +344,11 @@ pub fn notify_gui(
         &commands::state_dir().join(HISTORY_FILE),
         now_epoch_secs(),
     )
+    .await
 }
 
 /// Deliver from the scheduler's `--compile` process without a GUI runtime.
-pub fn notify_headless(
+pub async fn notify_headless(
     config: &NotificationConfig,
     notification: &SystemNotification,
 ) -> Result<Delivery, AppError> {
@@ -328,6 +359,7 @@ pub fn notify_headless(
         &commands::state_dir().join(HISTORY_FILE),
         now_epoch_secs(),
     )
+    .await
 }
 
 /// Convert a completed pipeline run into one content-free system alert.
@@ -424,7 +456,7 @@ fn error_class(err: &AppError) -> &'static str {
     }
 }
 
-fn dispatch(
+async fn dispatch(
     sink: &impl NotificationSink,
     config: &NotificationConfig,
     notification: &SystemNotification,
@@ -445,6 +477,7 @@ fn dispatch(
     }
 
     sink.send(&notification.title, &notification.body)
+        .await
         .map_err(|err| AppError::Config(format!("send system notification: {err}")))?;
     history
         .sent_at
@@ -551,7 +584,14 @@ pub async fn request_notification_permission(app_handle: AppHandle) -> Result<St
 /// the master opt-in and OS permission.
 #[tauri::command]
 pub async fn send_test_notification(app_handle: AppHandle) -> Result<bool, AppError> {
-    let config = commands::load_config(&app_handle)?
+    let run = Run::open(&app_handle, RunKind::Notification);
+    let outcome = run.scope(deliver_test(&app_handle)).await;
+    run.settle(outcome, "test notification delivered")
+}
+
+/// The test delivery itself, already inside the run's log scope.
+async fn deliver_test(app_handle: &AppHandle) -> Result<bool, AppError> {
+    let config = commands::load_config(app_handle)?
         .notifications
         .normalized();
     let notification = SystemNotification::new(
@@ -560,7 +600,7 @@ pub async fn send_test_notification(app_handle: AppHandle) -> Result<bool, AppEr
         "Usage and provider alerts will appear here.",
         format!("test:{}", now_epoch_secs()),
     );
-    Ok(notify_gui(&app_handle, &config, &notification)? == Delivery::Sent)
+    Ok(notify_gui(app_handle, &config, &notification).await? == Delivery::Sent)
 }
 
 #[cfg(test)]
@@ -577,7 +617,7 @@ mod tests {
     struct FakeSink(RefCell<Vec<(String, String)>>);
 
     impl NotificationSink for FakeSink {
-        fn send(&self, title: &str, body: &str) -> Result<(), String> {
+        async fn send(&self, title: &str, body: &str) -> Result<(), String> {
             self.0
                 .borrow_mut()
                 .push((title.to_string(), body.to_string()));
@@ -610,8 +650,8 @@ mod tests {
         assert_eq!(config.normalized().low_usage_threshold_percent, 100);
     }
 
-    #[test]
-    fn disabled_notifications_never_reach_the_transport() {
+    #[tokio::test]
+    async fn disabled_notifications_never_reach_the_transport() {
         let dir = tempfile::tempdir().unwrap();
         let sink = FakeSink::default();
         let result = dispatch(
@@ -621,23 +661,28 @@ mod tests {
             &dir.path().join("history.json"),
             1_000,
         )
+        .await
         .unwrap();
         assert_eq!(result, Delivery::Disabled);
         assert!(sink.0.borrow().is_empty());
     }
 
-    #[test]
-    fn suppresses_the_same_transition_for_six_hours() {
+    #[tokio::test]
+    async fn suppresses_the_same_transition_for_six_hours() {
         let dir = tempfile::tempdir().unwrap();
         let history = dir.path().join("history.json");
         let sink = FakeSink::default();
         let note = SystemNotification::provider_exhausted("grok", Some("window-1"));
         assert_eq!(
-            dispatch(&sink, &enabled(), &note, &history, 10_000).unwrap(),
+            dispatch(&sink, &enabled(), &note, &history, 10_000)
+                .await
+                .unwrap(),
             Delivery::Sent
         );
         assert_eq!(
-            dispatch(&sink, &enabled(), &note, &history, 10_001).unwrap(),
+            dispatch(&sink, &enabled(), &note, &history, 10_001)
+                .await
+                .unwrap(),
             Delivery::Duplicate
         );
         assert_eq!(sink.0.borrow().len(), 1);
@@ -650,38 +695,45 @@ mod tests {
                 &history,
                 10_000 + DEDUP_INTERVAL.as_secs()
             )
+            .await
             .unwrap(),
             Delivery::Sent
         );
         assert_eq!(sink.0.borrow().len(), 2);
     }
 
-    #[test]
-    fn a_new_reset_window_is_a_new_transition() {
+    #[tokio::test]
+    async fn a_new_reset_window_is_a_new_transition() {
         let dir = tempfile::tempdir().unwrap();
         let history = dir.path().join("history.json");
         let sink = FakeSink::default();
         let first = SystemNotification::provider_exhausted("grok", Some("window-1"));
         let second = SystemNotification::provider_exhausted("grok", Some("window-2"));
         assert_eq!(
-            dispatch(&sink, &enabled(), &first, &history, 50).unwrap(),
+            dispatch(&sink, &enabled(), &first, &history, 50)
+                .await
+                .unwrap(),
             Delivery::Sent
         );
         assert_eq!(
-            dispatch(&sink, &enabled(), &second, &history, 51).unwrap(),
+            dispatch(&sink, &enabled(), &second, &history, 51)
+                .await
+                .unwrap(),
             Delivery::Sent
         );
     }
 
-    #[test]
-    fn category_switches_are_independent() {
+    #[tokio::test]
+    async fn category_switches_are_independent() {
         let dir = tempfile::tempdir().unwrap();
         let sink = FakeSink::default();
         let mut config = enabled();
         config.provider_fallback = false;
         let note = SystemNotification::provider_fallback("grok", "openai");
         assert_eq!(
-            dispatch(&sink, &config, &note, &dir.path().join("h"), 1).unwrap(),
+            dispatch(&sink, &config, &note, &dir.path().join("h"), 1)
+                .await
+                .unwrap(),
             Delivery::Disabled
         );
     }

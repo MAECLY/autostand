@@ -48,6 +48,26 @@ Runtime lookup expects `autostand-local-llm` plus either llama.cpp's `llama-comp
 
 Release builds use `tauri.release.conf.json`: the release workflow compiles the Rust sidecar for the exact target, builds the pinned llama.cpp `llama-cli`, copies both into Tauri's target-suffixed `binaries/` layout, and enables them as `externalBin` entries. Ordinary source/development runs do not invoke that release-only build step; place both binaries as siblings (or put the sidecar on `PATH` and set `AUTOSTAND_LLAMA_CLI`).
 
+## Requirements checklist
+
+Local AI depends on three things Autostand can verify but not conjure, and
+`get_dependency_status("local_ai")` reports each one independently:
+
+| Dependency id | Probe | Missing means |
+| --- | --- | --- |
+| `local-ai.sidecar` | `ProviderConfig.cli_path` when it is a real file, then a sibling of the running executable, then `PATH` — the adapter's own lookup order | The bundle is incomplete; reinstall, or `cargo build --workspace` for a source checkout |
+| `local-ai.runtime` | `AUTOSTAND_LLAMA_CLI` when it is a real file, then `llama-completion`/`llama-cli` beside the sidecar, then beside the app, then on `PATH` | No llama.cpp runtime: `brew install llama.cpp` where Homebrew exists, otherwise the upstream build guide |
+| `local-ai.model` | The catalogue selection cross-checked against installed models | Nothing downloaded (*Missing*), or downloaded but unselected / selection deleted (*Action needed*) |
+
+Two rules keep the checklist honest. It never suggests a package id it cannot
+vouch for — outside Homebrew, llama.cpp gets the official build guide rather
+than an invented package — and no probe output ever reaches the DTO: paths and
+short curated reasons only, never a subprocess's stdout or stderr.
+
+A missing runtime disables **Use model** and says why, but never blocks a
+download: the GGUF is the prerequisite for using a model once the runtime is
+installed, so blocking it would strand the user with nothing to select.
+
 ## Unloading the runtime
 
 `unload_local_models` releases what the local runtime can still be holding. Nothing is resident *by design* — every render is a one-shot `llama-completion` process — so the command does exactly two concrete things and reports both:
@@ -72,7 +92,9 @@ The Local AI tab shows tier, quality, GGUF size, context, license, status,
 progress, selection, and the two lifecycle choices described above. Actions are
 Download/Resume, Cancel, Use model, Delete, and **Unload all models** — the last
 one is disabled while no model is installed and nothing is cached, since there
-would be nothing to free. Gemma displays the required
+would be nothing to free. **Use model** is disabled while the requirements
+checklist reports the llama.cpp runtime as missing; downloading is unaffected.
+Gemma displays the required
 terms action before download. Models are never downloaded or selected
 automatically. Selecting an installed model atomically synchronizes Providers:
 `builtin-local` becomes enabled, preferred, first in failover order, and points

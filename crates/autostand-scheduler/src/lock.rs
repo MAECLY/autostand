@@ -22,6 +22,18 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(any(unix, windows))]
+use autostand_runlog::proc::{run_process, ProcSpec, StreamPolicy};
+
+/// Step the liveness probe would be filed under — it never is; see
+/// [`pid_is_running`].
+#[cfg(any(unix, windows))]
+const LOCK_STEP: &str = "compile";
+
+/// A liveness probe that has not answered in this long is not going to.
+#[cfg(any(unix, windows))]
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Metadata file written inside the lock directory: PID on line 1, acquisition
 /// time (Unix seconds) on line 2.
 const PID_FILE: &str = "pid";
@@ -62,14 +74,14 @@ impl Drop for LockGuard {
 /// [`io::ErrorKind::AlreadyExists`] when a live run holds the lock — the scheduler
 /// does not queue.
 #[tracing::instrument(level = "debug", skip_all, fields(lock = %lock_dir.display()))]
-pub fn acquire(lock_dir: &Path) -> io::Result<LockGuard> {
+pub async fn acquire(lock_dir: &Path) -> io::Result<LockGuard> {
     if let Some(parent) = lock_dir.parent() {
         std::fs::create_dir_all(parent)?;
     }
     match std::fs::create_dir(lock_dir) {
         Ok(()) => finish_acquire(lock_dir),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            let Some(reason) = staleness(lock_dir) else {
+            let Some(reason) = staleness(lock_dir).await else {
                 tracing::debug!("run lock held by a live process; refusing");
                 return Err(e);
             };
@@ -135,15 +147,14 @@ fn read_meta(lock_dir: &Path) -> LockMeta {
 }
 
 /// Why the lock at `lock_dir` is stale, or `None` if it is still legitimately held.
-fn staleness(lock_dir: &Path) -> Option<&'static str> {
+async fn staleness(lock_dir: &Path) -> Option<&'static str> {
     let meta = read_meta(lock_dir);
     // Owner is gone: reclaim now, no need to wait out the timeout. When the owner
     // is alive — or the probe could not answer — only the time rule can steal it.
-    if meta
-        .pid
-        .is_some_and(|pid| pid_is_running(pid) == Some(false))
-    {
-        return Some("dead-pid");
+    if let Some(pid) = meta.pid {
+        if pid_is_running(pid).await == Some(false) {
+            return Some("dead-pid");
+        }
     }
     match age(lock_dir, &meta) {
         None => Some("unknown-age"),
@@ -177,19 +188,22 @@ fn age(lock_dir: &Path, meta: &LockMeta) -> Option<Duration> {
 /// Caveat: `kill -0` also fails with `EPERM` for a live process owned by another
 /// user, which is indistinguishable from `ESRCH` here. The lock lives under the
 /// invoking user's own state directory, so a foreign owner is not a real case.
+///
+/// [`StreamPolicy::Silent`]: this runs while *acquiring* the run lock, before any
+/// run exists to log into, and a `kill -0` line would tell the user nothing they
+/// could act on. It still goes through the workspace's single spawner so the
+/// kill/timeout policy stays in one file.
 #[cfg(unix)]
-fn pid_is_running(pid: u32) -> Option<bool> {
-    use std::process::{Command, Stdio};
-
-    let status = Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .ok()?;
-    Some(status.success())
+async fn pid_is_running(pid: u32) -> Option<bool> {
+    let output = run_process(
+        ProcSpec::new("kill", LOCK_STEP)
+            .args(["-0", &pid.to_string()])
+            .timeout(PROBE_TIMEOUT)
+            .stream(StreamPolicy::Silent),
+    )
+    .await
+    .ok()?;
+    Some(output.success)
 }
 
 /// Windows variant of the liveness probe.
@@ -198,30 +212,27 @@ fn pid_is_running(pid: u32) -> Option<bool> {
 /// from stdout: a matching row contains the quoted PID, a miss prints an INFO
 /// banner instead.
 #[cfg(windows)]
-fn pid_is_running(pid: u32) -> Option<bool> {
-    use std::process::{Command, Stdio};
-
-    let output = Command::new("tasklist")
-        .arg("/FI")
-        .arg(format!("PID eq {pid}"))
-        .arg("/NH")
-        .arg("/FO")
-        .arg("CSV")
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
+async fn pid_is_running(pid: u32) -> Option<bool> {
+    let output = run_process(
+        ProcSpec::new("tasklist", LOCK_STEP)
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .timeout(PROBE_TIMEOUT)
+            .stream(StreamPolicy::Silent),
+    )
+    .await
+    .ok()?;
+    if !output.success {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let needle = format!("\"{pid}\"");
-    Some(stdout.contains(needle.as_str()))
+    Some(output.stdout.contains(needle.as_str()))
 }
 
 /// Fallback for targets that are neither unix nor windows: no probe, so the
 /// time-based staleness rule is the only one that applies.
 #[cfg(not(any(unix, windows)))]
-fn pid_is_running(_pid: u32) -> Option<bool> {
+#[allow(clippy::unused_async)]
+async fn pid_is_running(_pid: u32) -> Option<bool> {
     None
 }
 
@@ -241,11 +252,11 @@ mod tests {
             .expect("write pid");
     }
 
-    #[test]
-    fn acquires_and_writes_pid() {
+    #[tokio::test]
+    async fn acquires_and_writes_pid() {
         let tmp = tempfile::tempdir().expect("tmp");
         let lock = tmp.path().join("state").join("lock");
-        let guard = acquire(&lock).expect("acquire");
+        let guard = acquire(&lock).await.expect("acquire");
         assert!(lock.is_dir());
         assert_eq!(guard.path(), lock.as_path());
         let meta = read_meta(&lock);
@@ -253,66 +264,68 @@ mod tests {
         assert!(meta.acquired_at.is_some());
     }
 
-    #[test]
-    fn guard_releases_on_drop() {
+    #[tokio::test]
+    async fn guard_releases_on_drop() {
         let tmp = tempfile::tempdir().expect("tmp");
         let lock = tmp.path().join("lock");
         {
-            let _guard = acquire(&lock).expect("acquire");
+            let _guard = acquire(&lock).await.expect("acquire");
             assert!(lock.is_dir());
         }
         assert!(!lock.exists(), "drop must remove the lock directory");
         // And the slot is immediately re-acquirable.
-        drop(acquire(&lock).expect("re-acquire"));
+        drop(acquire(&lock).await.expect("re-acquire"));
     }
 
-    #[test]
-    fn refuses_lock_held_by_live_pid() {
+    #[tokio::test]
+    async fn refuses_lock_held_by_live_pid() {
         let tmp = tempfile::tempdir().expect("tmp");
         let lock = tmp.path().join("lock");
-        let _held = acquire(&lock).expect("acquire");
+        let _held = acquire(&lock).await.expect("acquire");
         // Our own PID is by definition alive and the lock is seconds old.
-        let err = acquire(&lock).expect_err("second acquire must fail");
+        let err = acquire(&lock).await.expect_err("second acquire must fail");
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert!(lock.is_dir(), "a refused acquire must not remove the lock");
     }
 
-    #[test]
-    fn reclaims_lock_older_than_timeout() {
+    #[tokio::test]
+    async fn reclaims_lock_older_than_timeout() {
         let tmp = tempfile::tempdir().expect("tmp");
         let lock = tmp.path().join("lock");
         // Live PID (ours) but well past the 10-minute timeout.
         plant_lock(&lock, &std::process::id().to_string(), 3600);
-        assert_eq!(staleness(&lock), Some("timeout"));
-        let guard = acquire(&lock).expect("stale lock must be reclaimed");
+        assert_eq!(staleness(&lock).await, Some("timeout"));
+        let guard = acquire(&lock).await.expect("stale lock must be reclaimed");
         assert_eq!(read_meta(guard.path()).pid, Some(std::process::id()));
     }
 
-    #[test]
-    fn unparseable_pid_falls_back_to_time() {
+    #[tokio::test]
+    async fn unparseable_pid_falls_back_to_time() {
         let tmp = tempfile::tempdir().expect("tmp");
         let lock = tmp.path().join("lock");
         plant_lock(&lock, "not-a-pid", 5);
-        assert_eq!(staleness(&lock), None, "fresh lock stays held");
-        acquire(&lock).expect_err("fresh lock must be refused");
+        assert_eq!(staleness(&lock).await, None, "fresh lock stays held");
+        acquire(&lock)
+            .await
+            .expect_err("fresh lock must be refused");
 
         plant_lock(&lock, "not-a-pid", 3600);
-        assert_eq!(staleness(&lock), Some("timeout"));
-        drop(acquire(&lock).expect("old lock must be reclaimed"));
+        assert_eq!(staleness(&lock).await, Some("timeout"));
+        drop(acquire(&lock).await.expect("old lock must be reclaimed"));
     }
 
-    #[test]
-    fn missing_pid_file_uses_directory_mtime() {
+    #[tokio::test]
+    async fn missing_pid_file_uses_directory_mtime() {
         let tmp = tempfile::tempdir().expect("tmp");
         let lock = tmp.path().join("lock");
         std::fs::create_dir_all(&lock).expect("mkdir");
         // Freshly created directory: not stale, so the acquire is refused.
-        assert_eq!(staleness(&lock), None);
+        assert_eq!(staleness(&lock).await, None);
     }
 
     #[cfg(unix)]
-    #[test]
-    fn reclaims_lock_held_by_dead_pid_inside_timeout() {
+    #[tokio::test]
+    async fn reclaims_lock_held_by_dead_pid_inside_timeout() {
         // A process we spawn and reap is guaranteed to be gone afterwards, which
         // gives us a realistic dead PID without touching the wider system.
         let child = std::process::Command::new("/bin/sh")
@@ -331,14 +344,16 @@ mod tests {
         let lock = tmp.path().join("lock");
         // Only 5 seconds old: the time rule alone would keep it held.
         plant_lock(&lock, &dead_pid.to_string(), 5);
-        assert_eq!(staleness(&lock), Some("dead-pid"));
-        let guard = acquire(&lock).expect("dead-pid lock must be reclaimed");
+        assert_eq!(staleness(&lock).await, Some("dead-pid"));
+        let guard = acquire(&lock)
+            .await
+            .expect("dead-pid lock must be reclaimed");
         assert_eq!(read_meta(guard.path()).pid, Some(std::process::id()));
     }
 
     #[cfg(unix)]
-    #[test]
-    fn probe_reports_self_as_running() {
-        assert_eq!(pid_is_running(std::process::id()), Some(true));
+    #[tokio::test]
+    async fn probe_reports_self_as_running() {
+        assert_eq!(pid_is_running(std::process::id()).await, Some(true));
     }
 }

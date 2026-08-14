@@ -22,6 +22,7 @@ use super::types::{
 };
 use crate::error::AppError;
 use crate::pipeline_runner::{CompilePurpose, RunEnv};
+use crate::run_log::{Run, RunKind};
 use crate::state::AppState;
 
 const DATE_FORMAT: &str = "%Y-%m-%d";
@@ -60,6 +61,14 @@ impl Drop for WorkDir {
 
 /// Generate a fresh candidate for exactly one filing date without modifying,
 /// auditing, committing, or pushing the current standup.
+///
+/// This is the dashboard's "Compile now" button. It opens a [`Run`] so the
+/// whole regeneration — every gathered source, every provider attempt, every
+/// subprocess — streams into the Terminal panel, then hands the real
+/// `AppHandle` down to the pipeline. Passing `None` there (as an earlier
+/// revision did) silently muted the entire run: `compile_one` drops every
+/// `pipeline-*` event when it has no handle, so the panel stayed empty while
+/// the pipeline was in fact running.
 #[tauri::command]
 pub async fn preview_regeneration(
     app_handle: AppHandle,
@@ -67,7 +76,24 @@ pub async fn preview_regeneration(
 ) -> Result<RegenerationPreview, AppError> {
     let date = resolve_date(date.as_deref())?;
     let env = RunEnv::load(Some(&app_handle))?;
+    let run = Run::open_for(
+        &app_handle,
+        RunKind::Regenerate,
+        date.format(DATE_FORMAT).to_string(),
+        env.host.clone(),
+    );
+    let outcome = run.scope(generate_candidate(&app_handle, env, date)).await;
+    run.settle(outcome, "candidate ready for review")
+}
+
+/// The regeneration itself, already inside the run's log scope.
+async fn generate_candidate(
+    app_handle: &AppHandle,
+    env: RunEnv,
+    date: NaiveDate,
+) -> Result<RegenerationPreview, AppError> {
     let _guard = lock::acquire(&env.state_dir.join(LOCK_SUBDIR))
+        .await
         .map_err(|error| AppError::Lock(format!("another compile is already running ({error})")))?;
 
     cleanup_expired(&env.state_dir);
@@ -83,9 +109,14 @@ pub async fn preview_regeneration(
     std::fs::create_dir_all(&preview_env.dailies_dir)?;
     restrict_dir(&work.0)?;
 
+    // The *state* stays isolated — a preview must not overwrite the dashboard's
+    // last real `CompileResult` — but the *handle* is the live one, so the
+    // pipeline's progress and log events reach the Terminal panel. Only events
+    // change: `CompilePurpose::Preview` already suppresses notifications, the
+    // one other thing `compile_one` uses the handle for.
     let isolated_state = AppState::new();
     let result = crate::pipeline_runner::compile_one(
-        None,
+        Some(app_handle),
         &isolated_state,
         &preview_env,
         date,
@@ -153,9 +184,35 @@ pub async fn apply_regeneration(
     resolution: RegenerationResolution,
     merged_auto: Option<String>,
 ) -> Result<RegenerationApplied, AppError> {
+    // Applying commits and pushes the standup, so it is a `RepoSync` run rather
+    // than a second `Regenerate` one: the candidate was already rendered and
+    // reviewed, and what happens now is git.
+    let run = Run::open(&app_handle, RunKind::RepoSync);
+    let outcome = run
+        .scope(apply_resolution(
+            &app_handle,
+            token,
+            resolution,
+            merged_auto,
+        ))
+        .await;
+    let message = outcome
+        .as_ref()
+        .map_or_else(|_| String::new(), |applied| applied.message.clone());
+    run.settle(outcome, &message)
+}
+
+/// The resolution itself, already inside the run's log scope.
+async fn apply_resolution(
+    app_handle: &AppHandle,
+    token: String,
+    resolution: RegenerationResolution,
+    merged_auto: Option<String>,
+) -> Result<RegenerationApplied, AppError> {
     validate_token(&token)?;
-    let env = RunEnv::load(Some(&app_handle))?;
+    let env = RunEnv::load(Some(app_handle))?;
     let _guard = lock::acquire(&env.state_dir.join(LOCK_SUBDIR))
+        .await
         .map_err(|error| AppError::Lock(format!("another compile is already running ({error})")))?;
     let pending = read_pending(&env.state_dir, &token)?;
     validate_pending(&pending, &env)?;
@@ -495,6 +552,55 @@ mod tests {
         apply_auto, auto_body, digest, ensure_base_unchanged, validate_auto_body, validate_token,
     };
     use chrono::NaiveDate;
+
+    /// This module's own source, for the regression guards below.
+    const SOURCE: &str = include_str!("regeneration.rs");
+
+    /// The production half of this file, whitespace removed.
+    ///
+    /// The test module is cut off first — otherwise the assertions below would
+    /// match their own string literals and keep passing after a revert — and
+    /// whitespace is removed so `cargo fmt` cannot break a guard by rewrapping
+    /// an argument list.
+    fn production_source() -> String {
+        SOURCE
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first part")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    /// The regression this stage exists to kill.
+    ///
+    /// `compile_one`'s first parameter is the `AppHandle`, and it drops *every*
+    /// `pipeline-progress` / `pipeline-log` event when that argument is `None`.
+    /// "Compile now" therefore ran the whole pipeline behind a blank Terminal.
+    /// The bug is invisible to the type checker — `None` is a perfectly good
+    /// `Option<&AppHandle>` — so it is pinned here instead.
+    #[test]
+    fn compile_now_hands_the_live_app_handle_to_the_pipeline() {
+        let source = production_source();
+        assert!(
+            source.contains("pipeline_runner::compile_one(Some(app_handle),"),
+            "passing None here mutes the whole regeneration in the Terminal panel"
+        );
+        assert!(!source.contains("pipeline_runner::compile_one(None,"));
+    }
+
+    /// The other half of the fix: a run must bracket the work, or the panel
+    /// never opens and the dashboard's progress bar never settles.
+    #[test]
+    fn compile_now_opens_and_settles_a_run() {
+        let source = production_source();
+        assert!(source.contains("Run::open_for(&app_handle,RunKind::Regenerate,"));
+        assert!(source.contains("run.settle(outcome,"));
+        assert!(
+            source.contains(".scope(generate_candidate("),
+            "the work must run inside the run's log scope"
+        );
+    }
 
     #[test]
     fn extracts_only_the_requested_host_auto_block() {

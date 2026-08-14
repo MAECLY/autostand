@@ -5,10 +5,12 @@
 //! submodules and are registered with `generate_handler!` in `lib.rs`.
 
 pub mod data_sources;
+pub mod dependencies;
 pub mod llm;
 pub mod local_models;
 pub mod os;
 pub mod pipeline;
+pub mod readiness;
 pub mod regeneration;
 pub mod repos;
 pub mod settings;

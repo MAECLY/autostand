@@ -245,11 +245,57 @@ export type ProviderAvailability =
   | "unavailable"
   | "unknown";
 
+/** Whether a resource fills a meter (`consumption`) or drains (`balance`). */
+export type ResourceKind = "consumption" | "balance";
+
+/** Unit the raw scalars on a {@link UsageWindow} are expressed in. */
+export type UsageUnit =
+  | "percent"
+  | "usd"
+  | "credits"
+  | "requests"
+  | "tokens"
+  | "count";
+
+/** Burn-rate projection for a quota window. Mirrors `autostand_core::pace::Pace`. */
+export type Pace = "ahead" | "on_track" | "behind";
+
+/**
+ * One provider-defined quota window.
+ *
+ * Every field beyond the original four is optional: the backend marks them
+ * `#[serde(default)]` so snapshots cached by an older build still load, and
+ * existing consumers keep compiling untouched.
+ *
+ * `null`/absent means the provider did not report the field. It never means
+ * zero — rendering a missing percentage as `0%` is the one thing this contract
+ * exists to prevent.
+ */
 export interface UsageWindow {
   id: string;
   used_percent: number | null;
   remaining_percent: number | null;
   resets_at: string | null;
+  kind?: ResourceKind | null;
+  unit?: UsageUnit | null;
+  /** Raw consumed amount, in `unit`. */
+  used?: number | null;
+  /** Raw cap, in `unit`. */
+  limit?: number | null;
+  /** Raw remaining amount, in `unit`, for `balance` resources. */
+  available?: number | null;
+  /** Window length in milliseconds. */
+  period_duration_ms?: number | null;
+  /** Provider-supplied human label, e.g. a model-scoped limit name. */
+  label?: string | null;
+  pace?: Pace | null;
+  /**
+   * Seconds until this window runs dry at the observed rate — the same
+   * projection as {@link UsageWindow.pace}, stated as a countdown. `null`
+   * wherever `pace` is, so the pre-flight omits the sentence rather than
+   * inventing one.
+   */
+  runs_out_in_seconds?: number | null;
 }
 
 export interface ProviderHealth {
@@ -259,6 +305,12 @@ export interface ProviderHealth {
   windows: UsageWindow[];
   reason: string | null;
   checked_at: string;
+  /** Subscription tier as the provider names it (`"Max 20x"`, `"Pro 20x"`). */
+  plan?: string | null;
+  /** True when this snapshot was served from cache after a failed refresh. */
+  stale?: boolean;
+  /** Non-fatal notice shown beside the provider name. */
+  notice?: string | null;
 }
 
 export type LocalModelStatus =
@@ -390,6 +442,12 @@ export interface AuditSidecar {
   /** ISO-8601 UTC. */
   rendered_at: string;
   render_used: RenderUsed;
+  /** Provider id that rendered the body; `null` for a deterministic render. */
+  provider: string | null;
+  /** Model id the provider reported using. */
+  model: string | null;
+  /** The preferred provider failed and another one took over. */
+  fellback: boolean;
 }
 
 export interface AuditData {
@@ -530,6 +588,26 @@ export interface PathValidation {
   message: string | null;
 }
 
+/** Which step of local-git's author cascade this machine lands on. */
+export type AuthorSource = "configured" | "git-identity" | "none";
+
+/** Whether local-git can gather facts, and what is missing when it cannot. */
+export interface StandupReadiness {
+  /** Scan root local-git will read — the configured value or its fallback. */
+  github_dir: string;
+  github_dir_exists: boolean;
+  /** Repos directly under the scan root (depth 1). */
+  repo_count: number;
+  /** `standup_authors`, trimmed and deduped. */
+  configured_authors: string[];
+  /** This machine's `git config` identity, offered as the suggestion. */
+  git_identity: string | null;
+  /** The values that become `git log --author=…` flags. */
+  effective_authors: string[];
+  author_source: AuthorSource;
+  ready: boolean;
+}
+
 /** One detected cloud-sync folder the user may point `dailies_dir` at. */
 export interface CloudFolder {
   /** Stable id, e.g. `icloud-drive`, `onedrive`, `syncthing`. */
@@ -564,6 +642,58 @@ export interface RepoSyncStatus {
   repository: string | null;
   private: boolean | null;
   message: string | null;
+}
+
+// ── Feature prerequisites ─────────────────────────────────────────────────
+
+/** Feature whose external prerequisites are reported together. */
+export type DependencyGroup = "repo_sync" | "local_ai";
+
+export type DependencyState =
+  | "ok"
+  | "missing"
+  /** Installed, but not usable as configured: signed out, nothing selected. */
+  | "misconfigured"
+  /** Not answerable yet, because the check itself needs something missing. */
+  | "unknown";
+
+export type RemediationKind =
+  | "terminal_command"
+  | "in_app_action"
+  | "doc_link";
+
+/** The single next step for one unmet dependency. */
+export interface Remediation {
+  kind: RemediationKind;
+  label: string;
+  /** Exact command, shown verbatim before anything may run it. */
+  command: string | null;
+  url: string | null;
+  /** Whether `run_dependency_remediation` may execute it without a terminal. */
+  runnable: boolean;
+  note: string | null;
+}
+
+export interface Dependency {
+  /** Stable id, e.g. `repo-sync.git`, `local-ai.runtime`. */
+  id: string;
+  group: DependencyGroup;
+  label: string;
+  description: string;
+  state: DependencyState;
+  /** Curated detail — a resolved path or a short reason. Never command output. */
+  detail: string | null;
+  /** `null` exactly when the dependency is satisfied. */
+  remediation: Remediation | null;
+}
+
+export interface RemediationOutcome {
+  dependency_id: string;
+  /** False when the step is the user's to take, so the UI claims nothing. */
+  performed: boolean;
+  message: string;
+  /** The same dependency, re-probed after the step. */
+  dependency: Dependency;
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────
@@ -626,4 +756,50 @@ export interface SchedulerTickEvent {
   /** ISO-8601. */
   next_run_at: string;
   source: SchedulerSource;
+}
+
+/**
+ * Every action that starts work. Mirrors `RunKind` in `src-tauri/src/run_log.rs`
+ * — the wire values are that enum's `snake_case` serde names.
+ */
+export type RunKind =
+  | "compile"
+  | "regenerate"
+  | "gather_preview"
+  | "repo_sync"
+  | "repo_setup"
+  | "repo_discovery"
+  | "cloud_sync"
+  | "provider_test"
+  | "provider_health"
+  | "cli_detect"
+  | "model_download"
+  | "model_delete"
+  | "local_runtime"
+  | "dependency_check"
+  | "dependency_remediation"
+  | "scheduler_unit"
+  | "notification";
+
+/** `run-started` — a run opened; the terminal panel clears and opens. */
+export interface RunStartedEvent {
+  /** Correlates with the matching `run-finished`. */
+  run_id: string;
+  kind: RunKind;
+  /** English header for the panel. */
+  title: string;
+  date: string;
+  host: string;
+  /** Whether this run owns `PipelineStatus` (compile-family runs only). */
+  pipeline: boolean;
+}
+
+/** `run-finished` — the run closed, exactly once per `run-started`. */
+export interface RunFinishedEvent {
+  run_id: string;
+  kind: RunKind;
+  ok: boolean;
+  message: string;
+  duration_ms: number;
+  pipeline: boolean;
 }

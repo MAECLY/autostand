@@ -179,6 +179,32 @@ export interface ProviderAttempt {
 
 `provider_attempts` is deliberately secret-free. It preserves provider rotation and validation provenance without storing stderr, API response bodies, prompts, credentials, or model output.
 
+### Listing DTO (`list_audit_sidecars`)
+
+`list_audit_sidecars` returns the light `AuditSidecar` descriptor rather than the whole document, and it carries the render provenance so a caller can attribute a standup without a second read:
+
+```ts
+export interface AuditSidecar {
+  path: string;
+  date: string;
+  host: string;
+  rendered_at: string;            // ISO-8601 UTC
+  render_used: "llm" | "det" | "llm_fallback";
+  provider: string | null;        // provider id that rendered the body
+  model: string | null;           // model it reported using
+  fellback: boolean;              // an LLM render lost to the deterministic body
+}
+```
+
+Read the three provenance fields together: `render_used: "llm"` means `provider`/`model` wrote the body; `render_used: "llm_fallback"` means the deterministic renderer wrote it and `provider`/`model` name the attempt that lost (both `null` when no provider was reachable at all); `render_used: "det"` means the LLM was never asked.
+
+### Render provenance never enters the standup
+
+Which provider and model rendered a standup is metadata **about** the file, not content **of** it. It lives in the sidecar and in `CompileResult.message`; the markdown a teammate reads must never name it.
+
+- Dashboard → Today shows it in `components/standup/RenderProvenanceNote.tsx`, mounted as a *sibling* of `<StandupPreview>` so it cannot end up inside the previewed — or copied — standup.
+- The invariant is guarded end-to-end by `the_standup_file_never_names_the_render_provider` in `apps/autostand-app/src-tauri/tests/pipeline_e2e.rs`: it compiles a file from an accepted LLM body and asserts the written markdown mentions neither the provider id nor the model.
+
 ---
 
 ## Phantom detection

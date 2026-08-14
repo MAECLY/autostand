@@ -17,13 +17,16 @@ import { vi } from "vitest";
 import type {
   AppConfig,
   AuditData,
+  AuditSidecar,
   CloudFolder,
   CompileResult,
   DataSourceConfig,
   DataSourceConfigs,
   PipelineStatus,
   ProviderConfig,
+  ProviderHealth,
   StandupFileContent,
+  UsageWindow,
 } from "@/lib/types";
 
 // ── invoke ────────────────────────────────────────────────────────────────
@@ -156,6 +159,38 @@ export function makeProviderConfig(
     api_key_ref: null,
     api_base_url: null,
     timeout_secs: 120,
+    ...overrides,
+  };
+}
+
+/**
+ * A quota window that reports nothing.
+ *
+ * The default is deliberately empty: a test that wants a percentage says so,
+ * and one that does not gets the "No data" shape the contract is built around.
+ */
+export function makeUsageWindow(
+  overrides: Partial<UsageWindow> = {},
+): UsageWindow {
+  return {
+    id: "session",
+    used_percent: null,
+    remaining_percent: null,
+    resets_at: null,
+    ...overrides,
+  };
+}
+
+export function makeProviderHealth(
+  overrides: Partial<ProviderHealth> = {},
+): ProviderHealth {
+  return {
+    provider: "claude",
+    availability: "available",
+    source: "provider_reported",
+    windows: [],
+    reason: null,
+    checked_at: "2026-08-13T11:58:00.000Z",
     ...overrides,
   };
 }
@@ -339,6 +374,22 @@ export function makeAuditData(overrides: Partial<AuditData> = {}): AuditData {
     fellback: false,
     hash: "sha256:deadbeef",
     accumulated_count: 0,
+    ...overrides,
+  };
+}
+
+export function makeAuditSidecar(
+  overrides: Partial<AuditSidecar> = {},
+): AuditSidecar {
+  return {
+    path: `/Users/tester/.local/state/autostand/audit/${FIXTURE_DATE}-${FIXTURE_HOST}.json`,
+    date: FIXTURE_DATE,
+    host: FIXTURE_HOST,
+    rendered_at: "2026-08-03T07:15:00Z",
+    render_used: "llm",
+    provider: "claude",
+    model: "claude-sonnet-4",
+    fellback: false,
     ...overrides,
   };
 }

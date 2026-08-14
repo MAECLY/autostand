@@ -14,6 +14,7 @@ pub mod git_ops;
 pub mod notifications;
 pub mod pipeline_runner;
 pub mod render;
+pub mod run_log;
 pub mod scheduler_runtime;
 pub mod state;
 
@@ -87,7 +88,10 @@ pub fn run() {
             commands::sync::configure_cloud_sync,
             commands::sync::get_repo_sync_status,
             commands::sync::setup_repo_sync,
+            commands::dependencies::get_dependency_status,
+            commands::dependencies::run_dependency_remediation,
             commands::repos::discover_repos,
+            commands::readiness::get_standup_readiness,
             commands::settings::get_settings_paths,
             commands::settings::validate_paths,
             notifications::get_notification_status,

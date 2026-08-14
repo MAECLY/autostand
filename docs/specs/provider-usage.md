@@ -179,6 +179,8 @@ pub struct UsageWindow {
     /// Human label when the provider names the window itself (e.g. a model-scoped limit).
     #[serde(default)] pub label: Option<String>,
     #[serde(default)] pub pace: Option<Pace>,
+    /// The same projection as a countdown, so the pre-flight never re-derives it.
+    #[serde(default)] pub runs_out_in_seconds: Option<f64>,
 }
 
 pub struct ProviderHealth {
@@ -249,6 +251,12 @@ pub fn seconds_to_run_out(used: f64, limit: f64, elapsed: Duration) -> Option<f6
 Meter colour resolves by precedence: `no data → spent → pace → absolute bands (80% / 90%)`, fed to
 the existing `Progress` component through `indicatorClassName` (already supported by the UI kit,
 currently unused).
+
+`UsageResource::derive_projection` computes both answers from one elapsed value and stores the
+countdown in `runs_out_in_seconds`, so `pace` and "~35 min" can never contradict each other. The
+countdown rides on `evaluate`'s minimum-elapsed guard: without it, one request in the first seconds
+of a five-hour window would read as "runs out in ~40 seconds". A spent window reports a `pace` and no
+countdown — exhaustion is a state, not a countdown.
 
 ---
 
@@ -408,14 +416,29 @@ component never used.
 ### Status bar
 
 A compact badge showing the active provider's tightest window, so quota is visible where the user
-decides to compile rather than only inside a Settings tab.
+decides to compile rather than only inside a Settings tab. "Active" is resolved exactly as
+`render::provider_chain` resolves it — head of `provider_order`, else `preferred_provider` — so the
+badge can never name one provider while the render uses another.
+
+**No data renders nothing.** A provider with no snapshot, or with no window that reports a share,
+gets no badge at all. A chip reading `0%` or `—` would be a claim about a provider nobody measured.
 
 ### Pre-flight
 
 Before a compile, if the selected provider's tightest window is at or below the configured low
 threshold, the UI states the fact and offers the fallback:
 
-> Claude — 12% of the 5-hour window left, projected to run out in ~35 min. Use Codex instead?
+> Claude — 12% of the 5 h window left, projected to run out in ~35 min. Use Codex instead?
+
+The projection clause is **dropped, not softened**, when there is none: `runs_out_in_seconds` rides
+on `pace`'s minimum-elapsed guard, so a window too young to project says only the percentage.
+
+The dialog never blocks. "Compile anyway" is the primary action and holds initial focus, so anyone
+who already knows their quota dismisses it with Enter. Choosing the alternative moves that provider
+to the head of `provider_order` (the rest of the order is preserved) and **waits for the save**
+before compiling — the render reads the chain from the config store, so firing both at once could
+still render on the provider the user just declined. The offer is withheld when no other configured
+provider is in better shape.
 
 ### Health-aware fallback
 
@@ -424,11 +447,27 @@ providers whose latest snapshot is `exhausted`, `rate_limited`, or `auth_require
 rather than attempted-and-failed, when `fallback_enabled` is on. A provider with `unknown` usage is
 never skipped — absence of data is not evidence of exhaustion.
 
+Three guards keep that invariant honest, all in `render::health_skip_reason`:
+
+| Guard | Why |
+| --- | --- |
+| `unknown`, `low`, `unavailable` and `model_unavailable` never skip | `unknown` is where every provider sits until the first refresh; skipping on it would leave a working machine with no provider. `low` is what the pre-flight warns about, not a refusal. |
+| A snapshot older than **6 h** stops being evidence | Five hours is the shortest quota window any supported provider defines, so an older `exhausted` reading says nothing about the window this render draws from. |
+| Nothing is skipped while `fallback_enabled` is off | The chain is one provider long; skipping it would replace a real attempt with silence. |
+
+The skip is recorded in `provider_attempts` as `status: "skipped"` with reason `usage_exhausted`,
+`usage_rate_limited` or `usage_auth_required`, so the audit sidecar explains the rotation. A skipped
+attempt is **not** fed back into the failure-inferred cache: a skip is a consequence of an earlier
+observation, not a new one, and recording it would let `exhausted` decay into `unavailable` on every
+render that passed the provider over.
+
 ### One threshold
 
-`20.0` is currently hardcoded in `parse_codex_health` (`commands/llm.rs:429`) while
-`notifications.low_usage_threshold_percent` is separately configurable. The config value becomes the
-single source for the badge, the pre-flight, and the notification, so they cannot disagree.
+`notifications.low_usage_threshold_percent` is the single source for the badge, the pre-flight, the
+`ProviderSnapshot::graded` downgrade to `low`/`exhausted`, and the low-usage notification, so they
+cannot disagree. Nothing hardcodes a percentage: the `20.0` that used to live in `parse_codex_health`
+went out with the `codex app-server` spawn, and the frontend reads the config value rather than a
+constant of its own.
 
 ---
 

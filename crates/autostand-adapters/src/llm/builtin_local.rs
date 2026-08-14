@@ -1,13 +1,11 @@
 //! Built-in local GGUF adapter using the process-isolated JSONL sidecar.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use autostand_runlog::proc::{run_process_piped, ProcError, ProcSpec};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 
 use super::{
     CliInfo, LlmAdapter, LlmError, LocalRuntimePolicy, ProviderConfig, RenderModeUsed,
@@ -17,6 +15,14 @@ use super::{
 /// Stable provider id used in configuration and fallback telemetry.
 pub const PROVIDER_ID: &str = "builtin-local";
 const SIDECAR_BINARY: &str = "autostand-local-llm";
+
+/// Step the sidecar's lines are filed under, matching `RunKind`'s vocabulary.
+const RENDER_STEP: &str = "render_llm";
+
+/// Display name for the sidecar in the Terminal.
+///
+/// Never the binary's path: on a dev build it sits under the user's home.
+const SIDECAR_LABEL: &str = "local model";
 
 /// Local provider. It never reads API keys or opens a listening socket.
 #[derive(Debug, Default)]
@@ -203,89 +209,101 @@ async fn sidecar_path(config: &ProviderConfig) -> Option<PathBuf> {
         .map(|info| info.path)
 }
 
+/// One request/response exchange with the sidecar.
+///
+/// Driven through [`run_process_piped`], the spawner's line-protocol mode: the
+/// request line goes in with `write_line`, the `ready` frame and the response
+/// frame come back with `next_line`, and `finish` reaps the child. Neither the
+/// prompt nor the response is ever logged — the response frame *contains the
+/// standup body*, which is why this is the one child that must never be
+/// streamed to the Terminal.
 async fn request(
     executable: &Path,
     request: &SidecarRequest<'_>,
     timeout_secs: u64,
 ) -> Result<SidecarResponse, LlmError> {
-    let mut child = Command::new(executable)
-        .env("AUTOSTAND_RENDER", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| LlmError::CliNotFound {
-            searched: vec![executable.to_path_buf()],
-        })?;
-    let mut stdin = child.stdin.take().ok_or_else(|| LlmError::CliExitError {
-        code: -1,
-        stderr: "sidecar_stdin_unavailable".to_string(),
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| LlmError::CliExitError {
-        code: -1,
-        stderr: "sidecar_stdout_unavailable".to_string(),
-    })?;
+    let budget = timeout_secs.max(1);
     let line = serde_json::to_string(request).map_err(|error| LlmError::ParseError {
         raw: error.to_string(),
     })?;
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|_| LlmError::CliExitError {
-            code: -1,
-            stderr: "sidecar_write_failed".to_string(),
-        })?;
-    stdin
-        .write_all(b"\n")
-        .await
-        .map_err(|_| LlmError::CliExitError {
-            code: -1,
-            stderr: "sidecar_write_failed".to_string(),
-        })?;
-    stdin.shutdown().await.map_err(|_| LlmError::CliExitError {
-        code: -1,
-        stderr: "sidecar_write_failed".to_string(),
+    let mut child = run_process_piped(
+        &ProcSpec::new(executable, RENDER_STEP)
+            .env("AUTOSTAND_RENDER", "1")
+            .timeout(Duration::from_secs(budget))
+            .label(SIDECAR_LABEL),
+    )
+    .map_err(|_| LlmError::CliNotFound {
+        searched: vec![executable.to_path_buf()],
     })?;
-    let read = async move {
-        let mut lines = BufReader::new(stdout).lines();
-        let ready = lines
-            .next_line()
-            .await
-            .map_err(|_| LlmError::ParseError {
-                raw: "invalid_sidecar_ready".to_string(),
-            })?
-            .ok_or_else(|| LlmError::ParseError {
-                raw: "missing_sidecar_ready".to_string(),
-            })?;
-        match serde_json::from_str::<SidecarResponse>(&ready) {
-            Ok(SidecarResponse::Ready {
-                protocol_version: 1,
-            }) => {}
-            _ => {
-                return Err(LlmError::ParseError {
-                    raw: "unsupported_sidecar_protocol".to_string(),
-                })
-            }
-        }
-        let response = lines
-            .next_line()
-            .await
-            .map_err(|_| LlmError::ParseError {
-                raw: "invalid_sidecar_response".to_string(),
-            })?
-            .ok_or_else(|| LlmError::ParseError {
-                raw: "missing_sidecar_response".to_string(),
-            })?;
-        serde_json::from_str(&response).map_err(|error| LlmError::ParseError {
-            raw: error.to_string(),
-        })
-    };
-    tokio::time::timeout(Duration::from_secs(timeout_secs.max(1)), read)
+
+    let outcome = exchange(&mut child, &line).await;
+    if outcome.is_err() {
+        // A half-spoken protocol leaves the sidecar waiting on a request that
+        // will never arrive; `finish` would then block for the whole budget.
+        child.kill().await;
+    }
+    let _ = child.finish().await;
+    outcome
+}
+
+/// Write the request line and read the `ready` + response frames back.
+async fn exchange(
+    child: &mut autostand_runlog::proc::PipedChild,
+    line: &str,
+) -> Result<SidecarResponse, LlmError> {
+    child
+        .write_line(line)
         .await
-        .map_err(|_| LlmError::Timeout {
-            secs: timeout_secs.max(1),
-        })?
+        .map_err(|err| sidecar_io_error(&err))?;
+    child
+        .close_stdin()
+        .await
+        .map_err(|err| sidecar_io_error(&err))?;
+
+    let ready = next_frame(child, "ready").await?;
+    match serde_json::from_str::<SidecarResponse>(&ready) {
+        Ok(SidecarResponse::Ready {
+            protocol_version: 1,
+        }) => {}
+        _ => {
+            return Err(LlmError::ParseError {
+                raw: "unsupported_sidecar_protocol".to_string(),
+            })
+        }
+    }
+
+    let response = next_frame(child, "response").await?;
+    serde_json::from_str(&response).map_err(|error| LlmError::ParseError {
+        raw: error.to_string(),
+    })
+}
+
+/// Read one protocol frame, mapping "budget elapsed" and "stream closed".
+async fn next_frame(
+    child: &mut autostand_runlog::proc::PipedChild,
+    what: &str,
+) -> Result<String, LlmError> {
+    match child.next_line().await {
+        Ok(Some(frame)) => Ok(frame),
+        Ok(None) => Err(LlmError::ParseError {
+            raw: format!("missing_sidecar_{what}"),
+        }),
+        Err(ProcError::Timeout { secs, .. }) => Err(LlmError::Timeout { secs }),
+        Err(_) => Err(LlmError::ParseError {
+            raw: format!("invalid_sidecar_{what}"),
+        }),
+    }
+}
+
+/// Map a pipe failure to the sidecar's existing error vocabulary.
+fn sidecar_io_error(error: &ProcError) -> LlmError {
+    match error {
+        ProcError::Timeout { secs, .. } => LlmError::Timeout { secs: *secs },
+        _ => LlmError::CliExitError {
+            code: -1,
+            stderr: "sidecar_write_failed".to_string(),
+        },
+    }
 }
 
 #[async_trait]
@@ -536,19 +554,43 @@ mod tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&sidecar, permissions).unwrap();
 
-        let response = request(
-            &sidecar,
-            &SidecarRequest::Ping {
-                request_id: "render",
-            },
-            2,
-        )
-        .await
-        .unwrap();
+        let sink = std::sync::Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+        let response = autostand_runlog::scoped(as_ref.clone(), async {
+            request(
+                &sidecar,
+                &SidecarRequest::Ping {
+                    request_id: "render",
+                },
+                2,
+            )
+            .await
+            .unwrap()
+        })
+        .await;
         assert!(matches!(
             response,
             SidecarResponse::Result { request_id, body }
                 if request_id == "render" && body.contains("Local output")
         ));
+
+        // The sidecar is an action, so it shows up — under a name that is not
+        // its path. Its response frame is the standup body and must not.
+        let rendered = sink
+            .lines()
+            .iter()
+            .map(|line| format!("{} {}", line.step, line.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("local model"), "{rendered}");
+        assert!(rendered.contains("render_llm"), "{rendered}");
+        assert!(
+            !rendered.contains("Local output"),
+            "the generated body reached the panel: {rendered}"
+        );
+        assert!(
+            !rendered.contains("fake-sidecar") && !rendered.contains(temp.path().to_str().unwrap()),
+            "the sidecar's path reached the panel: {rendered}"
+        );
     }
 }

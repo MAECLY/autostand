@@ -253,6 +253,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "autostand-core",
+ "autostand-runlog",
  "chrono",
  "dirs 5.0.1",
  "keyring",
@@ -261,6 +262,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -274,6 +276,7 @@ dependencies = [
  "anyhow",
  "autostand-adapters",
  "autostand-core",
+ "autostand-runlog",
  "autostand-scheduler",
  "chrono",
  "dirs 5.0.1",
@@ -327,12 +330,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "autostand-runlog"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "autostand-scheduler"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "autostand-core",
+ "autostand-runlog",
  "chrono",
  "dirs 5.0.1",
  "serde",

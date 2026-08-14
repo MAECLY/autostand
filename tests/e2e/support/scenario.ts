@@ -15,6 +15,7 @@ import type {
   CloudFolder,
   CompileResult,
   DataSourceConfig,
+  Dependency,
   GatherPreview,
   LlmProviderConfig,
   PathValidation,
@@ -81,6 +82,8 @@ export interface BackendState {
   pathValidations: PathValidation[];
   compileResult: CompileResult;
   cloudFolders: CloudFolder[];
+  /** `get_dependency_status` answers; the command filters them by group. */
+  dependencies: Dependency[];
 }
 
 export interface Scenario {
@@ -353,6 +356,9 @@ export function makeSidecars(): AuditSidecar[] {
       host: HOST,
       rendered_at: "2026-08-03T07:15:00Z",
       render_used: "llm",
+      provider: "claude",
+      model: "claude-sonnet-4",
+      fellback: false,
     },
     {
       path: sidecarPath(TODAY, OTHER_HOST),
@@ -360,6 +366,9 @@ export function makeSidecars(): AuditSidecar[] {
       host: OTHER_HOST,
       rendered_at: "2026-08-03T07:20:00Z",
       render_used: "det",
+      provider: null,
+      model: null,
+      fellback: false,
     },
   ];
 }
@@ -404,6 +413,86 @@ export function makeCloudFolders(): CloudFolder[] {
       dailies_path: "/Users/tester/Sync/autostand",
       exists: false,
       provider: "Syncthing",
+    },
+  ];
+}
+
+/**
+ * A machine where Repo Sync is fully set up and Local AI is not: the checklist
+ * has to render a satisfied group and an unmet one side by side, including the
+ * three remediation kinds.
+ */
+export function makeDependencies(): Dependency[] {
+  return [
+    {
+      id: "repo-sync.git",
+      group: "repo_sync",
+      label: "Git",
+      description: "Commits and pushes the standup history from the sync folder.",
+      state: "ok",
+      detail: "/usr/bin/git",
+      remediation: null,
+    },
+    {
+      id: "repo-sync.gh",
+      group: "repo_sync",
+      label: "GitHub CLI",
+      description: "Creates the private repository and verifies it stayed private.",
+      state: "ok",
+      detail: "/opt/homebrew/bin/gh",
+      remediation: null,
+    },
+    {
+      id: "repo-sync.gh-auth",
+      group: "repo_sync",
+      label: "GitHub sign-in",
+      description: "An authenticated github.com account for the GitHub CLI.",
+      state: "ok",
+      detail: null,
+      remediation: null,
+    },
+    {
+      id: "local-ai.sidecar",
+      group: "local_ai",
+      label: "Local inference helper",
+      description:
+        "The autostand-local-llm process that keeps models out of the app process.",
+      state: "ok",
+      detail: "/Applications/Autostand.app/Contents/MacOS/autostand-local-llm",
+      remediation: null,
+    },
+    {
+      id: "local-ai.runtime",
+      group: "local_ai",
+      label: "llama.cpp runtime",
+      description:
+        "Runs GGUF models on this device (llama-completion, or the older llama-cli).",
+      state: "missing",
+      detail: null,
+      remediation: {
+        kind: "terminal_command",
+        label: "Install with Homebrew",
+        command: "brew install llama.cpp",
+        url: "https://github.com/ggml-org/llama.cpp",
+        runnable: true,
+        note: "Already have a build? Point AUTOSTAND_LLAMA_CLI at its executable.",
+      },
+    },
+    {
+      id: "local-ai.model",
+      group: "local_ai",
+      label: "Downloaded model",
+      description: "A verified GGUF model selected for on-device rendering.",
+      state: "missing",
+      detail: "No model has been downloaded yet.",
+      remediation: {
+        kind: "in_app_action",
+        label: "Download a model from the list below.",
+        command: null,
+        url: null,
+        runnable: false,
+        note: null,
+      },
     },
   ];
 }
@@ -503,6 +592,7 @@ export function makeScenario(): Scenario {
       ],
       compileResult: makeCompileResult(),
       cloudFolders: makeCloudFolders(),
+      dependencies: makeDependencies(),
     },
     defer: [],
     errors: {},

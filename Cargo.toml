@@ -6,6 +6,7 @@ members = [
     "crates/autostand-scheduler",
     "apps/autostand-app/src-tauri",
     "crates/autostand-local-llm",
+    "crates/autostand-runlog",
 ]
 
 [workspace.package]
@@ -80,6 +81,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], defau
 autostand-core = { path = "crates/autostand-core" }
 autostand-adapters = { path = "crates/autostand-adapters" }
 autostand-scheduler = { path = "crates/autostand-scheduler" }
+autostand-runlog = { path = "crates/autostand-runlog" }
 
 [profile.dev]
 opt-level = 1  # faster Tauri dev builds

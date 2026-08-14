@@ -70,7 +70,7 @@ None. Local git reads are unauthenticated. The only requirement is that the comm
 2. If that list is empty: this machine's `git config --get user.email`, or `user.name` when no email is configured.
 3. If neither resolves: `DataSourceError::Misconfigured` — the gather fails loudly instead of returning an empty FACTS block.
 
-Step 2 exists because `standup_authors` has no Settings control, so an install that never hand-edits `config.json` carries `[]`. Falling back to the machine identity is deliberately narrow — an *unfiltered* `git log` would report the whole team's commits as the user's own work, which is worse than reporting none. Email alone (not email *and* name) for the same reason: a display name is a basic regex that a teammate's name can also satisfy.
+Step 2 exists because `standup_authors` is optional and `AppConfig` derives `Default`, so an install that never fills it in carries `[]`. Falling back to the machine identity is deliberately narrow — an *unfiltered* `git log` would report the whole team's commits as the user's own work, which is worse than reporting none. Email alone (not email *and* name) for the same reason: a display name is a basic regex that a teammate's name can also satisfy.
 
 ## Failure modes
 

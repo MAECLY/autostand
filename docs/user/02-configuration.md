@@ -29,7 +29,7 @@ Per-card fields:
 
 Enable the providers you want, move them up/down into priority order, and choose whether **Continue with the next provider** is active. The preferred provider is the first entry. Autostand tries the next enabled provider after quota, authentication, model, transport, timeout, empty-output, or validation failures; `Auto` finally uses the deterministic renderer if the chain is exhausted.
 
-The usage panel shows exact percentages only when a supported programmatic source supplies them. Codex reports its account windows through its app-server protocol. Claude Code and Grok remain **Unknown** unless a real render yields an inferred availability failure; Autostand never invents a balance or reset time.
+The usage panel shows exact percentages only when a supported programmatic source supplies them. Codex reports its account windows by reading the login the `codex` CLI already wrote and querying OpenAI's own usage endpoint; the CLI does not have to be installed for this. If that file holds only an `OPENAI_API_KEY`, the row says **Sign in with the CLI for usage** — an API key cannot see subscription quota. Claude Code and Grok remain **Unknown** unless a real render yields an inferred availability failure; Autostand never invents a balance or reset time.
 
 ### Notifications tab
 

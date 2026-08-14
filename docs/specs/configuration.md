@@ -276,8 +276,8 @@ This prevents a render CLI from re-invoking `autostand` and recursing.
 | --- | --- | --- |
 | `github_dir` | `~/Documents/Github` | Where `discover_repos` scans |
 | `dailies_dir` | `<github_dir>/dailies` (resolved to a repo's dailies) | Standup output dir |
-| `standup_authors` | `[]` (must be set) | git author emails/usernames matching "me" |
-| `git_refs` | `--all` | `git log` ref selector |
+| `standup_authors` | `[]` → this machine's `git config` identity | git author emails/usernames matching "me". Edited in Settings → Paths → Commit authors |
+| `git_refs` | `--all` (blank counts as `--all`) | `git log` ref selector. Edited in Settings → Paths → Commit authors → Advanced |
 | `jira_base` | `https://fiftyflowers.atlassian.net/browse` | Jira URL prefix for ticket links |
 | `host_slug_override` | `None` | Manual host slug override (else detected) |
 | `render_mode` | `Auto` | `Auto` = CLI-first with API fallback; `Llm` = force LLM; `Det` = deterministic only |
@@ -339,7 +339,7 @@ The Settings page (`routes/settings.tsx`) exposes these tabs (see `docs/tauri/04
 - Providers — connection settings, ordered failover, and provider usage.
 - Data Sources — enablement for the eight read-only activity sources.
 - Standup Format — preset and output options.
-- Paths and Sync — Cloud Sync creates `<provider-root>/autostand`; optional Repo Sync versions that same directory in a private GitHub repository when `git`, `gh`, and GitHub authentication are available.
+- Paths and Sync — Cloud Sync creates `<provider-root>/autostand`; optional Repo Sync versions that same directory in a private GitHub repository when `git`, `gh`, and GitHub authentication are available. A shared requirements checklist reports each of those three and offers the one next step that satisfies it: a command printed in full before it may run, or the official install guide when no package id can be vouched for on this platform.
 - Scheduler — a human schedule builder (time, days, once/hourly) with cron kept under Advanced, plus self-heal controls.
 - Notifications — OS permission, master opt-in, thresholds, and alert categories.
 - Local AI — curated model downloads, selection, and on-demand/reusable-cache runtime policy. Selecting a model also enables and prefers `builtin-local` in Providers.

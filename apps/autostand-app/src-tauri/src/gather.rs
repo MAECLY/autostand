@@ -32,6 +32,9 @@ use crate::error::AppError;
 /// Cache TTL from `docs/specs/pipeline.md` § Cache — 2700 s (45 min).
 pub const CACHE_TTL: Duration = Duration::from_secs(2700);
 
+/// Step every gather line is filed under, shared with the adapters.
+const GATHER_STEP: &str = "gather";
+
 /// Directory (relative to the state dir) holding the per-source gather cache.
 const CACHE_SUBDIR: &str = "cache";
 
@@ -146,9 +149,14 @@ pub async fn gather_all(window: &DateWindow, config: &AppConfig, state_dir: &Pat
         let key = key.clone();
         handles.push((
             id,
-            tokio::spawn(
-                async move { gather_one(id, &window, &ds_config, &state_dir, &key).await },
-            ),
+            // `inherit` is load-bearing, not decoration: task-locals do not cross
+            // `tokio::spawn`, and every `git`/`gh` this pipeline runs lives inside
+            // one of these tasks. Without it the whole gather — the loudest part of
+            // a compile — logs into the null sink and the Terminal shows nothing
+            // between "gathering" and "rendering".
+            tokio::spawn(autostand_runlog::inherit(async move {
+                gather_one(id, &window, &ds_config, &state_dir, &key).await
+            })),
         ));
     }
 
@@ -191,6 +199,10 @@ async fn gather_one(
 ) -> Result<SourceData, String> {
     if let Some(cached) = read_cache(state_dir, id, window_key) {
         tracing::debug!(source = id, "gather cache hit");
+        autostand_runlog::log(
+            autostand_runlog::LogLine::done(GATHER_STEP, format!("{id} (cached)"))
+                .with_detail("no subprocess"),
+        );
         return Ok(cached);
     }
     let Some(source) = make_source(id) else {
@@ -199,6 +211,9 @@ async fn gather_one(
     if !is_available(id, source.as_ref(), config) {
         return Err(format!("{} is not available", source.display_name()));
     }
+    // The source's own spawns are silent per call (they run per repository);
+    // this line is what tells the user which source is working right now.
+    autostand_runlog::info(GATHER_STEP, format!("reading {id}"));
     let data = source
         .gather(window, config)
         .await
@@ -557,10 +572,10 @@ fn set_mode_0600(_path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_path, clear_cache, digest_bullets, enabled_source_ids, is_fresh, make_source,
-        merge_source_data, non_empty, push_block, read_cache, session_entries, source_config,
-        split_github_enrichment, to_date_window, window_hash, write_cache, write_cache_at,
-        Gathered, CACHE_TTL, SOURCE_ORDER,
+        cache_path, clear_cache, digest_bullets, enabled_source_ids, gather_all, is_fresh,
+        make_source, merge_source_data, non_empty, push_block, read_cache, session_entries,
+        source_config, split_github_enrichment, to_date_window, window_hash, write_cache,
+        write_cache_at, Gathered, CACHE_TTL, SOURCE_ORDER,
     };
     use crate::commands::types::{AppConfig, DataSourceConfigs, ReviewConfig};
     use autostand_adapters::sources::{DateWindow, SourceData};
@@ -598,6 +613,52 @@ mod tests {
             facts: Some(facts.to_string()),
             ..SourceData::default()
         }
+    }
+
+    // -- terminal visibility ------------------------------------------------
+
+    /// The trap this whole migration turns on: every source runs in its own
+    /// `tokio::spawn`, and task-locals do not cross one. If the `inherit` wrapper
+    /// in `gather_all` is ever dropped, the gather — every `git log`, every `gh`
+    /// call — vanishes from the Terminal while still working perfectly, which is
+    /// exactly the kind of regression no other test would catch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spawned_source_still_logs_into_the_run() {
+        let state_dir = temp_dir("inherit");
+        let window = test_window();
+        let key = window_hash(&window);
+        // Cached, so the source answers without touching the machine's repos.
+        write_cache(&state_dir, "local-git", &key, &data_with_facts("FACTS"))
+            .expect("seed the cache");
+
+        let config = AppConfig {
+            data_sources: DataSourceConfigs {
+                github: false,
+                claude_code: false,
+                remember: false,
+                opencode: false,
+                codex: false,
+                gemini_cli: false,
+                grok_cli: false,
+                ..DataSourceConfigs::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let sink = std::sync::Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+        let gathered = autostand_runlog::scoped(as_ref, async {
+            gather_all(&window, &config, &state_dir).await
+        })
+        .await;
+
+        assert_eq!(gathered.facts, "FACTS");
+        let messages = sink.messages().join("\n");
+        assert!(
+            messages.contains("local-git"),
+            "a bare tokio::spawn would have swallowed this: {messages:?}"
+        );
+        let _ = clear_cache(&state_dir);
     }
 
     // -- source_config -----------------------------------------------------

@@ -27,6 +27,8 @@ import {
   onPipelineLog,
   onPipelineProgress,
   onPipelineStarted,
+  onRunFinished,
+  onRunStarted,
   onSchedulerTick,
   tauriApi,
 } from "@/lib/tauri";
@@ -120,10 +122,14 @@ export function usePipelineEvents(): void {
         });
     };
 
+    // `pipeline-started` deliberately does NOT clear the buffer. The compile now
+    // opens a `Run`, so `run-started` already fired — and cleared — a moment
+    // earlier; clearing a second time here would wipe the run's own header and
+    // the lock/sync lines that come between the two events. `run-started` is the
+    // single owner of "a run opened → clear and open the panel".
     track(
       onPipelineStarted((payload) => {
         trigger.current = payload.trigger;
-        clearPipelineLog();
         useUiStore.getState().setTerminalPanel("open");
         queryClient.setQueryData<PipelineStatus>(pipelineStatusKey, (status) => ({
           ...(status ?? IDLE_STATUS),
@@ -140,6 +146,41 @@ export function usePipelineEvents(): void {
     track(
       onPipelineLog((line) => {
         pushPipelineLog(line);
+      }),
+    );
+
+    // Every action that starts work — compile, repo sync, provider test, model
+    // download — brackets itself with `run-started` / `run-finished`. The panel
+    // therefore opens for all of them, not just for a full pipeline run.
+    track(
+      onRunStarted((payload) => {
+        clearPipelineLog();
+        useUiStore.getState().setTerminalPanel("open");
+        if (!payload.pipeline) return;
+        queryClient.setQueryData<PipelineStatus>(pipelineStatusKey, (status) => ({
+          ...(status ?? IDLE_STATUS),
+          state: "gathering",
+          current_date: payload.date,
+          current_host: payload.host,
+          step: null,
+          percent: 0,
+          error: null,
+        }));
+      }),
+    );
+
+    track(
+      onRunFinished((payload) => {
+        // Only the compile-family runs own the dashboard's progress bar; a
+        // provider test must not settle a compile that is still going.
+        if (!payload.pipeline) return;
+        queryClient.setQueryData<PipelineStatus>(pipelineStatusKey, (status) => ({
+          ...(status ?? IDLE_STATUS),
+          state: payload.ok ? "done" : "error",
+          step: null,
+          percent: 100,
+          error: payload.ok ? null : payload.message,
+        }));
       }),
     );
 

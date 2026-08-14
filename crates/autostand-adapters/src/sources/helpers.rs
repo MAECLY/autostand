@@ -4,16 +4,22 @@
 //! ticket-key extraction, subprocess execution with timeout, JSONL discovery,
 //! and window-membership checks.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Duration;
 
+use autostand_runlog::proc::{run_process, ProcError, ProcSpec, StreamPolicy};
 use chrono::NaiveDate;
 use regex::Regex;
-use tokio::process::Command;
 
 use super::DateWindow;
+
+/// Step every data-source subprocess and summary line is filed under.
+///
+/// Matches `RunKind::GatherPreview::step()` in the app crate so the Terminal
+/// colours a source's `git`/`gh` calls the same as the gather step that owns them.
+pub const GATHER_STEP: &str = "gather";
 
 static TICKET_RE: OnceLock<Regex> = OnceLock::new();
 
@@ -55,18 +61,91 @@ pub fn extract_ticket_keys(text: &str) -> Vec<String> {
 
 /// Run a subprocess with a timeout, returning trimmed stdout on success.
 ///
-/// Errors are returned as `String` for caller-side resilience decisions.
+/// [`StreamPolicy::Silent`]: every caller of this function runs it **inside a
+/// per-repository or per-pull-request loop**, so one summary line per spawn
+/// would push the rest of the run out of the Terminal's ring buffer. The source
+/// itself emits one line for the whole sweep — see [`log_sweep`].
+///
+/// Errors are returned as `String` for caller-side resilience decisions. The
+/// child's stderr is deliberately **not** part of that string: these messages
+/// travel into `Gathered::failures`, which `pipeline_runner` renders straight
+/// into the Terminal panel, and `docs/specs/audit.md` keeps stderr out of it.
 pub async fn run_cmd(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<String, String> {
-    let child_fut = Command::new(cmd).args(args).output();
-    let out = tokio::time::timeout(Duration::from_secs(timeout_secs), child_fut)
-        .await
-        .map_err(|_| format!("timeout after {timeout_secs}s: {cmd}"))?
-        .map_err(|e| format!("spawn {cmd}: {e}"))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("{cmd} exited {}: {stderr}", out.status));
+    run_cmd_with(cmd, args, timeout_secs, StreamPolicy::Silent, None).await
+}
+
+/// [`run_cmd`] for a call the user should see: one start line and one end line.
+///
+/// `label` is the display name; it must name the *command*, never a path, a
+/// branch or an organisation (`"gh search prs"`, not `"gh search prs --owner=…"`).
+pub async fn run_cmd_visible(
+    cmd: &str,
+    args: &[&str],
+    timeout_secs: u64,
+    label: &'static str,
+) -> Result<String, String> {
+    run_cmd_with(cmd, args, timeout_secs, StreamPolicy::Summary, Some(label)).await
+}
+
+/// One line summarising a whole [`StreamPolicy::Silent`] sweep.
+///
+/// The counterpart of the silent policy above: the individual spawns stay out of
+/// the panel, but the sweep itself must not.
+pub fn log_sweep(message: impl Into<String>, detail: impl Into<String>) {
+    autostand_runlog::log(
+        autostand_runlog::LogLine::done(GATHER_STEP, message).with_detail(detail),
+    );
+}
+
+/// Shared body of [`run_cmd`] and [`run_cmd_visible`].
+async fn run_cmd_with(
+    cmd: &str,
+    args: &[&str],
+    timeout_secs: u64,
+    stream: StreamPolicy,
+    label: Option<&'static str>,
+) -> Result<String, String> {
+    let mut spec = ProcSpec::new(cmd, Cow::Borrowed(GATHER_STEP))
+        .args(args)
+        .timeout_secs(timeout_secs)
+        .stream(stream);
+    if let Some(label) = label {
+        spec = spec.label(label);
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let display = spec.display_name();
+    let out = run_process(spec).await.map_err(|err| match err {
+        ProcError::Timeout { secs, .. } => format!("timeout after {secs}s: {display}"),
+        ProcError::Spawn { kind, .. } => format!("spawn {display}: {kind}"),
+        ProcError::Io { kind, .. } => format!("io error running {display}: {kind}"),
+    })?;
+    if !out.success {
+        return Err(match out.code {
+            Some(code) => format!("{display} exited {code}"),
+            None => format!("{display} was terminated"),
+        });
+    }
+    Ok(out.stdout_trimmed().to_string())
+}
+
+/// Locate `name` on `PATH` without spawning anything.
+///
+/// WHY a filesystem probe instead of `<program> --version`: this answers
+/// [`super::DataSource::is_available`], which is **synchronous** and is called
+/// from inside the async gather. Spawning there blocked a Tokio worker, and
+/// routing it through the async spawner would mean an async trait method for
+/// all eight sources. A `PATH` walk is both cheaper and truthful enough: a
+/// binary that exists but refuses to run fails in `gather`, where the failure is
+/// recorded and reported.
+pub fn find_on_path(name: &str) -> Option<PathBuf> {
+    find_in(name, std::env::var_os("PATH")?.as_os_str())
+}
+
+/// [`find_on_path`] against an explicit search path, so it is testable without
+/// mutating the process environment other tests are reading concurrently.
+fn find_in(name: &str, path_env: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path_env)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Recursively collect every `*.jsonl` file under `dir` (sorted).
@@ -401,9 +480,11 @@ pub fn attribute_file(path_str: &str, github_dir: &std::path::Path) -> Option<(S
 mod tests {
     #![allow(clippy::unnecessary_wraps)]
     use super::*;
+    use autostand_runlog::{scoped, RecordingSink, SinkRef};
     use chrono::NaiveDate;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn window(start: (i32, u32, u32), end: (i32, u32, u32)) -> DateWindow {
@@ -836,6 +917,87 @@ mod tests {
         let res = run_cmd("definitely-not-a-real-binary-xyz", &[], 5).await;
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("spawn"));
+    }
+
+    /// Every `run_cmd` caller loops over repositories; a per-spawn line would
+    /// bury the run, so the sweep summary is the only thing that may show up.
+    #[tokio::test]
+    async fn run_cmd_stays_out_of_the_terminal() {
+        let sink = Arc::new(RecordingSink::new());
+        let as_ref: SinkRef = sink.clone();
+        let out = scoped(as_ref, async { run_cmd("echo", &["quiet"], 5).await }).await;
+        assert_eq!(out.unwrap(), "quiet");
+        assert!(sink.lines().is_empty(), "{:?}", sink.messages());
+    }
+
+    #[tokio::test]
+    async fn a_visible_call_reaches_the_terminal_without_its_argv() {
+        let sink = Arc::new(RecordingSink::new());
+        let as_ref: SinkRef = sink.clone();
+        let out = scoped(as_ref, async {
+            run_cmd_visible(
+                "echo",
+                &["--owner=acme-private", "/Users/someone/work"],
+                5,
+                "gh search prs",
+            )
+            .await
+        })
+        .await;
+        assert!(out.unwrap().contains("acme-private"), "stdout is returned");
+        let rendered = sink
+            .lines()
+            .iter()
+            .map(|line| format!("{} {}", line.step, line.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("gh search prs"), "{rendered}");
+        assert!(rendered.contains(GATHER_STEP), "{rendered}");
+        assert!(
+            !rendered.contains("acme-private"),
+            "argv leaked: {rendered}"
+        );
+        assert!(!rendered.contains("/Users/"), "path leaked: {rendered}");
+    }
+
+    /// `Gathered::failures` is rendered straight into the panel, so a data
+    /// source's error string may never carry the child's stderr.
+    #[tokio::test]
+    async fn a_failing_command_reports_its_exit_code_and_no_stderr() {
+        let err = run_cmd("sh", &["-c", "echo fatal-credential-hint 1>&2; exit 7"], 5)
+            .await
+            .expect_err("non-zero exit");
+        assert!(err.contains("exited 7"), "{err}");
+        assert!(!err.contains("fatal-credential-hint"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_sweep_summary_is_one_done_line() {
+        let sink = Arc::new(RecordingSink::new());
+        let as_ref: SinkRef = sink.clone();
+        scoped(as_ref, async {
+            log_sweep("local-git scanned", "3 repo(s)");
+        })
+        .await;
+        let lines = sink.lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].step, GATHER_STEP);
+        assert_eq!(lines[0].detail.as_deref(), Some("3 repo(s)"));
+    }
+
+    /// `DataSource::is_available` is synchronous and is called from inside the
+    /// async gather, so it must answer without spawning anything.
+    #[test]
+    fn a_program_is_located_on_path_without_spawning_it() {
+        let dir = TempDir::new().unwrap();
+        let program = dir.path().join("pretend-cli");
+        fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+        let search = dir.path().as_os_str();
+
+        // A file that would exit non-zero is still "available": whether it works
+        // is the first real call's answer, not the lookup's.
+        assert_eq!(find_in("pretend-cli", search), Some(program));
+        assert!(find_in("definitely-not-a-real-binary-xyz", search).is_none());
     }
 
     #[test]

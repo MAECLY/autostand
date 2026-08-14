@@ -2,21 +2,31 @@
 //! API-key resolution from keychain/env.
 
 use super::{LlmError, ProviderConfig};
+use autostand_runlog::proc::{run_process, ProcError, ProcSpec, StreamPolicy};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 
 /// Anti-recursion env var set on every spawned CLI subprocess.
 const RENDER_ENV: (&str, &str) = ("AUTOSTAND_RENDER", "1");
+
+/// Step a provider render is filed under, matching `RunKind`'s vocabulary.
+const RENDER_STEP: &str = "render_llm";
+
+/// Step a provider *probe* (`--version`, a health check) is filed under.
+const DETECT_STEP: &str = "cli_detect";
 
 /// Spawn a CLI subprocess, feed `prompt` to stdin, capture stdout.
 ///
 /// Sets `AUTOSTAND_RENDER=1` plus any `extra_env` entries. Maps exit codes
 /// to [`LlmError::CliExitError`], timeouts to [`LlmError::Timeout`], and a
 /// failure to spawn the binary to [`LlmError::CliNotFound`].
+///
+/// [`StreamPolicy::Summary`] is not a default here but a requirement: this
+/// child's **stdout is the standup body**, so echoing it into the Terminal
+/// would print the user's unreviewed standup into a panel — and its stderr can
+/// carry a bad-credentials line. `run_process` logs neither; only the display
+/// name, the exit code and the duration reach the panel.
 pub async fn run_cli(
     cmd: &str,
     args: &[&str],
@@ -24,49 +34,79 @@ pub async fn run_cli(
     timeout_secs: u64,
     extra_env: &[(&str, &str)],
 ) -> Result<String, LlmError> {
-    let mut command = Command::new(cmd);
-    command
+    run_cli_inner(
+        cmd,
+        args,
+        prompt,
+        timeout_secs,
+        extra_env,
+        RENDER_STEP,
+        StreamPolicy::Summary,
+    )
+    .await
+}
+
+/// [`run_cli`] for a `--version`-style probe.
+///
+/// [`StreamPolicy::Silent`]: a health refresh probes every configured provider,
+/// so five start/end pairs would bury whatever the user actually asked for. The
+/// command that owns the sweep reports the outcome instead.
+pub async fn run_cli_probe(
+    cmd: &str,
+    args: &[&str],
+    timeout_secs: u64,
+) -> Result<String, LlmError> {
+    run_cli_inner(
+        cmd,
+        args,
+        "",
+        timeout_secs,
+        &[],
+        DETECT_STEP,
+        StreamPolicy::Silent,
+    )
+    .await
+}
+
+/// Shared body of [`run_cli`] and [`run_cli_probe`].
+async fn run_cli_inner(
+    cmd: &str,
+    args: &[&str],
+    prompt: &str,
+    timeout_secs: u64,
+    extra_env: &[(&str, &str)],
+    step: &'static str,
+    stream: StreamPolicy,
+) -> Result<String, LlmError> {
+    let mut spec = ProcSpec::new(cmd, step)
         .args(args)
-        .kill_on_drop(true)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdin(prompt.as_bytes().to_vec())
+        .timeout(Duration::from_secs(timeout_secs))
+        .stream(stream)
         .env(RENDER_ENV.0, RENDER_ENV.1);
-    for (k, v) in extra_env {
-        command.env(k, v);
+    for (key, value) in extra_env {
+        spec = spec.env(key, value);
     }
-
-    let mut child = command.spawn().map_err(|_| LlmError::CliNotFound {
-        searched: vec![PathBuf::from(cmd)],
-    })?;
-
-    let stdin = child.stdin.take();
-    let prompt_owned = prompt.to_string();
-    tokio::spawn(async move {
-        if let Some(mut stdin) = stdin {
-            let _ = stdin.write_all(prompt_owned.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-        }
-    });
-
-    let wait = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output());
-    match wait.await {
-        Ok(Ok(output)) => {
-            if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-            } else {
-                Err(LlmError::CliExitError {
-                    code: output.status.code().unwrap_or(-1),
-                    stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-                })
-            }
-        }
-        Ok(Err(e)) => Err(LlmError::CliExitError {
+    let output = run_process(spec).await.map_err(|err| match err {
+        ProcError::Spawn { .. } => LlmError::CliNotFound {
+            searched: vec![PathBuf::from(cmd)],
+        },
+        ProcError::Timeout { secs, .. } => LlmError::Timeout { secs },
+        // The kind alone: the io error's message can embed the resolved path.
+        ProcError::Io { kind, .. } => LlmError::CliExitError {
             code: -1,
-            stderr: e.to_string(),
-        }),
-        Err(_) => Err(LlmError::Timeout { secs: timeout_secs }),
+            stderr: format!("io error ({kind})"),
+        },
+    })?;
+    if output.success {
+        return Ok(output.stdout_trimmed().to_string());
     }
+    // stderr travels to the caller, never to the Terminal: `probe_failure` in
+    // the app crate reduces it to the exit code before anything is displayed.
+    Err(LlmError::CliExitError {
+        code: output.code.unwrap_or(-1),
+        stderr: output.stderr_trimmed().to_string(),
+    })
 }
 
 /// POST a JSON body and parse the JSON response.
@@ -222,8 +262,9 @@ mod tests {
     #![allow(clippy::unnecessary_wraps)]
     use super::*;
     use crate::llm::{ProviderConfig, ProviderMode};
+    use autostand_runlog::{scoped, RecordingSink, SinkRef};
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -349,5 +390,84 @@ mod tests {
         let cfg = cfg(None, None);
         let result = resolve_cli_cmd(&cfg, "definitely-not-a-real-binary-xyz").await;
         assert!(result.is_none());
+    }
+
+    // -- terminal visibility ------------------------------------------------
+
+    /// A render is an action, so it must appear. But this child's stdout *is*
+    /// the user's standup and its stdin is the prompt, so the panel may only
+    /// learn that a provider ran and how it ended.
+    #[tokio::test]
+    async fn a_render_is_visible_but_its_prompt_and_body_never_are() {
+        let sink = Arc::new(RecordingSink::new());
+        let as_ref: SinkRef = sink.clone();
+        let body = scoped(as_ref, async {
+            run_cli(
+                "cat",
+                &[],
+                "Yesterday I shipped the auth migration",
+                10,
+                &[],
+            )
+            .await
+        })
+        .await
+        .expect("cat runs");
+
+        assert_eq!(body, "Yesterday I shipped the auth migration");
+        let rendered = sink
+            .lines()
+            .iter()
+            .map(|line| format!("{} {}", line.step, line.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("render_llm"), "{rendered}");
+        assert!(rendered.contains("cat"), "{rendered}");
+        assert!(
+            !rendered.contains("auth migration"),
+            "the standup body reached the panel: {rendered}"
+        );
+    }
+
+    /// A failing provider hands stderr back to the caller (`probe_failure` needs
+    /// the exit code) but never to the Terminal.
+    #[tokio::test]
+    async fn a_failing_render_keeps_its_stderr_out_of_the_terminal() {
+        let sink = Arc::new(RecordingSink::new());
+        let as_ref: SinkRef = sink.clone();
+        let error = scoped(as_ref, async {
+            run_cli(
+                "sh",
+                &["-c", "echo invalid-api-key-hint 1>&2; exit 2"],
+                "",
+                10,
+                &[],
+            )
+            .await
+            .expect_err("non-zero exit")
+        })
+        .await;
+
+        match &error {
+            LlmError::CliExitError { code, stderr } => {
+                assert_eq!(*code, 2);
+                assert!(stderr.contains("invalid-api-key-hint"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(!sink.messages().join("\n").contains("invalid-api-key-hint"));
+    }
+
+    /// Health refreshes probe every provider; five start/end pairs would bury
+    /// whatever the user actually asked for.
+    #[tokio::test]
+    async fn a_version_probe_stays_silent() {
+        let sink = Arc::new(RecordingSink::new());
+        let as_ref: SinkRef = sink.clone();
+        scoped(as_ref, async {
+            let _ = run_cli_probe("echo", &["v1.2.3"], 10).await;
+        })
+        .await;
+        assert!(sink.lines().is_empty(), "{:?}", sink.messages());
     }
 }

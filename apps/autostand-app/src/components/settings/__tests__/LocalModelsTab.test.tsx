@@ -9,6 +9,7 @@ vi.mock("sonner", () => ({
 
 import { LocalModelsTab } from "@/components/settings/LocalModelsTab";
 import { configKey } from "@/hooks/use-config";
+import { DEPENDENCY_IDS, dependencyGroupKey } from "@/hooks/use-dependencies";
 import { localModelsKey } from "@/hooks/use-local-models";
 import {
   invokeCount,
@@ -16,8 +17,25 @@ import {
   mockInvokeCommands,
   resetTauriMocks,
 } from "@/test/mocks";
-import type { LocalModelInfo, LocalRuntimeUnload } from "@/lib/types";
+import type {
+  Dependency,
+  DependencyState,
+  LocalModelInfo,
+  LocalRuntimeUnload,
+} from "@/lib/types";
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
+
+function makeRuntimeDependency(state: DependencyState): Dependency {
+  return {
+    id: DEPENDENCY_IDS.runtime,
+    group: "local_ai",
+    label: "llama.cpp runtime",
+    description: "Runs GGUF models on this device.",
+    state,
+    detail: null,
+    remediation: null,
+  };
+}
 
 function makeLocalModel(overrides: Partial<LocalModelInfo> = {}): LocalModelInfo {
   return {
@@ -46,16 +64,24 @@ const COLD: LocalRuntimeUnload = {
   bytes_freed: 0,
 };
 
-function renderTab(models: LocalModelInfo[], unloaded: LocalRuntimeUnload = COLD) {
+function renderTab(
+  models: LocalModelInfo[],
+  unloaded: LocalRuntimeUnload = COLD,
+  runtime: DependencyState = "ok",
+) {
+  const dependencies = [makeRuntimeDependency(runtime)];
   mockInvokeCommands({
     get_config: () => makeAppConfig(),
     set_config: () => undefined,
     list_local_models: () => models,
     unload_local_models: () => unloaded,
+    get_dependency_status: () => dependencies,
+    select_local_model: () => undefined,
   });
   const queryClient = createTestQueryClient();
   queryClient.setQueryData(configKey, makeAppConfig());
   queryClient.setQueryData(localModelsKey, models);
+  queryClient.setQueryData(dependencyGroupKey("local_ai"), dependencies);
   return renderWithProviders(<LocalModelsTab />, { queryClient });
 }
 
@@ -130,5 +156,43 @@ describe("LocalModelsTab unload control", () => {
     fireEvent.click(unloadButton());
 
     await waitFor(() => expect(invokeCount("list_local_models")).toBeGreaterThan(0));
+  });
+});
+
+describe("LocalModelsTab runtime gating", () => {
+  function useModelButton(): HTMLElement {
+    return screen.getByRole("button", { name: /Use model/ });
+  }
+
+  it("lets an installed model be selected when the runtime is present", () => {
+    renderTab([makeLocalModel({ status: "available" })]);
+
+    expect(useModelButton()).not.toBeDisabled();
+  });
+
+  // Selecting a model without a runtime produces a provider that fails at the
+  // first compile, so the gate belongs here rather than in the failover chain.
+  it("blocks selection and says why when the runtime is missing", () => {
+    renderTab([makeLocalModel({ status: "available" })], COLD, "missing");
+
+    expect(useModelButton()).toBeDisabled();
+    expect(
+      screen.getByText(/Install the llama.cpp runtime listed above/),
+    ).toBeInTheDocument();
+  });
+
+  // Downloading is the prerequisite for using a model later; blocking it would
+  // strand the user with nothing to select once they fix the runtime.
+  it("still allows downloading a model without the runtime", () => {
+    renderTab([makeLocalModel()], COLD, "missing");
+
+    expect(screen.getByRole("button", { name: /Download/ })).not.toBeDisabled();
+  });
+
+  // A probe that has not answered must not disable a control that works.
+  it("does not block selection while the probe is unresolved", () => {
+    renderTab([makeLocalModel({ status: "available" })], COLD, "unknown");
+
+    expect(useModelButton()).not.toBeDisabled();
   });
 });

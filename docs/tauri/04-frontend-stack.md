@@ -395,12 +395,14 @@ The app's home route. Shows today's standup preview + a single "Compile now" but
 
 ### Settings (`routes/settings.tsx`)
 
+Above the tab strip, `StandupReadinessAlert` reports `get_standup_readiness`: whether the scan root exists, how many repos sit under it, and which author filter local-git will apply. A default install fails all three and would otherwise produce an empty standup with no on-screen explanation, so the banner sits outside the tabs — the store may reopen Settings on any of them.
+
 Tabbed configuration UI. Tabs, in strip order:
 
 1. **Providers** — one `ProviderCard` per LLM provider (`claude`, `ollama`, `openai`, `gemini`, `grok`). Each card shows CLI detect status (`detect_cli`), API key status (`get_api_key_status`), mode dropdown (`CliFirst`/`ApiFallback`/`CliOnly`/`ApiOnly`), model Select from `list_provider_models` (free-text "Custom…" / empty-probe fallback), "Test" button (calls `test_llm_provider` and shows latency). "Store key" opens a dialog that calls `store_api_key`. Cards are ordered by `llm.provider_order` (reorder = fallback priority) and the sidebar shows `ProviderUsage`.
 2. **Data Sources** — `DataSourceToggle` list bound to `list_data_sources` + `toggle_data_source`. `local_git` is always on (disabled toggle).
 3. **Standup Format** — `FormatTab`: preset, verbosity and the per-section switches of `config.format`.
-4. **Paths** — `PathInput` for `github_dir`, `dailies_dir`; `validate_paths` runs on blur and shows green/red badges. "Discover repos" button calls `discover_repos` and renders a `RepoInfo` table.
+4. **Paths** — `PathInput` for `github_dir`, `dailies_dir`; `validate_paths` runs on blur and shows green/red badges. `CommitScanCard` edits `standup_authors` (offering this machine's git identity, the value local-git falls back to) and, behind an "Advanced" disclosure, `git_refs`. "Discover repos" button calls `discover_repos` and renders a `RepoInfo` table.
 5. **Sync** — `SyncTab`: cloud folder from `detect_cloud_folders` + `configure_cloud_sync`, and the git mirror from `get_repo_sync_status` + `setup_repo_sync`.
 6. **Scheduler** — `SchedulerForm` bound to `set_scheduler_schedule`; shows `get_scheduler_status` (source: launchd/systemd/task-scheduler/in-process; next run; last run).
 7. **Notifications** — `NotificationsTab`: OS permission via `get_notification_status` / `request_notification_permission`, per-event switches on `config.notifications`, and `send_test_notification`.

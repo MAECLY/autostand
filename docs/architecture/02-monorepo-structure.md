@@ -113,6 +113,7 @@ autostand/
 | `crates/autostand-core/` | Pure-Rust domain: file format, business rules, deterministic renderer. No network, no subprocess. |
 | `crates/autostand-adapters/` | All LLM provider impls and all data source impls. Depends on `autostand-core` types. |
 | `crates/autostand-scheduler/` | Cron + triggers + lock + self-heal. Depends on `autostand-core` for compile entry point. |
+| `crates/autostand-runlog/` | Terminal run log: the neutral sink (a Tokio task-local) plus `proc`, the only process spawner in the workspace. Depends on nothing inside this repo and deliberately not on `tauri`. |
 | `design-system/` | Tokens, base shadcn/ui components, app-specific composite components, Storybook config. |
 | `brand/` | Logo SVG/PNG/icon variants used by the app and landing page. |
 | `docs/` | This documentation tree. |
@@ -132,14 +133,18 @@ flowchart TD
   CORE["crates/autostand-core"]
   ADAPT["crates/autostand-adapters"]
   SCHED["crates/autostand-scheduler"]
+  RUNLOG["crates/autostand-runlog"]
 
   MAIN --> CMD
   CMD --> CORE
   CMD --> ADAPT
   CMD --> SCHED
+  CMD --> RUNLOG
 
   ADAPT --> CORE
   SCHED --> CORE
+  ADAPT --> RUNLOG
+  SCHED --> RUNLOG
 
   subgraph Frontend["apps/autostand-app/src"]
     REACT["React + Vite"]
@@ -152,9 +157,17 @@ Key invariants:
 - `autostand-core` depends on **nothing** inside this repo. Only external crates
   (`serde`, `chrono`, `regex`, `sha2`, `thiserror`).
 - `autostand-adapters` depends on `autostand-core` for the types it produces
-  (`Fact`, `Note`, `Window`, `Provenance`).
-- `autostand-scheduler` depends on `autostand-core` to call `compile_file()`.
-- The Tauri app is the **only** binary target. The three crates are libraries.
+  (`Fact`, `Note`, `Window`, `Provenance`), and on `autostand-runlog` because
+  every `git`, `gh` and provider CLI it starts goes through the single spawner.
+- `autostand-scheduler` depends on `autostand-core` to call `compile_file()`,
+  and on `autostand-runlog` for the same reason (`launchctl`/`systemctl`/
+  `schtasks`, plus the lock's liveness probe).
+- `autostand-runlog` depends on **nothing** inside this repo, and on `tauri`
+  least of all: that is what lets `autostand-adapters` and `autostand-scheduler`
+  log into the desktop app's Terminal panel without knowing it exists. The app
+  crate supplies the sink (`run_log::TauriSink`).
+- The Tauri app is the **only** binary target (plus the `autostand-local-llm`
+  sidecar). The crates are libraries.
 
 ---
 

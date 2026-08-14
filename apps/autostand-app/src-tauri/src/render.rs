@@ -33,8 +33,8 @@ use autostand_adapters::llm::traits::{
 use autostand_core::provenance::extract_tickets;
 
 use crate::commands::types::{
-    AppConfig, LocalRuntimePolicy, ProviderConfig, ProviderFallbackPolicy, ProviderMode,
-    RenderMode, StandupFormatConfig,
+    AppConfig, LocalRuntimePolicy, ProviderAvailability, ProviderConfig, ProviderFallbackPolicy,
+    ProviderHealth, ProviderMode, RenderMode, StandupFormatConfig,
 };
 
 // ── Canonical prompt ──────────────────────────────────────────────────────
@@ -383,6 +383,54 @@ fn provider_chain(config: &AppConfig, env_override: Option<&str>) -> Vec<String>
         ordered.truncate(1);
     }
     ordered
+}
+
+/// How long a health snapshot stays evidence for a skip decision, in seconds.
+///
+/// WHY bounded: five hours is the shortest quota window any supported provider
+/// defines, so an `exhausted` reading older than that says nothing about the
+/// window this render would draw from. Acting on it would be the same mistake as
+/// acting on `unknown` — treating absence of current data as a verdict.
+const HEALTH_EVIDENCE_MAX_AGE_SECS: i64 = 6 * 3_600;
+
+/// Why the failover chain should pass over a provider without attempting it.
+///
+/// `provider_order` stays the user's preference: this never reorders anything and
+/// never promotes a provider. It only converts a *known* dead end into a skip, so
+/// the audit sidecar records `usage_exhausted` instead of a render that was
+/// always going to fail.
+///
+/// The invariant, tested below and not negotiable: a provider whose usage is
+/// `unknown` is **never** skipped. Unknown is where every provider sits until the
+/// user refreshes Settings, so skipping on it would leave a working machine with
+/// no provider at all. The same goes for `low` — low is a warning the pre-flight
+/// raises, not a reason to refuse a render the user asked for.
+fn health_skip_reason(
+    fallback_enabled: bool,
+    health: Option<&ProviderHealth>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<&'static str> {
+    // Without fallback there is nowhere to skip *to*: the chain is one provider
+    // long, and refusing it would replace a real attempt with silence.
+    if !fallback_enabled {
+        return None;
+    }
+    let health = health?;
+    let checked_at = chrono::DateTime::parse_from_rfc3339(&health.checked_at).ok()?;
+    let age = now.signed_duration_since(checked_at.with_timezone(&chrono::Utc));
+    if age.num_seconds() < 0 || age.num_seconds() > HEALTH_EVIDENCE_MAX_AGE_SECS {
+        return None;
+    }
+    match health.availability {
+        ProviderAvailability::Exhausted => Some("usage_exhausted"),
+        ProviderAvailability::RateLimited => Some("usage_rate_limited"),
+        ProviderAvailability::AuthRequired => Some("usage_auth_required"),
+        ProviderAvailability::Available
+        | ProviderAvailability::Low
+        | ProviderAvailability::ModelUnavailable
+        | ProviderAvailability::Unavailable
+        | ProviderAvailability::Unknown => None,
+    }
 }
 
 /// Synthesize the provider entry for `provider_id`, defaulting when config has none.
@@ -1004,6 +1052,23 @@ async fn render_llm_outcome_inner(
             });
             continue;
         }
+        if let Some(reason) = health_skip_reason(
+            config.llm.fallback_enabled,
+            crate::commands::llm::cached_provider_health(&provider_id).as_ref(),
+            chrono::Utc::now(),
+        ) {
+            tracing::warn!(provider = %provider_id, reason, "provider skipped on last known usage");
+            log(&format!("provider {provider_id} skipped — {reason}"));
+            attempts.push(ProviderAttempt {
+                provider: provider_id,
+                channel: None,
+                model: entry.model,
+                status: ProviderAttemptStatus::Skipped,
+                reason: Some(reason.to_string()),
+                latency_ms: None,
+            });
+            continue;
+        }
         let Some(adapter) = adapter_for(&provider_id) else {
             tracing::warn!(provider = %provider_id, "unknown LLM provider id");
             log(&format!(
@@ -1275,12 +1340,13 @@ pub fn validate_render(
 #[cfg(test)]
 mod tests {
     use super::{
-        adapter_for, attempt_plan, build_prompt, error_kind, is_render_subprocess, parse_mode,
-        provider_chain, provider_config, provider_config_with_local_policy, render_via_backend,
-        sanitize_body, strip_code_fence, system_prompt, system_prompt_for, validate_render,
-        AdapterConfig, AdapterLocalRuntimePolicy, AdapterMode, LlmError, PromptInputs,
-        ProviderAttemptStatus, ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed,
-        RenderOutput, MAX_RENDER_CHARS, PROVIDER_ENV,
+        adapter_for, attempt_plan, build_prompt, error_kind, health_skip_reason,
+        is_render_subprocess, parse_mode, provider_chain, provider_config,
+        provider_config_with_local_policy, render_via_backend, sanitize_body, strip_code_fence,
+        system_prompt, system_prompt_for, validate_render, AdapterConfig,
+        AdapterLocalRuntimePolicy, AdapterMode, LlmError, PromptInputs, ProviderAttemptStatus,
+        ProviderAvailability, ProviderConfig, ProviderHealth, ProviderMode, RenderBackend,
+        RenderModeUsed, RenderOutput, HEALTH_EVIDENCE_MAX_AGE_SECS, MAX_RENDER_CHARS, PROVIDER_ENV,
     };
     use crate::commands::types::{
         AppConfig, LlmConfig, LocalRuntimePolicy, ProviderFallbackPolicy, StandupFormatConfig,
@@ -1768,6 +1834,126 @@ _Work completed August 11–12, 2026._\n\
         config.llm.fallback_enabled = false;
         assert_eq!(provider_chain(&config, None), ["openai"]);
         assert_eq!(provider_chain(&config, Some("grok")), ["grok"]);
+    }
+
+    // ── health-aware failover ─────────────────────────────────────────────
+
+    fn health_at(
+        availability: ProviderAvailability,
+        checked_at: chrono::DateTime<chrono::Utc>,
+    ) -> ProviderHealth {
+        ProviderHealth {
+            provider: "claude".to_string(),
+            availability,
+            checked_at: checked_at.to_rfc3339(),
+            ..ProviderHealth::default()
+        }
+    }
+
+    /// The invariant this whole feature hangs on. Every provider reads `unknown`
+    /// until the user refreshes Settings, so skipping on it would leave a working
+    /// machine with no provider at all.
+    #[test]
+    fn a_provider_with_unknown_usage_is_never_skipped() {
+        let now = chrono::Utc::now();
+        assert_eq!(
+            health_skip_reason(
+                true,
+                Some(&health_at(ProviderAvailability::Unknown, now)),
+                now
+            ),
+            None
+        );
+        // No snapshot at all is the same absence of evidence.
+        assert_eq!(health_skip_reason(true, None, now), None);
+    }
+
+    #[test]
+    fn only_a_measured_dead_end_is_skipped() {
+        let now = chrono::Utc::now();
+        for (availability, expected) in [
+            (ProviderAvailability::Exhausted, Some("usage_exhausted")),
+            (
+                ProviderAvailability::RateLimited,
+                Some("usage_rate_limited"),
+            ),
+            (
+                ProviderAvailability::AuthRequired,
+                Some("usage_auth_required"),
+            ),
+            (ProviderAvailability::Available, None),
+            // Low is what the pre-flight warns about, not a refusal to render.
+            (ProviderAvailability::Low, None),
+            (ProviderAvailability::ModelUnavailable, None),
+            (ProviderAvailability::Unavailable, None),
+            (ProviderAvailability::Unknown, None),
+        ] {
+            assert_eq!(
+                health_skip_reason(true, Some(&health_at(availability, now)), now),
+                expected,
+                "{availability:?}"
+            );
+        }
+    }
+
+    /// Without fallback the chain is one provider long: skipping it would replace
+    /// a real attempt with silence.
+    #[test]
+    fn nothing_is_skipped_while_fallback_is_off() {
+        let now = chrono::Utc::now();
+        assert_eq!(
+            health_skip_reason(
+                false,
+                Some(&health_at(ProviderAvailability::Exhausted, now)),
+                now
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_stale_reading_stops_being_evidence() {
+        let now = chrono::Utc::now();
+        let fresh = now - chrono::Duration::seconds(HEALTH_EVIDENCE_MAX_AGE_SECS - 60);
+        assert_eq!(
+            health_skip_reason(
+                true,
+                Some(&health_at(ProviderAvailability::Exhausted, fresh)),
+                now
+            ),
+            Some("usage_exhausted")
+        );
+        let ancient = now - chrono::Duration::seconds(HEALTH_EVIDENCE_MAX_AGE_SECS + 60);
+        assert_eq!(
+            health_skip_reason(
+                true,
+                Some(&health_at(ProviderAvailability::Exhausted, ancient)),
+                now
+            ),
+            None
+        );
+    }
+
+    /// A clock that jumped backwards must not make a future-stamped snapshot
+    /// authoritative forever.
+    #[test]
+    fn an_unparsable_or_future_timestamp_is_not_evidence() {
+        let now = chrono::Utc::now();
+        let future = now + chrono::Duration::seconds(600);
+        assert_eq!(
+            health_skip_reason(
+                true,
+                Some(&health_at(ProviderAvailability::Exhausted, future)),
+                now
+            ),
+            None
+        );
+        let malformed = ProviderHealth {
+            checked_at: "not a timestamp".to_string(),
+            availability: ProviderAvailability::Exhausted,
+            ..ProviderHealth::default()
+        };
+        assert_eq!(health_skip_reason(true, Some(&malformed), now), None);
     }
 
     #[test]

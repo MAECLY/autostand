@@ -13,6 +13,12 @@ import { Badge } from "@autostand/ui/components/badge";
 import { Button } from "@autostand/ui/components/button";
 import { Progress } from "@autostand/ui/components/progress";
 
+import { DependencyChecklist } from "@/components/settings/DependencyChecklist";
+import {
+  DEPENDENCY_IDS,
+  findDependency,
+  useDependencies,
+} from "@/hooks/use-dependencies";
 import {
   useAcceptLocalModelTerms,
   useCancelLocalModelDownload,
@@ -79,6 +85,14 @@ export function LocalModelsTab() {
   const select = useSelectLocalModel();
   const acceptTerms = useAcceptLocalModelTerms();
   const unload = useUnloadLocalModels();
+  const dependencies = useDependencies("local_ai");
+  // Only a positive "missing" blocks selection. An unresolved or failed probe
+  // must never disable a control that would otherwise have worked — and a
+  // download stays available either way, since it is the prerequisite for
+  // using a model once the runtime is installed.
+  const runtimeMissing =
+    findDependency(dependencies.data, DEPENDENCY_IDS.runtime)?.state ===
+    "missing";
   const runtimePolicy = config.data?.llm.local_runtime_policy ?? "on_demand";
   const cachedBytes = (models.data ?? []).reduce(
     (total, model) => total + model.runtime_cache_bytes,
@@ -114,6 +128,11 @@ export function LocalModelsTab() {
           verified with SHA-256 and stored in Autostand app data.
         </p>
       </div>
+
+      <DependencyChecklist
+        group="local_ai"
+        description="On-device rendering needs all three. Downloading a model works without them."
+      />
 
       <div className="flex flex-col gap-3">
         <div>
@@ -252,7 +271,11 @@ export function LocalModelsTab() {
                   </Button>
                 ) : null}
                 {model.status === "available" && !model.selected ? (
-                  <Button type="button" onClick={() => select.mutate(model.id)}>
+                  <Button
+                    type="button"
+                    disabled={runtimeMissing}
+                    onClick={() => select.mutate(model.id)}
+                  >
                     <Check aria-hidden="true" /> Use model
                   </Button>
                 ) : null}
@@ -267,6 +290,13 @@ export function LocalModelsTab() {
                 ) : null}
               </div>
             </div>
+
+            {runtimeMissing && model.status === "available" && !model.selected ? (
+              <p className="text-xs text-warning">
+                Install the llama.cpp runtime listed above before selecting this
+                model. Downloading is unaffected.
+              </p>
+            ) : null}
 
             {model.status === "downloading" || model.downloaded_bytes > 0 ? (
               <div className="flex flex-col gap-1">

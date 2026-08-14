@@ -26,6 +26,7 @@ tauri-build = { version = "2", features = [] }
 autostand-core = { workspace = true }
 autostand-adapters = { workspace = true }
 autostand-scheduler = { workspace = true }
+autostand-runlog = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"

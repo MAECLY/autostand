@@ -1,5 +1,5 @@
 /**
- * Typed wrappers over the 28 Tauri IPC commands and the 6 backend events.
+ * Typed wrappers over the 28 Tauri IPC commands and the 8 backend events.
  *
  * This is the only module in the app allowed to import from
  * `@tauri-apps/api` — everything else goes through `tauriApi` and the
@@ -20,6 +20,8 @@ import type {
   CloudSyncSelection,
   CompileResult,
   DataSourceConfig,
+  Dependency,
+  DependencyGroup,
   GatherPreview,
   LlmProviderConfig,
   LocalModelInfo,
@@ -39,11 +41,15 @@ import type {
   RegenerationApplied,
   RegenerationPreview,
   RegenerationResolution,
+  RemediationOutcome,
   RepoSyncStatus,
+  RunFinishedEvent,
+  RunStartedEvent,
   SchedulerStatus,
   SchedulerTickEvent,
   SettingsPaths,
   StandupFileContent,
+  StandupReadiness,
   TestProviderResult,
 } from "@/lib/types";
 
@@ -112,6 +118,8 @@ export const tauriApi = {
     invoke<void>("set_scheduler_enabled", { enabled }),
 
   discoverRepos: () => invoke<RepoInfo[]>("discover_repos"),
+  getStandupReadiness: () =>
+    invoke<StandupReadiness>("get_standup_readiness"),
 
   getSettingsPaths: () => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths: () => invoke<PathValidation[]>("validate_paths"),
@@ -127,6 +135,12 @@ export const tauriApi = {
     invoke<RepoSyncStatus>("setup_repo_sync", {
       repoName: repoName?.trim() || null,
     }),
+
+  // Each call spawns child processes on the Rust side; cache aggressively.
+  getDependencyStatus: (group?: DependencyGroup) =>
+    invoke<Dependency[]>("get_dependency_status", { group: group ?? null }),
+  runDependencyRemediation: (dependencyId: string) =>
+    invoke<RemediationOutcome>("run_dependency_remediation", { dependencyId }),
 
   storeApiKey: (provider: string, key: string) =>
     invoke<void>("store_api_key", { provider, key }),
@@ -174,6 +188,15 @@ export const onPipelineDone = eventHelper<PipelineDoneEvent>("pipeline-done");
 
 export const onPipelineError =
   eventHelper<PipelineErrorEvent>("pipeline-error");
+
+/**
+ * `run-started` / `run-finished` bracket every action that starts work — a
+ * compile, a repo sync, a provider test, a model download. The lines in between
+ * arrive on `pipeline-log`, which is why the terminal viewer needed no change.
+ */
+export const onRunStarted = eventHelper<RunStartedEvent>("run-started");
+
+export const onRunFinished = eventHelper<RunFinishedEvent>("run-finished");
 
 export const onSchedulerTick =
   eventHelper<SchedulerTickEvent>("scheduler-tick");

@@ -48,6 +48,8 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `select_local_model` | `{ modelId: string }` | `void` | Select an installed, size-valid catalog model | `commands::local_models` |
 | `accept_local_model_terms` | `{ modelId: string }` | `void` | Persist acceptance of the catalog's exact terms version | `commands::local_models` |
 | `unload_local_models` | — | `LocalRuntimeUnload` | Terminate any process still holding a managed GGUF and delete the reusable prompt caches; model files are kept | `commands::local_models` |
+| `get_dependency_status` | `{ group: "repo_sync" \| "local_ai" \| null }` | `Dependency[]` | Probe one feature's external prerequisites (or all) and attach the single next step for each unmet one. Spawns child processes — cache aggressively | `commands::dependencies` |
+| `run_dependency_remediation` | `{ dependencyId: string }` | `RemediationOutcome` | Perform the step the user explicitly asked for: open the documentation link, or run the Homebrew install already shown verbatim. Returns `performed: false` for steps only the user can take | `commands::dependencies` |
 | `get_notification_status` | — | `NotificationStatus` | Read OS permission and saved notification preferences without prompting | `notifications` |
 | `request_notification_permission` | — | `string` | Ask for OS permission after an explicit Settings action | `notifications` |
 | `send_test_notification` | — | `boolean` | Send a content-free test alert; respects master opt-in and dedup policy | `notifications` |
@@ -66,6 +68,7 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `set_scheduler_schedule` | `{ cron: string }` | `void` | Persist cron + reinstall system unit | `autostand-scheduler::set_schedule` |
 | `trigger_run_now` | — | `CompileResult` | Manually trigger a compile outside the cron schedule | `autostand-core::pipeline::trigger(Manual)` |
 | `discover_repos` | — | `RepoInfo[]` | Scan `GITHUB_DIR` for git repos (depth-1) | `autostand-adapters::git::discover` |
+| `get_standup_readiness` | — | `StandupReadiness` | Whether local-git can gather at all: scan root, depth-1 repo count, and the author filter it will apply (configured list → machine git identity → none) | `commands::readiness` |
 | `get_settings_paths` | — | `SettingsPaths` | Return all configured paths (GITHUB_DIR, dailies dir, claude dir, etc.) | `autostand-core::config::paths` |
 | `validate_paths` | — | `PathValidation[]` | Check each path exists + readable; returns per-path ok/missing | `autostand-core::config::validate` |
 | `open_in_file_manager` | `{ path: string }` | `void` | Open a directory in the OS file manager (Finder / Explorer / `xdg-open`). Rejects blank, relative, and non-directory paths before the shell handoff: `invalid`, or `not_found` when the directory is gone | `tauri_plugin_opener::open_path` |
@@ -208,11 +211,38 @@ export type ProviderAvailability =
   | "unavailable"
   | "unknown";
 
+/** Whether a resource fills a meter (`consumption`) or drains (`balance`). */
+export type ResourceKind = "consumption" | "balance";
+
+export type UsageUnit =
+  | "percent"
+  | "usd"
+  | "credits"
+  | "requests"
+  | "tokens"
+  | "count";
+
+/** Burn-rate projection. Mirrors `autostand_core::pace::Pace`. */
+export type Pace = "ahead" | "on_track" | "behind";
+
 export interface UsageWindow {
   id: string;
   used_percent: number | null;
   remaining_percent: number | null;
   resets_at: string | null;
+  kind?: ResourceKind | null;
+  unit?: UsageUnit | null;
+  /** Raw consumed amount, in `unit`. */
+  used?: number | null;
+  /** Raw cap, in `unit`. */
+  limit?: number | null;
+  /** Raw remaining amount, in `unit`, for `balance` resources. */
+  available?: number | null;
+  period_duration_ms?: number | null;
+  label?: string | null;
+  pace?: Pace | null;
+  /** Seconds until the window runs dry at the observed rate; `null` wherever `pace` is. */
+  runs_out_in_seconds?: number | null;
 }
 
 export interface ProviderHealth {
@@ -222,6 +252,11 @@ export interface ProviderHealth {
   windows: UsageWindow[];
   reason: string | null;
   checked_at: string;
+  /** Subscription tier as the provider names it (`"Max 20x"`). */
+  plan?: string | null;
+  /** True when this snapshot was served from cache after a failed refresh. */
+  stale?: boolean;
+  notice?: string | null;
 }
 
 export type LocalModelStatus =
@@ -321,6 +356,9 @@ export interface AuditSidecar {
   host: string;
   rendered_at: string;          // ISO-8601 UTC
   render_used: "llm" | "det" | "llm_fallback";
+  provider: string | null;      // provider id that rendered the body
+  model: string | null;         // model it reported using
+  fellback: boolean;            // an LLM render lost to the deterministic body
 }
 
 export interface AuditData {
@@ -445,6 +483,49 @@ export interface PathValidation {
   readable: boolean;
   message: string | null;
 }
+
+export type DependencyGroup = "repo_sync" | "local_ai";
+export type DependencyState = "ok" | "missing" | "misconfigured" | "unknown";
+export type RemediationKind = "terminal_command" | "in_app_action" | "doc_link";
+
+export interface Remediation {
+  kind: RemediationKind;
+  label: string;
+  command: string | null;   // exact command, shown before it may be run
+  url: string | null;
+  runnable: boolean;        // false for anything needing a real terminal
+  note: string | null;
+}
+
+export interface Dependency {
+  id: string;               // `repo-sync.git`, `local-ai.runtime`, …
+  group: DependencyGroup;
+  label: string;
+  description: string;
+  state: DependencyState;
+  detail: string | null;    // resolved path or short reason; never command output
+  remediation: Remediation | null;  // null exactly when satisfied
+}
+
+export interface RemediationOutcome {
+  dependency_id: string;
+  performed: boolean;       // false when the step is the user's to take
+  message: string;
+  dependency: Dependency;   // re-probed after the step
+}
+
+export type AuthorSource = "configured" | "git-identity" | "none";
+
+export interface StandupReadiness {
+  github_dir: string;             // scan root actually used (config value or fallback)
+  github_dir_exists: boolean;
+  repo_count: number;             // depth-1 repos under the scan root
+  configured_authors: string[];   // standup_authors, trimmed + deduped
+  git_identity: string | null;    // `git config user.email` (else user.name)
+  effective_authors: string[];    // what becomes `git log --author=…`
+  author_source: AuthorSource;
+  ready: boolean;
+}
 ```
 
 ---
@@ -493,6 +574,7 @@ export const tauriApi = {
   previewRegeneration:(date?: string)               => invoke<RegenerationPreview>("preview_regeneration", { date }),
   applyRegeneration:  (token, resolution, mergedAuto?) => invoke<RegenerationApplied>("apply_regeneration", { token, resolution, mergedAuto }),
   discoverRepos:       ()                          => invoke<RepoInfo[]>("discover_repos"),
+  getStandupReadiness: ()                          => invoke<StandupReadiness>("get_standup_readiness"),
   getSettingsPaths:    ()                          => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths:       ()                          => invoke<PathValidation[]>("validate_paths"),
   openInFileManager:  (path: string)                => invoke<void>("open_in_file_manager", { path }),
@@ -500,6 +582,9 @@ export const tauriApi = {
   configureCloudSync: (rootPath: string)            => invoke<CloudSyncSelection>("configure_cloud_sync", { rootPath }),
   getRepoSyncStatus:  ()                           => invoke<RepoSyncStatus>("get_repo_sync_status"),
   setupRepoSync:      (repoName?: string)           => invoke<RepoSyncStatus>("setup_repo_sync", { repoName }),
+  getDependencyStatus:(group?: DependencyGroup)     => invoke<Dependency[]>("get_dependency_status", { group }),
+  runDependencyRemediation: (dependencyId: string) =>
+                          invoke<RemediationOutcome>("run_dependency_remediation", { dependencyId }),
   storeApiKey:         (provider: string, key: string) =>
                           invoke<void>("store_api_key", { provider, key }),
   getApiKeyStatus:     (provider: string) =>
@@ -525,9 +610,80 @@ The backend emits events using the Tauri app handle. The frontend subscribes wit
 | `pipeline-progress` | `{ date: string, host: string, step: string, percent: number }` | each step | Before each pipeline step in `compile_file` |
 | `pipeline-done` | `CompileResult` | `pipeline::trigger` | After commit_push (or skip) |
 | `pipeline-error` | `{ code: string, message: string, step: string, date: string }` | `pipeline::trigger` catch | On any step failure that aborts the run |
+| `pipeline-log` | `{ date: string, host: string, step: string, level: "info" \| "warn" \| "error" \| "done", message: string, detail?: string }` | `run_log::TauriSink` + `pipeline_runner::emit_log` | Every line the Terminal panel shows |
+| `run-started` | `{ run_id: string, kind: RunKind, title: string, date: string, host: string, pipeline: boolean }` | `run_log::Run::open` | Any action that starts work — compile, repo sync, provider test, model download |
+| `run-finished` | `{ run_id: string, kind: RunKind, ok: boolean, message: string, duration_ms: number, pipeline: boolean }` | `run_log::Run::settle` | Exactly once per `run-started`, including on failure |
 | `scheduler-tick` | `{ next_run_at: string, source: string }` | `autostand-scheduler` | On each scheduler poll (every 60s in-process, or on unit activation) |
 | `provider-health-updated` | `ProviderHealth[]` | `refresh_provider_health` | After an explicit/all-provider usage probe |
 | `local-model-progress` | `LocalModelProgressEvent` | local model downloader | While downloading, after verification, or on corruption |
+
+### Runs: every action is visible in the Terminal
+
+`run-started` / `run-finished` bracket **every** action that starts work, not
+just a full pipeline run. The rule is that nothing spawns a process, calls a
+provider or touches git outside an open `Run`:
+
+```rust
+let run = Run::open(&app_handle, RunKind::RepoSetup);
+let outcome = run.scope(async { do_the_work().await }).await;
+run.settle(outcome, "repository ready")
+```
+
+`Run::scope` installs the run's sink as the Tokio task-local that
+`autostand_runlog::proc` reads, so a `git` spawned deep inside a domain crate
+lands in the panel without that crate knowing what Tauri is.
+
+`RunKind` values: `compile`, `regenerate`, `gather_preview`, `repo_sync`,
+`repo_setup`, `repo_discovery`, `cloud_sync`, `provider_test`,
+`provider_health`, `cli_detect`, `model_download`, `model_delete`,
+`local_runtime`, `dependency_check`, `dependency_remediation`,
+`scheduler_unit`, `notification`.
+
+`pipeline: true` marks the three kinds that own `PipelineStatus` (`compile`,
+`regenerate`, `gather_preview`); every other kind must leave the dashboard's
+progress bar alone.
+
+**Task-locals do not cross `tokio::spawn`.** Wrap any spawned future in
+`autostand_runlog::inherit(…)` or its log lines go to the null sink and vanish
+from the panel. The gather is the case that proves it: it runs one task per data
+source, so an unwrapped spawn there hides every `git log` of a compile.
+
+**`pipeline-started` does not clear the log buffer.** The compile opens a `Run`,
+so `run-started` already fired — and cleared — a moment earlier; clearing again
+would wipe the run header and the lock/sync lines emitted between the two
+events. `run-started` is the single owner of "a run opened → clear and open".
+
+#### What each spawn shows
+
+`ProcSpec::stream` is a per-call-site decision, and the two ends of it are both
+deliberate. `Summary` (the default) logs the display name, the exit code and the
+duration. `Silent` logs nothing. `Lines` additionally echoes stdout, and exists
+for exactly one call site.
+
+| Call site | Policy | Why |
+| --- | --- | --- |
+| `git_ops::run_git` (pull, add, commit, push) | Summary | The flagship action of a compile. Shown as `git <subcommand>`; the argv carries the dailies path and the commit message. |
+| `sources::helpers::run_cmd` (local-git, github) | Silent + one sweep line | One `git log` per repository; fifty summary lines would push the run out of the viewer's ring buffer. |
+| `sources::helpers::run_cmd_visible` (`gh search prs`) | Summary | Two calls per gather, and slow enough that the user wants to see them. |
+| `llm::helpers::run_cli` (5 CLI providers) | Summary | A render **is** an action, but its stdout is the standup body and its stdin the prompt. `Lines` here is forbidden. |
+| `llm::builtin_local` sidecar | Summary (piped) | Same reason; driven through `run_process_piped`. |
+| `llm::detect::get_version`, `run_cli_probe` | Silent | Detection sweeps every provider binary, on every Settings visit. |
+| `dependencies::gh_authenticated` | Silent | Runs behind two status cards that repaint on every render; its output is a credential diagnostic. |
+| `dependencies::homebrew_install` | **Lines** | A cold `brew install` takes minutes, and its stdout is progress text. The only opted-in stdout echo in the app. |
+| `sync::RepoTools` (setup steps) | Summary | An action the user is watching. |
+| `sync::RepoTools` (status probes) | Silent | Four spawns per Settings render. |
+| `local_models` process table / `kill` | Silent | That stdout is every command line on the machine. |
+| `usage::creds::keychain` (`/usr/bin/security`) | Silent | That stdout is a credential. |
+| `scheduler::install` (`launchctl`/`systemctl`/`schtasks`) | Summary; Silent for the best-effort `bootout`/`disable` | An install is an action; the unload that precedes it fails normally and would read as an error. |
+| `scheduler::lock` liveness probe | Silent | Runs while *acquiring* the run lock, before a run exists. |
+
+Two production files are allowed to spawn without the spawner, each with its
+reason pinned in `crates/autostand-runlog/tests/single_spawner.rs` — the test
+that greps the workspace and fails on any other direct `Command::new`:
+`autostand-core::host` (host detection runs inside `Run::open`, before a sink
+exists, and routing it would pull tokio into the domain crate) and
+`autostand-local-llm` (a separate process with no run log; its parent already
+reports it as `local model`).
 
 ### Backend emit (Rust)
 

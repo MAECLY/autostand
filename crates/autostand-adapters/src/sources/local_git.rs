@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
-use super::helpers::{extract_ticket_keys, run_cmd, scan_repos};
+use super::helpers::{extract_ticket_keys, log_sweep, run_cmd, scan_repos};
 use super::{DataSource, DataSourceConfig, DataSourceError, DateWindow, SourceData};
 
 /// Timeout applied to every `git` invocation this source makes.
@@ -68,6 +68,18 @@ impl DataSource for LocalGitDataSource {
         let filter = AuthorFilter::resolve(&config.authors).await?;
         let spec = ScanSpec::new(&repos, window, &config.git_refs);
         let scan = spec.scan_commits(&filter).await;
+        // One `git log` per repository ran silently (see `helpers::run_cmd`);
+        // this is the line that puts the sweep in the Terminal. Repository names
+        // are deliberately absent: only counts are safe to display.
+        log_sweep(
+            "local-git scanned repositories",
+            format!(
+                "{} repo(s), {} with commits, {} failed",
+                repos.len(),
+                scan.sections.len(),
+                scan.errors.len()
+            ),
+        );
 
         if scan.sections.is_empty() {
             return spec.explain_empty_scan(&filter, &scan.errors).await;
@@ -137,10 +149,10 @@ impl AuthorFilter {
         }
         // WHY fall back instead of dropping the filter: an unfiltered `git log`
         // would report the whole team's commits as the user's own work, which is
-        // worse than reporting none. WHY fall back at all: `standup_authors` has no
-        // Settings control, so every install that never hand-edits `config.json`
-        // carries an empty list — which used to skip the commit scan outright and
-        // hand the renderer an empty FACTS block.
+        // worse than reporting none. WHY fall back at all: `standup_authors` is
+        // optional and `AppConfig` derives `Default`, so an install that never
+        // fills the Settings control carries an empty list — which used to skip the
+        // commit scan outright and hand the renderer an empty FACTS block.
         let detected = clean_authors(detected);
         if detected.is_empty() {
             return Err(DataSourceError::Misconfigured(
@@ -184,7 +196,10 @@ impl AuthorFilter {
 }
 
 /// Trim, drop blanks from and dedupe an author list.
-fn clean_authors(raw: &[String]) -> Vec<String> {
+///
+/// Public because the Settings readiness report has to show the *same* list the
+/// filter will be built from; a second implementation in the app would drift.
+pub fn clean_authors(raw: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for author in raw {
         let trimmed = author.trim();
@@ -200,7 +215,11 @@ fn clean_authors(raw: &[String]) -> Vec<String> {
 ///
 /// Email alone when it exists: a display name is a basic regex that a teammate's
 /// name can also satisfy, and a plausible-but-wrong match is worse than none.
-async fn detect_git_identity() -> Vec<String> {
+///
+/// Public because Settings offers this exact value as the suggestion for an
+/// empty `standup_authors`, and a suggestion that differs from the fallback
+/// would teach the user the wrong thing.
+pub async fn detect_git_identity() -> Vec<String> {
     for key in ["user.email", "user.name"] {
         if let Ok(value) = run_cmd("git", &["config", "--get", key], GIT_CONFIG_TIMEOUT_SECS).await
         {

@@ -12,13 +12,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use autostand_runlog::proc::{run_process, ProcSpec, StreamPolicy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 
 use crate::error::AppError;
+use crate::run_log::{Run, RunKind};
 
 const LOCAL_PROVIDER_ID: &str = "builtin-local";
+
+/// Budget for one process-table read or one signal.
+///
+/// Previously unbounded: a `ps` blocked on an unresponsive filesystem would have
+/// hung "Unload" with no way back.
+const PROCESS_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Event emitted while a model is downloaded or verified.
 pub const LOCAL_MODEL_PROGRESS_EVENT: &str = "local-model-progress";
@@ -454,6 +462,7 @@ pub async fn download_local_model(app_handle: AppHandle, model_id: String) -> Re
         );
         if let Err(error) =
             crate::notifications::notify_gui(&app_handle, &config.notifications, &notification)
+                .await
         {
             tracing::warn!(model = model.id, %error, "could not deliver local-model notification");
         }
@@ -690,14 +699,28 @@ pub async fn select_local_model(app_handle: AppHandle, model_id: String) -> Resu
 #[tauri::command]
 pub async fn unload_local_models(app_handle: AppHandle) -> Result<LocalRuntimeUnload, AppError> {
     let dir = models_dir(&app_handle);
-    tokio::task::spawn_blocking(move || unload_runtime(&dir))
-        .await
-        .map_err(|error| AppError::Io(format!("unload task failed: {error}")))?
+    let run = Run::open(&app_handle, RunKind::LocalRuntime);
+    let outcome = run.scope(unload_runtime(&dir)).await;
+    let summary = outcome.as_ref().map_or_else(
+        |_| String::new(),
+        |unload| {
+            format!(
+                "{} process(es) stopped, {} cache file(s) removed",
+                unload.processes_terminated, unload.caches_removed
+            )
+        },
+    );
+    run.settle(outcome, &summary)
 }
 
 /// Processes first: a live run would rewrite the prompt cache as it exits.
-fn unload_runtime(models_dir: &Path) -> Result<LocalRuntimeUnload, AppError> {
-    let processes_terminated = terminate_model_processes(models_dir);
+///
+/// Was a `spawn_blocking` closure. It could not stay one: a blocking task does
+/// not inherit the run's sink, so everything it spawned was invisible. The work
+/// is now async — the process probes are the only slow part and they are
+/// subprocesses anyway.
+async fn unload_runtime(models_dir: &Path) -> Result<LocalRuntimeUnload, AppError> {
+    let processes_terminated = terminate_model_processes(models_dir).await;
     let (caches_removed, bytes_freed) = purge_runtime_caches(models_dir)?;
     Ok(LocalRuntimeUnload {
         processes_terminated,
@@ -732,23 +755,21 @@ fn purge_runtime_caches(models_dir: &Path) -> Result<(u32, u64), AppError> {
     Ok((removed, bytes))
 }
 
-fn terminate_model_processes(models_dir: &Path) -> u32 {
+async fn terminate_model_processes(models_dir: &Path) -> u32 {
     let Some(needle) = models_dir.to_str() else {
         return 0;
     };
-    let Some(table) = process_table() else {
+    let Some(table) = process_table().await else {
         return 0;
     };
-    let terminated = model_holding_pids(&table, needle, std::process::id())
-        .into_iter()
-        .filter(|pid| {
-            let killed = terminate(*pid);
-            if !killed {
-                tracing::warn!(pid, "could not terminate a local runtime process");
-            }
-            killed
-        })
-        .count();
+    let mut terminated = 0_usize;
+    for pid in model_holding_pids(&table, needle, std::process::id()) {
+        if terminate(pid).await {
+            terminated += 1;
+        } else {
+            tracing::warn!(pid, "could not terminate a local runtime process");
+        }
+    }
     u32::try_from(terminated).unwrap_or(u32::MAX)
 }
 
@@ -778,75 +799,67 @@ fn model_holding_pids(table: &str, models_dir: &str, self_pid: u32) -> Vec<u32> 
 ///
 /// WHY a subprocess: the workspace pulls in no `libc`/`sysinfo` dependency, the
 /// same reason `autostand-scheduler::lock` probes liveness with `kill -0`.
+///
+/// [`StreamPolicy::Silent`] and not negotiable: this stdout is **every command
+/// line on the machine**, which is the single most sensitive thing the app ever
+/// reads. The run's closing line reports how many processes were stopped.
 #[cfg(unix)]
-fn process_table() -> Option<String> {
-    use std::process::{Command, Stdio};
-
-    let output = Command::new("ps")
-        .arg("-A")
-        .arg("-o")
-        .arg("pid=,args=")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+async fn process_table() -> Option<String> {
+    let output = run_process(
+        ProcSpec::new("ps", RunKind::LocalRuntime.step())
+            .args(["-A", "-o", "pid=,args="])
+            .timeout(PROCESS_PROBE_TIMEOUT)
+            .stream(StreamPolicy::Silent),
+    )
+    .await
+    .ok()?;
+    output.success.then_some(output.stdout)
 }
 
 /// Windows variant. `tasklist` cannot print command lines, and `wmic` is
 /// deprecated, so the CIM provider is the only source of the model path.
 #[cfg(windows)]
-fn process_table() -> Option<String> {
-    use std::process::{Command, Stdio};
-
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }",
-        ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+async fn process_table() -> Option<String> {
+    let output = run_process(
+        ProcSpec::new("powershell", RunKind::LocalRuntime.step())
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }",
+            ])
+            .timeout(PROCESS_PROBE_TIMEOUT)
+            .stream(StreamPolicy::Silent),
+    )
+    .await
+    .ok()?;
+    output.success.then_some(output.stdout)
 }
 
+/// [`StreamPolicy::Silent`]: one spawn per matched process, and the pid is not
+/// something a user can act on. The run reports the total instead.
 #[cfg(unix)]
-fn terminate(pid: u32) -> bool {
-    use std::process::{Command, Stdio};
-
-    Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+async fn terminate(pid: u32) -> bool {
+    run_process(
+        ProcSpec::new("kill", RunKind::LocalRuntime.step())
+            .args(["-TERM", &pid.to_string()])
+            .timeout(PROCESS_PROBE_TIMEOUT)
+            .stream(StreamPolicy::Silent),
+    )
+    .await
+    .is_ok_and(|output| output.success)
 }
 
 #[cfg(windows)]
-fn terminate(pid: u32) -> bool {
-    use std::process::{Command, Stdio};
-
-    Command::new("taskkill")
-        .arg("/PID")
-        .arg(pid.to_string())
-        .arg("/T")
-        .arg("/F")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+async fn terminate(pid: u32) -> bool {
+    run_process(
+        ProcSpec::new("taskkill", RunKind::LocalRuntime.step())
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .timeout(PROCESS_PROBE_TIMEOUT)
+            .stream(StreamPolicy::Silent),
+    )
+    .await
+    .is_ok_and(|output| output.success)
 }
 
 fn sha256_file(path: &Path) -> Result<String, AppError> {
@@ -1061,20 +1074,40 @@ mod tests {
         assert!(model_holding_pids("  1 anything\n", "", 0).is_empty());
     }
 
-    #[test]
-    fn unload_reports_only_what_it_actually_released() {
+    #[tokio::test]
+    async fn unload_reports_only_what_it_actually_released() {
         let temp = tempfile::tempdir().unwrap();
         seed_cache(temp.path(), &CATALOG[0], 256);
 
-        let summary = unload_runtime(temp.path()).unwrap();
+        let summary = unload_runtime(temp.path()).await.unwrap();
 
         assert_eq!(summary.caches_removed, 1);
         assert_eq!(summary.bytes_freed, 256);
         // Nothing on the machine can reference this fresh temp directory.
         assert_eq!(summary.processes_terminated, 0);
         assert_eq!(
-            unload_runtime(temp.path()).unwrap(),
+            unload_runtime(temp.path()).await.unwrap(),
             LocalRuntimeUnload::default()
+        );
+    }
+
+    /// The unload reads every command line on the machine; not one byte of that
+    /// may reach the panel.
+    #[tokio::test]
+    async fn unload_never_prints_a_process_table_into_the_terminal() {
+        let temp = tempfile::tempdir().unwrap();
+        let sink = std::sync::Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+
+        autostand_runlog::scoped(as_ref, async {
+            unload_runtime(temp.path()).await.unwrap();
+        })
+        .await;
+
+        assert!(
+            sink.lines().is_empty(),
+            "the process probes must stay silent: {:?}",
+            sink.messages()
         );
     }
 

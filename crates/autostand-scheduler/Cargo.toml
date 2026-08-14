@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 autostand-core = { workspace = true }
+autostand-runlog = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

@@ -36,7 +36,7 @@ The CLI/API plan runs inside one provider before the chain advances. Authenticat
 
 Settings distinguishes authoritative quota windows from inferred availability:
 
-- OpenAI/Codex CLI is probed through `codex app-server --stdio` and the `account/rateLimits/read` JSON-RPC method. Reported primary/secondary windows become five-hour/weekly labels when their durations identify them.
+- OpenAI/Codex is probed over HTTP at `chatgpt.com/backend-api/wham/usage`, using the credential the `codex` CLI already wrote (read-only). Windows are classified by their stated duration — 18000s is `session`, 604800s is `weekly` — with the primary/secondary slot order used only when a duration is absent or unfamiliar. See [`03-openai-codex.md`](03-openai-codex.md#usage-reporting).
 - Claude Code and Grok consumer CLIs currently have no supported non-interactive quota contract used by Autostand. They remain `unknown` unless a real render produces a classified failure.
 - A provider failure can produce `failure_inferred` states such as `exhausted`, `rate_limited`, `auth_required`, or `model_unavailable`, but never a fabricated percentage or reset time.
 
