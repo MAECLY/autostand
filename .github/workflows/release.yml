@@ -192,12 +192,17 @@ jobs:
           test -n "$llama_bin"
           cp "$llama_bin" "$binary_dir/llama-completion-${{ matrix.target }}${extension}"
 
-      - uses: tauri-apps/tauri-action@v0
+      # tauri-bundler decides to codesign from the PRESENCE of APPLE_CERTIFICATE,
+      # and a workflow `env:` entry for an unset secret is present-but-empty. It
+      # therefore ran `security import` with an empty certificate and failed the
+      # whole macOS build, rather than producing the unsigned bundle the old
+      # comment here promised. Export the variables only when there is actually a
+      # certificate, so an unconfigured repository builds unsigned and a
+      # configured one signs without any further change.
+      - name: Enable macOS codesigning when its secrets are configured
+        if: runner.os == 'macOS'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS codesigning + notarization. All empty until the secrets are
-          # set, and tauri-action then produces an unsigned build instead of
-          # failing — see docs/user/01-install.md for the Gatekeeper workaround.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -205,6 +210,25 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::notice::No Apple certificate configured — building an unsigned bundle. See the README section on Gatekeeper."
+            exit 0
+          fi
+          # Heredoc form: the certificate is multi-line base64.
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+                      APPLE_SIGNING_IDENTITY KEYCHAIN_PASSWORD \
+                      APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            value="${!name}"
+            [ -n "$value" ] || continue
+            printf '%s<<__AUTOSTAND_ENV__\n%s\n__AUTOSTAND_ENV__\n' "$name" "$value" \
+              >> "$GITHUB_ENV"
+          done
+          echo "::notice::Apple certificate present — the macOS bundle will be signed."
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Windows codesigning. Passed by name only: Tauri v2 signs Windows
           # bundles from `bundle > windows > certificateThumbprint` /
           # `signCommand` in tauri.conf.json, which is not configured yet, so
