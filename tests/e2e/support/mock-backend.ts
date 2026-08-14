@@ -209,7 +209,7 @@ export function installMockBackend(scenario: Scenario): void {
       }
       case "get_provider_health":
       case "refresh_provider_health":
-        return [];
+        return state.providerHealth;
 
       case "compile_standup":
       case "trigger_run_now":

@@ -20,6 +20,7 @@ import type {
   LlmProviderConfig,
   PathValidation,
   PipelineStatus,
+  ProviderHealth,
   RepoInfo,
   SchedulerStatus,
   SettingsPaths,
@@ -81,6 +82,8 @@ export interface BackendState {
   providerTests: Record<string, TestProviderResult>;
   /** `list_provider_models` answers, keyed by provider id. A miss is `[]`. */
   providerModels: Record<string, string[]>;
+  /** `get_provider_health` / `refresh_provider_health` answers, in strip order. */
+  providerHealth: ProviderHealth[];
   /** `read_standup_file` answers, keyed by filing date. A miss is `not_found`. */
   standups: Record<string, StandupFileContent>;
   /** `list_audit_sidecars` answers, keyed by filing date. A miss is an empty list. */
@@ -583,6 +586,98 @@ function makeGatherPreview(): GatherPreview {
  * pipeline is idle, and every settings surface has something to show. Specs
  * mutate the returned object before handing it to `app.start`.
  */
+/**
+ * Provider usage with something in it.
+ *
+ * Deliberately covers all three resource shapes the panel renders — a bounded
+ * percentage, a countdown with a projection, and an unbounded credit balance —
+ * because an empty panel is the one state that says nothing about the feature.
+ */
+export function makeProviderHealth(): ProviderHealth[] {
+  return [
+    {
+      provider: "claude",
+      availability: "available",
+      source: "provider_reported",
+      plan: "Max 20x",
+      stale: false,
+      notice: null,
+      reason: null,
+      checked_at: `${TODAY}T08:55:00Z`,
+      windows: [
+        {
+          id: "session",
+          label: "Session",
+          kind: "consumption",
+          unit: "percent",
+          used: 34,
+          limit: 100,
+          available: null,
+          used_percent: 34,
+          remaining_percent: 66,
+          period_duration_ms: 5 * 60 * 60 * 1000,
+          resets_at: `${TODAY}T15:20:00Z`,
+          pace: "ahead",
+        },
+        {
+          id: "weekly",
+          label: "Weekly",
+          kind: "consumption",
+          unit: "percent",
+          used: 71,
+          limit: 100,
+          available: null,
+          used_percent: 71,
+          remaining_percent: 29,
+          period_duration_ms: 7 * 24 * 60 * 60 * 1000,
+          resets_at: "2026-08-08T00:00:00Z",
+          pace: "on_track",
+        },
+      ],
+    },
+    {
+      provider: "openai",
+      availability: "low",
+      source: "response_headers",
+      plan: "Pro 20x",
+      stale: false,
+      notice: null,
+      reason: null,
+      checked_at: `${TODAY}T08:55:00Z`,
+      windows: [
+        {
+          id: "session",
+          label: "Session",
+          kind: "consumption",
+          unit: "percent",
+          used: 88,
+          limit: 100,
+          available: null,
+          used_percent: 88,
+          remaining_percent: 12,
+          period_duration_ms: 5 * 60 * 60 * 1000,
+          resets_at: `${TODAY}T13:45:00Z`,
+          pace: "behind",
+        },
+        {
+          id: "credits",
+          label: "Credits",
+          kind: "balance",
+          unit: "credits",
+          used: null,
+          limit: null,
+          available: 821,
+          used_percent: null,
+          remaining_percent: null,
+          period_duration_ms: null,
+          resets_at: null,
+          pace: null,
+        },
+      ],
+    },
+  ];
+}
+
 export function makeScenario(): Scenario {
   return {
     state: {
@@ -598,6 +693,7 @@ export function makeScenario(): Scenario {
         claude: ["claude-sonnet-4", "claude-opus-4"],
         ollama: ["llama3.1", "llama3.2:latest"],
       },
+      providerHealth: makeProviderHealth(),
       // Two files, because the two dates are different things: Monday's file
       // holds the weekend's work and is what History browses, while the
       // dashboard is already filling Tuesday's.

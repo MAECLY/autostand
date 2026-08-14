@@ -48,4 +48,4 @@ dailies/
 
 # State / cache (runtime)
 state/
-**/state/
+**/state/tests/e2e/.artifacts/
