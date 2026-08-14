@@ -19,7 +19,6 @@ import { Button } from "@autostand/ui/components/button";
 import {
   Card,
   CardContent,
-  CardHeader,
   CardTitle,
 } from "@autostand/ui/components/card";
 import {
@@ -158,6 +157,19 @@ export function ProviderCard({
   const modeId = `provider-${provider.id}-mode`;
   const timeoutId = `provider-${provider.id}-timeout`;
   const keyId = `provider-${provider.id}-key`;
+  const enabledId = `provider-${provider.id}-enabled`;
+
+  const cliLabel = provider.cli.found
+    ? isBuiltinLocal
+      ? "Runtime found"
+      : "CLI found"
+    : isBuiltinLocal
+      ? "Runtime missing"
+      : "CLI not found";
+  const cliDetail = provider.cli.found
+    ? provider.cli.path +
+      (provider.cli.version.length > 0 ? ` · ${provider.cli.version}` : "")
+    : null;
 
   function commitModel() {
     const next = modelDraft.trim();
@@ -215,127 +227,148 @@ export function ProviderCard({
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={isPreferred}
-            aria-label={`Prefer ${provider.label}`}
-            onClick={onSetPreferred}
-            className={cn(
-              "flex size-4 shrink-0 items-center justify-center rounded-full border",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              isPreferred ? "border-primary" : "border-border-strong",
-            )}
-          >
-            {isPreferred ? (
-              <span className="size-2 rounded-full bg-primary" />
-            ) : null}
-          </button>
-          <div>
-            <CardTitle>{provider.label}</CardTitle>
-            {isPreferred ? (
-              <p className="text-xs text-primary">Preferred provider</p>
-            ) : null}
-          </div>
+      {/* One spine. The preference radio owns a fixed 1rem gutter and the header
+          is a grid, so every provider's name, status strip and expanded controls
+          start on the same left edge however wide the right cluster grows.
+          A plain div rather than CardHeader: that component hard-codes a single
+          `gap`, which would fight the asymmetric row/column gaps this grid needs. */}
+      <div className="grid grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 p-3">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={isPreferred}
+          aria-label={`Prefer ${provider.label}`}
+          onClick={onSetPreferred}
+          className={cn(
+            "col-start-1 row-start-1 flex size-4 shrink-0 items-center justify-center rounded-full border",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            isPreferred ? "border-primary" : "border-border-strong",
+          )}
+        >
+          {isPreferred ? (
+            <span className="size-2 rounded-full bg-primary" />
+          ) : null}
+        </button>
+
+        <div className="col-start-2 row-start-1 flex min-w-0 items-center gap-2">
+          <CardTitle className="truncate text-sm">{provider.label}</CardTitle>
+          {isPreferred ? (
+            <Badge
+              variant="outline"
+              className="shrink-0 border-primary/50 px-1.5 text-primary"
+            >
+              Preferred
+            </Badge>
+          ) : null}
         </div>
 
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
-            <Label
-              htmlFor={`provider-${provider.id}-enabled`}
-              className="text-xs font-normal"
-            >
-              Enabled
-            </Label>
-            <Switch
-              id={`provider-${provider.id}-enabled`}
-              checked={provider.enabled}
-              onCheckedChange={onSetEnabled}
+        <div className="col-start-3 row-start-1 flex shrink-0 items-center gap-1">
+          <Label
+            htmlFor={enabledId}
+            className="mr-1 text-xs font-normal text-muted-foreground"
+          >
+            Enabled
+          </Label>
+          <Switch
+            id={enabledId}
+            className="mr-1"
+            checked={provider.enabled}
+            onCheckedChange={onSetEnabled}
+          />
+          {/* Reordering is a list operation, so it stays reachable without
+              opening the card — the failover chain is the thing this screen
+              is about. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            disabled={!canMoveUp}
+            aria-label={`Move ${provider.label} up`}
+            onClick={onMoveUp}
+          >
+            <ArrowUp aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            disabled={!canMoveDown}
+            aria-label={`Move ${provider.label} down`}
+            onClick={onMoveDown}
+          >
+            <ArrowDown aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs"
+            aria-expanded={expanded}
+            onClick={onToggleDetails}
+          >
+            {expanded ? "Hide" : "Configure"}
+            <ChevronDown
+              className={cn("transition-transform", expanded && "rotate-180")}
+              aria-hidden="true"
             />
-          </div>
+          </Button>
+        </div>
+
+        {/* Status strip, constant in position. Collapsed it reports what this
+            card would actually run with; mode and model used to be invisible
+            until the card was opened. */}
+        <div className="col-start-2 row-start-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <Badge variant={provider.cli.found ? "success" : "secondary"}>
-            {provider.cli.found
-              ? isBuiltinLocal
-                ? "Runtime found"
-                : "CLI found"
-              : isBuiltinLocal
-                ? "Runtime missing"
-                : "CLI not found"}
+            {cliLabel}
           </Badge>
           {!isBuiltinLocal ? (
             <Badge variant={provider.api_key.set ? "success" : "secondary"}>
               {API_KEY_LABELS[provider.api_key.mode]}
             </Badge>
           ) : null}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-expanded={expanded}
-            onClick={onToggleDetails}
-          >
-            {expanded ? "Hide" : "Configure"}
-            <ChevronDown
-              className={cn("size-4 transition-transform", expanded && "rotate-180")}
-              aria-hidden="true"
-            />
-          </Button>
+          {expanded ? (
+            cliDetail !== null ? (
+              <span className="min-w-0 truncate font-mono">{cliDetail}</span>
+            ) : null
+          ) : (
+            <>
+              {!isBuiltinLocal ? (
+                <>
+                  <span>{MODE_LABELS[provider.mode]}</span>
+                  <span aria-hidden="true">·</span>
+                </>
+              ) : null}
+              <span className="min-w-0 truncate font-mono">
+                {provider.model.length > 0 ? provider.model : "No model set"}
+              </span>
+            </>
+          )}
         </div>
-      </CardHeader>
+      </div>
 
-      {expanded ? <CardContent className="flex flex-col gap-4">
-        <div className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2">
-          <p className="text-xs text-muted-foreground">
-            Failover priority. Autostand tries providers from top to bottom.
-          </p>
-          <div className="flex shrink-0 gap-1">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              disabled={!canMoveUp}
-              aria-label={`Move ${provider.label} up`}
-              onClick={onMoveUp}
-            >
-              <ArrowUp aria-hidden="true" />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              disabled={!canMoveDown}
-              aria-label={`Move ${provider.label} down`}
-              onClick={onMoveDown}
-            >
-              <ArrowDown aria-hidden="true" />
-            </Button>
-          </div>
-        </div>
-
-        {provider.cli.found ? (
-          <p className="font-mono text-xs text-muted-foreground">
-            {provider.cli.path}
-            {provider.cli.version.length > 0 ? ` · ${provider.cli.version}` : ""}
-          </p>
-        ) : null}
-
+      {/* pl-10 = the header's 0.75rem padding + the 1rem radio gutter + the
+          0.75rem column gap, so the controls line up under the provider name. */}
+      {expanded ? <CardContent className="flex flex-col gap-3 border-t border-border p-3 pl-10">
         {isBuiltinLocal ? (
-          <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/45 px-4 py-3">
-            <div>
-              <p className="text-xs text-muted-foreground">Active model</p>
-              <p className="font-mono text-sm font-medium">
-                {provider.model || "No local model selected"}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Download and change models in the Local AI tab. Built-in AI is always local and never uses an API key.
-              </p>
-            </div>
+          <div className="flex flex-col gap-1">
+            <p className="text-xs font-medium text-muted-foreground">
+              Active model
+            </p>
+            <p className="font-mono text-sm">
+              {provider.model.length > 0
+                ? provider.model
+                : "No local model selected"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Download and switch models in the Local AI tab. Built-in AI runs on
+              this machine and never uses an API key.
+            </p>
           </div>
-        ) : <div className="grid gap-4 sm:grid-cols-3">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={modelId}>Model</Label>
+        ) : <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_6rem]">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={modelId} className="text-xs">Model</Label>
             {showModelSelect ? (
               <>
                 <Select
@@ -350,7 +383,7 @@ export function ProviderCard({
                     if (value !== provider.model) onSetModel(value);
                   }}
                 >
-                  <SelectTrigger id={modelId} className="font-mono">
+                  <SelectTrigger id={modelId} className="h-9 font-mono">
                     <SelectValue placeholder="Choose a model" />
                   </SelectTrigger>
                   <SelectContent>
@@ -367,7 +400,7 @@ export function ProviderCard({
                     value={modelDraft}
                     spellCheck={false}
                     autoComplete="off"
-                    className="font-mono"
+                    className="h-9 font-mono"
                     placeholder="model-id"
                     aria-label={`${provider.label} custom model`}
                     onChange={(event) => setModelDraft(event.target.value)}
@@ -384,7 +417,7 @@ export function ProviderCard({
                 value={modelDraft}
                 spellCheck={false}
                 autoComplete="off"
-                className="font-mono"
+                className="h-9 font-mono"
                 onChange={(event) => setModelDraft(event.target.value)}
                 onBlur={commitModel}
                 onKeyDown={(event) => {
@@ -394,15 +427,15 @@ export function ProviderCard({
             )}
           </div>
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={modeId}>Mode</Label>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={modeId} className="text-xs">Mode</Label>
             <Select
               value={provider.mode}
               onValueChange={(value) => {
                 if (isProviderMode(value)) onSetMode(value);
               }}
             >
-              <SelectTrigger id={modeId}>
+              <SelectTrigger id={modeId} className="h-9">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -415,13 +448,14 @@ export function ProviderCard({
             </Select>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={timeoutId}>Timeout (s)</Label>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={timeoutId} className="text-xs">Timeout (s)</Label>
             <Input
               id={timeoutId}
               type="number"
               min={1}
               inputMode="numeric"
+              className="h-9 tabular-nums"
               value={timeoutDraft}
               onChange={(event) => setTimeoutDraft(event.target.value)}
               onBlur={commitTimeout}
@@ -436,12 +470,13 @@ export function ProviderCard({
           <Button
             type="button"
             variant="outline"
+            size="sm"
             disabled={testing}
             onClick={() => {
               void runTest();
             }}
           >
-            <Zap className="size-4" aria-hidden="true" />
+            <Zap aria-hidden="true" />
             {testing ? "Testing…" : isBuiltinLocal ? "Test local AI" : "Test"}
           </Button>
 
@@ -449,16 +484,20 @@ export function ProviderCard({
             <Button
               type="button"
               variant="secondary"
+              size="sm"
               onClick={() => setKeyDialog(true)}
             >
-              <KeyRound className="size-4" aria-hidden="true" />
+              <KeyRound aria-hidden="true" />
               Store key
             </Button>
           ) : null}
 
           {testResult !== null ? (
             <>
-              <Badge variant={testResult.ok ? "success" : "error"}>
+              <Badge
+                variant={testResult.ok ? "success" : "error"}
+                className="tabular-nums"
+              >
                 {testResult.ok
                   ? `OK · ${testResult.latency_ms} ms`
                   : "Test failed"}
