@@ -18,7 +18,6 @@ import {
 } from "@autostand/ui/components/alert";
 import { Badge } from "@autostand/ui/components/badge";
 import { Button } from "@autostand/ui/components/button";
-import { Input } from "@autostand/ui/components/input";
 import { Label } from "@autostand/ui/components/label";
 import { Spinner } from "@autostand/ui/components/spinner";
 import {
@@ -37,7 +36,9 @@ import {
 import { AuditViewer } from "@/components/audit/AuditViewer";
 import { useAuditSidecar, useAuditSidecars } from "@/hooks/use-audit";
 import { toAppError } from "@/lib/error";
-import { formatRelative, todayIso } from "@/lib/utils";
+import { DatePicker } from "@/components/common/DatePicker";
+import { useUiStore } from "@/lib/store";
+import { formatRelative } from "@/lib/utils";
 
 export const Route = createFileRoute("/audit")({
   component: AuditPage,
@@ -53,7 +54,8 @@ const LEGEND: readonly AuditClassification[] = [
 ];
 
 function AuditPage() {
-  const [date, setDate] = useState(todayIso());
+  const date = useUiStore((state) => state.selectedDate);
+  const setSelectedDate = useUiStore((state) => state.setSelectedDate);
   const [pickedPath, setPickedPath] = useState<string | null>(null);
 
   const sidecars = useAuditSidecars(date);
@@ -63,17 +65,16 @@ function AuditPage() {
   const sidecar = useAuditSidecar(activePath);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="min-h-0 space-y-6 p-6">
       <div className="flex flex-wrap items-end gap-4">
         <div className="space-y-1.5">
           <Label htmlFor="audit-date">Filing date</Label>
-          <Input
+          <DatePicker
             id="audit-date"
-            type="date"
             value={date}
-            className="w-48"
-            onChange={(event) => {
-              setDate(event.target.value);
+            className="w-56"
+            onChange={(next) => {
+              setSelectedDate(next);
               setPickedPath(null);
             }}
           />

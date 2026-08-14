@@ -62,7 +62,7 @@ all session readers use; raw transcript JSON is never exposed past that helper.
 
 ## Anti-recursion
 
-When autostand invokes any LLM CLI (Claude, Codex, Gemini, Grok), it sets the
+When autostand invokes any LLM CLI (Claude, Ollama, Codex, Gemini, Grok, or the built-in local sidecar), it sets the
 environment variable `AUTOSTAND_RENDER=1` on the subprocess. Each provider's
 session-end hook checks this env var and skips re-triggering a render if it is
 set. In the Tauri scheduler, the trigger logic also checks `AUTOSTAND_RENDER`
@@ -166,6 +166,12 @@ selection, model name, CLI path, source toggles, scheduler cron. Never API keys.
   key lives inside autostand.
 - No telemetry is sent. No crash reports are sent. All logs stay local.
 
+### Built-in local models
+
+Model downloads are the only network operation performed by the built-in local provider. The IPC accepts a catalog id rather than an arbitrary URL, and each catalog item pins an immutable revision, exact byte size, and SHA-256. Downloads remain `.part` files until verification succeeds, then are atomically renamed under `<state_dir>/models/local`.
+
+Inference is isolated in `autostand-local-llm`, which communicates over JSONL stdin/stdout and delegates to a sibling llama.cpp runtime. Neither process opens a listening port. Model weights are not executable by the Tauri process, and raw llama.cpp stderr is reduced to stable provider classifiers before logs, health state, notifications, or audit telemetry. See `docs/llm-adapters/06-built-in-local.md`.
+
 ---
 
 ## Supply chain
@@ -198,6 +204,8 @@ forbidden (only crates.io / npm registry deps allowed).
 | Concurrent-write race (two machines) | Union merge driver for `*.md`; per-host AUTO blocks. | `dailies/.gitattributes`, file format spec. |
 | Host-slug instability (DHCP rename) | Persist once to `state/host-id`; never re-derive. | `autostand-core/src/host.rs` |
 | API key theft from config file | Keys in OS keychain only; config has no secrets. | Tauri app + `keyring` crate. |
+| Corrupted or replaced model download | Immutable catalog revision, exact size, SHA-256 verification, and atomic install. | `commands/local_models.rs` |
+| Local inference expands GUI attack surface | Process-isolated JSONL sidecar; no listening socket; bounded generation parameters. | `autostand-local-llm`, `llm/builtin_local.rs` |
 | Recursion (render triggers render) | `AUTOSTAND_RENDER=1` env guard on CLI subprocess + checked by hooks. | `autostand-adapters/src/llm/*`, `autostand-scheduler/src/triggers.rs` |
 | LLM hallucination of "no work" | Deterministic render always computed; `auto` mode falls back on validation failure. | `autostand-core/src/deterministic.rs`, `pipeline.rs` |
 | Stale lock blocks all runs | 10min stale timeout; reclaimed by next run. | `autostand-scheduler/src/lock.rs` |

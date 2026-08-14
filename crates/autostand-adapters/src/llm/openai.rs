@@ -18,6 +18,38 @@ pub struct OpenAiAdapter {
 }
 
 impl OpenAiAdapter {
+    /// Arguments for a non-interactive, read-only, non-persistent Codex render.
+    ///
+    /// A blank model deliberately omits `--model`: ChatGPT-backed Codex
+    /// accounts expose different model ids, while the CLI already knows the
+    /// compatible default for the signed-in account.
+    fn cli_args(model: &str) -> Vec<&str> {
+        let mut args = vec![
+            "exec",
+            "--ephemeral",
+            "--sandbox",
+            "read-only",
+            "--skip-git-repo-check",
+            "--ignore-rules",
+            "--color",
+            "never",
+        ];
+        if !model.trim().is_empty() {
+            args.extend(["--model", model]);
+        }
+        // Read the potentially large render prompt from stdin.
+        args.push("-");
+        args
+    }
+
+    fn api_model(model: &str) -> &str {
+        if model.trim().is_empty() {
+            "gpt-5"
+        } else {
+            model
+        }
+    }
+
     fn api_base(config: &ProviderConfig) -> String {
         config
             .api_base_url
@@ -36,15 +68,21 @@ impl OpenAiAdapter {
             .ok_or_else(|| LlmError::CliNotFound {
                 searched: vec!["codex".into()],
             })?;
-        let model = config.model.clone();
+        let configured_model = config.model.trim();
+        let model = if configured_model.is_empty() {
+            "codex-default".to_string()
+        } else {
+            configured_model.to_string()
+        };
         let combined = if system_prompt.is_empty() {
             prompt.to_string()
         } else {
             format!("{system_prompt}\n\n{prompt}")
         };
-        let args: Vec<&str> = vec!["exec", "--model", &model, &combined];
+        let args = Self::cli_args(configured_model);
         let start = Instant::now();
-        let body = helpers::run_cli(&cmd, &args, "", config.timeout_secs.max(1), &[]).await?;
+        let body =
+            helpers::run_cli(&cmd, &args, &combined, config.timeout_secs.max(1), &[]).await?;
         Ok(RenderOutput {
             body,
             mode_used: RenderModeUsed::Cli,
@@ -61,7 +99,7 @@ impl OpenAiAdapter {
     ) -> Result<RenderOutput, LlmError> {
         let key = helpers::resolve_api_key(config, "openai", &["OPENAI_API_KEY"])
             .ok_or(LlmError::AuthError)?;
-        let model = config.model.clone();
+        let model = Self::api_model(&config.model).to_string();
         let url = format!("{}/v1/chat/completions", Self::api_base(config));
         let body = json!({
             "model": model,
@@ -190,5 +228,35 @@ impl LlmAdapter for OpenAiAdapter {
                 Err(_) => self.test_cli(config).await,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OpenAiAdapter;
+
+    #[test]
+    fn blank_cli_model_uses_the_signed_in_accounts_default() {
+        let args = OpenAiAdapter::cli_args("");
+        assert!(!args.contains(&"--model"));
+        assert!(args.contains(&"--ephemeral"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--sandbox", "read-only"]));
+        assert_eq!(args.last(), Some(&"-"));
+    }
+
+    #[test]
+    fn explicit_cli_model_is_preserved() {
+        let args = OpenAiAdapter::cli_args("gpt-custom");
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--model", "gpt-custom"]));
+    }
+
+    #[test]
+    fn api_keeps_its_own_default_model() {
+        assert_eq!(OpenAiAdapter::api_model(""), "gpt-5");
+        assert_eq!(OpenAiAdapter::api_model("gpt-custom"), "gpt-custom");
     }
 }

@@ -164,7 +164,7 @@ export function AuditViewer({ audit, className }: AuditViewerProps) {
 
   return (
     <div className={cn("space-y-6", className)}>
-      <header className="space-y-4 rounded-lg border border-border bg-surface p-4">
+      <header className="min-w-0 space-y-4 rounded-lg border border-border bg-surface p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-base font-semibold text-foreground">
             {audit.file || "unknown date"}
@@ -235,12 +235,13 @@ export function AuditViewer({ audit, className }: AuditViewerProps) {
                     <TableCell className="text-muted-foreground">
                       {fact.title || "—"}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="max-w-xs">
                       <ul className="space-y-1">
                         {fact.commits.map((commit) => (
                           <li
                             key={commit.sha}
-                            className="font-mono text-xs text-muted-foreground"
+                            className="truncate font-mono text-xs text-muted-foreground"
+                            title={commit.subject}
                           >
                             <span className="text-foreground">
                               {commit.sha.slice(0, 8)}
@@ -272,7 +273,7 @@ export function AuditViewer({ audit, className }: AuditViewerProps) {
             {audit.notes.map((note) => (
               <li
                 key={`${note.source}-${note.date}`}
-                className="rounded-lg border border-border bg-surface p-3"
+                className="min-w-0 rounded-lg border border-border bg-surface p-3"
               >
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="truncate font-mono text-xs text-muted-foreground">

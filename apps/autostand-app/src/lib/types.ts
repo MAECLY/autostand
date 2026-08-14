@@ -63,11 +63,55 @@ export interface AppConfig {
   scheduler: SchedulerConfig;
   review: ReviewConfig;
   scrub: ScrubConfig;
+  format: StandupFormatConfig;
+  notifications: NotificationConfig;
+  sync: SyncConfig;
+  regeneration: RegenerationConfig;
+}
+
+export interface RegenerationConfig {
+  replace_immediately: boolean;
+}
+
+export interface SyncConfig {
+  /** Selected provider root; dailies are stored in its `autostand/` child. */
+  cloud_root: string | null;
+  /** User preference. Effective availability is reported by RepoSyncStatus. */
+  repo_enabled: boolean;
+}
+
+export interface NotificationConfig {
+  enabled: boolean;
+  low_usage: boolean;
+  low_usage_threshold_percent: number;
+  provider_exhausted: boolean;
+  provider_fallback: boolean;
+  local_model_downloads: boolean;
+  standup_complete: boolean;
+  standup_failed: boolean;
+}
+
+export interface NotificationStatus {
+  supported: boolean;
+  permission: string;
+  config: NotificationConfig;
 }
 
 export interface LlmConfig {
   preferred_provider: string;
   providers: ProviderConfig[];
+  fallback_enabled: boolean;
+  provider_order: string[];
+  fallback_policy: ProviderFallbackPolicy;
+  local_runtime_policy: LocalRuntimePolicy;
+}
+
+/** Lifecycle policy for the managed built-in local runtime. */
+export type LocalRuntimePolicy = "on_demand" | "keep_ready";
+
+export interface ProviderFallbackPolicy {
+  retry_rate_limits: boolean;
+  max_retry_after_secs: number;
 }
 
 export interface ProviderConfig {
@@ -115,6 +159,34 @@ export interface ScrubConfig {
   meta_extra: string | null;
 }
 
+/** Standup format preset — kebab-case wire values. */
+export type StandupPreset =
+  | "classic-scrum"
+  | "four-question"
+  | "mad-sad-glad"
+  | "start-stop-continue"
+  | "keep-drop-create"
+  | "five-question"
+  | "spotify-4q"
+  | "async-status"
+  | "walking-timebox"
+  | "walk-the-board"
+  | "ytbr"
+  | "decisions-commitments"
+  | "okr-tied";
+
+/** Output verbosity — lowercase wire values. */
+export type Verbosity = "terse" | "standard" | "detailed";
+
+export interface StandupFormatConfig {
+  preset: StandupPreset;
+  verbosity: Verbosity;
+  include_pr_review: boolean;
+  include_confidence: boolean;
+  include_risks: boolean;
+  conventional: boolean;
+}
+
 // ── Data sources ──────────────────────────────────────────────────────────
 
 export interface DataSourceConfig {
@@ -156,6 +228,81 @@ export interface TestProviderResult {
   latency_ms: number;
 }
 
+export type UsageSource =
+  | "provider_reported"
+  | "response_headers"
+  | "management_api"
+  | "failure_inferred"
+  | "unknown";
+
+export type ProviderAvailability =
+  | "available"
+  | "low"
+  | "exhausted"
+  | "rate_limited"
+  | "auth_required"
+  | "model_unavailable"
+  | "unavailable"
+  | "unknown";
+
+export interface UsageWindow {
+  id: string;
+  used_percent: number | null;
+  remaining_percent: number | null;
+  resets_at: string | null;
+}
+
+export interface ProviderHealth {
+  provider: string;
+  availability: ProviderAvailability;
+  source: UsageSource;
+  windows: UsageWindow[];
+  reason: string | null;
+  checked_at: string;
+}
+
+export type LocalModelStatus =
+  | "not_downloaded"
+  | "downloading"
+  | "available"
+  | "corrupted"
+  | "error";
+
+export interface LocalModelInfo {
+  id: string;
+  display_name: string;
+  tier: string;
+  quality: string;
+  format: string;
+  size_bytes: number;
+  context_length: number;
+  status: LocalModelStatus;
+  selected: boolean;
+  license: string;
+  license_url: string;
+  terms_required: boolean;
+  downloaded_bytes: number;
+  /** Size of this model's reusable llama.cpp prompt/KV cache, `0` when cold. */
+  runtime_cache_bytes: number;
+  error: string | null;
+}
+
+/** What `unload_local_models` actually released. */
+export interface LocalRuntimeUnload {
+  processes_terminated: number;
+  caches_removed: number;
+  bytes_freed: number;
+}
+
+export interface LocalModelProgressEvent {
+  model_id: string;
+  downloaded_bytes: number;
+  total_bytes: number;
+  bytes_per_second: number;
+  status: LocalModelStatus;
+  error: string | null;
+}
+
 // ── Compile + pipeline ────────────────────────────────────────────────────
 
 export interface CompileResult {
@@ -169,6 +316,36 @@ export interface CompileResult {
   file_path: string;
   /** Bullets re-injected from PREV by accumulate. */
   accumulated_count: number;
+  message: string;
+}
+
+export type RegenerationResolution =
+  | "keep_current"
+  | "use_candidate"
+  | "merge";
+
+export interface RegenerationPreview {
+  token: string;
+  date: string;
+  host: string;
+  current_auto: string;
+  candidate_auto: string;
+  /** SHA-256 of the exact live file when the comparison was generated. */
+  base_hash: string;
+  expires_at: string;
+  render_used: RenderUsed;
+  fellback: boolean;
+  message: string;
+}
+
+export interface RegenerationApplied {
+  date: string;
+  host: string;
+  file_path: string;
+  resolution: RegenerationResolution;
+  auto_body: string;
+  committed: boolean;
+  pushed: boolean;
   message: string;
 }
 
@@ -240,9 +417,19 @@ export interface AuditData {
   render_used: RenderUsed;
   provider: string | null;
   model: string | null;
+  provider_attempts: ProviderAttempt[];
   fellback: boolean;
   hash: string;
   accumulated_count: number;
+}
+
+export interface ProviderAttempt {
+  provider: string;
+  channel: "cli" | "api" | null;
+  model: string;
+  status: "succeeded" | "failed" | "empty" | "skipped";
+  reason: string | null;
+  latency_ms: number | null;
 }
 
 export interface DateRange {
@@ -343,6 +530,42 @@ export interface PathValidation {
   message: string | null;
 }
 
+/** One detected cloud-sync folder the user may point `dailies_dir` at. */
+export interface CloudFolder {
+  /** Stable id, e.g. `icloud-drive`, `onedrive`, `syncthing`. */
+  id: string;
+  /** Human-readable label, e.g. `iCloud Drive`. */
+  label: string;
+  /** Absolute path to the folder root. */
+  path: string;
+  /** Directory used by the pipeline: `<path>/autostand`. */
+  dailies_path: string;
+  /** Whether the folder exists on this machine. */
+  exists: boolean;
+  /** Cloud provider name, e.g. `iCloud`, `OneDrive`, `Syncthing`. */
+  provider: string;
+}
+
+export interface CloudSyncSelection {
+  root_path: string;
+  dailies_path: string;
+  created: boolean;
+}
+
+export interface RepoSyncStatus {
+  git_available: boolean;
+  gh_available: boolean;
+  gh_authenticated: boolean;
+  can_setup: boolean;
+  configured: boolean;
+  enabled: boolean;
+  repo_path: string;
+  /** Safe `owner/name` identifier; never a credential-bearing remote URL. */
+  repository: string | null;
+  private: boolean | null;
+  message: string | null;
+}
+
 // ── Errors ────────────────────────────────────────────────────────────────
 
 /**
@@ -370,6 +593,19 @@ export interface PipelineProgressEvent {
   step: string;
   /** 0..=100. */
   percent: number;
+}
+
+/** `pipeline-log` severity. */
+export type PipelineLogLevel = "info" | "warn" | "error" | "done";
+
+/** `pipeline-log` — one structured line for the terminal viewer. */
+export interface PipelineLogEvent {
+  date: string;
+  host: string;
+  step: string;
+  level: PipelineLogLevel;
+  message: string;
+  detail: string | null;
 }
 
 /** `pipeline-done` — the completed run's result. */

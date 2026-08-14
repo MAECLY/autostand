@@ -1,7 +1,8 @@
 //! Standup file + audit sidecar IPC commands.
 //!
 //! See `docs/tauri/02-ipc-contracts.md` rows `read_standup_file`,
-//! `add_manual_item`, `list_audit_sidecars`, `read_audit_sidecar`.
+//! `add_manual_item`, `list_standup_dates`, `list_audit_sidecars`,
+//! `read_audit_sidecar`.
 
 use std::path::{Path, PathBuf};
 
@@ -103,6 +104,69 @@ fn parse_window(value: &Value) -> DateRangeDto {
             range_start: str_field(w, "start"),
             range_end: str_field(w, "end"),
         })
+}
+
+/// Parse `YYYY-MM-DD.md` (the on-disk standup name) into a filing date.
+fn date_from_standup_filename(name: &str) -> Option<chrono::NaiveDate> {
+    let stem = name.strip_suffix(".md")?;
+    chrono::NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
+}
+
+/// Keep stems whose date falls in `[start, end]`, sorted and unique.
+fn collect_standup_dates<I>(
+    names: I,
+    start: chrono::NaiveDate,
+    end: chrono::NaiveDate,
+) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut dates: Vec<String> = names
+        .into_iter()
+        .filter_map(|name| {
+            let date = date_from_standup_filename(&name)?;
+            (date >= start && date <= end).then(|| date.format("%Y-%m-%d").to_string())
+        })
+        .collect();
+    dates.sort();
+    dates.dedup();
+    dates
+}
+
+/// List standup filing dates in `[since, until]` with a single `read_dir`.
+///
+/// A missing dailies directory is an empty list, not an error — a fresh
+/// install has nothing filed yet. Unknown filenames (notes, `.tmp`, uppercase
+/// extensions) are ignored so a messy folder cannot fail the calendar.
+#[tauri::command]
+pub async fn list_standup_dates(
+    app_handle: AppHandle,
+    since: String,
+    until: String,
+) -> Result<Vec<String>, AppError> {
+    let start = chrono::NaiveDate::parse_from_str(&since, "%Y-%m-%d")
+        .map_err(|e| AppError::Invalid(format!("invalid since '{since}': {e}")))?;
+    let end = chrono::NaiveDate::parse_from_str(&until, "%Y-%m-%d")
+        .map_err(|e| AppError::Invalid(format!("invalid until '{until}': {e}")))?;
+    if end < start {
+        return Err(AppError::Invalid(format!(
+            "until '{until}' is before since '{since}'"
+        )));
+    }
+    let dir = dailies_dir(&app_handle);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if let Some(name) = entry.file_name().to_str() {
+            names.push(name.to_string());
+        }
+    }
+    Ok(collect_standup_dates(names, start, end))
 }
 
 /// Read and parse a standup file for a date.
@@ -237,6 +301,11 @@ fn audit_data_from_json(value: &Value) -> AuditData {
         ),
         provider: opt_str_field(value, "provider"),
         model: opt_str_field(value, "model"),
+        provider_attempts: value
+            .get("provider_attempts")
+            .cloned()
+            .and_then(|attempts| serde_json::from_value(attempts).ok())
+            .unwrap_or_default(),
         fellback: value
             .get("fellback")
             .and_then(Value::as_bool)
@@ -268,12 +337,44 @@ fn parse_sidecar_fields(path: &Path) -> Result<(String, RenderUsed), AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        audit_data_from_json, parse_render_mode, parse_render_used, parse_window,
-        resolve_dailies_dir, sidecar_host,
+        audit_data_from_json, collect_standup_dates, date_from_standup_filename, parse_render_mode,
+        parse_render_used, parse_window, resolve_dailies_dir, sidecar_host,
     };
     use crate::commands::types::{AuditRenderMode, RenderUsed};
     use serde_json::json;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn standup_filename_accepts_iso_markdown_only() {
+        assert_eq!(
+            date_from_standup_filename("2026-08-03.md").map(|d| d.to_string()),
+            Some("2026-08-03".to_string())
+        );
+        assert_eq!(date_from_standup_filename("2026-08-03.MD"), None);
+        assert_eq!(date_from_standup_filename("2026-08-03.json"), None);
+        assert_eq!(date_from_standup_filename("notes.md"), None);
+        assert_eq!(date_from_standup_filename("2026-13-40.md"), None);
+    }
+
+    #[test]
+    fn collect_standup_dates_keeps_the_inclusive_range_sorted() {
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 8, 1).expect("date");
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).expect("date");
+        let dates = collect_standup_dates(
+            [
+                "2026-08-03.md".into(),
+                "readme.md".into(),
+                "2026-08-01.md".into(),
+                "2026-07-31.md".into(),
+                "2026-08-02.md".into(),
+                "2026-08-01.md".into(),
+                "2026-08-04.md".into(),
+            ],
+            start,
+            end,
+        );
+        assert_eq!(dates, ["2026-08-01", "2026-08-02", "2026-08-03"]);
+    }
 
     #[test]
     fn dailies_dir_prefers_config_then_falls_back() {

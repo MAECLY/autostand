@@ -17,6 +17,7 @@ import { vi } from "vitest";
 import type {
   AppConfig,
   AuditData,
+  CloudFolder,
   CompileResult,
   DataSourceConfig,
   DataSourceConfigs,
@@ -187,6 +188,13 @@ export function makeAppConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     llm: {
       preferred_provider: "claude",
       providers: [makeProviderConfig()],
+      fallback_enabled: true,
+      provider_order: ["claude"],
+      fallback_policy: {
+        retry_rate_limits: true,
+        max_retry_after_secs: 30,
+      },
+      local_runtime_policy: "on_demand",
     },
     data_sources: makeDataSourceConfigs(),
     scheduler: { enabled: true, cron: "0 9 * * 1-5", self_heal: true },
@@ -198,6 +206,26 @@ export function makeAppConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       include_self_reviews: false,
     },
     scrub: { alias_scrub: true, alias_scrub_min: 4, meta_extra: null },
+    notifications: {
+      enabled: false,
+      low_usage: true,
+      low_usage_threshold_percent: 20,
+      provider_exhausted: true,
+      provider_fallback: true,
+      local_model_downloads: true,
+      standup_complete: false,
+      standup_failed: true,
+    },
+    sync: { cloud_root: null, repo_enabled: false },
+    regeneration: { replace_immediately: false },
+    format: {
+      preset: "classic-scrum",
+      verbosity: "standard",
+      include_pr_review: true,
+      include_confidence: false,
+      include_risks: false,
+      conventional: false,
+    },
     ...overrides,
   };
 }
@@ -307,9 +335,25 @@ export function makeAuditData(overrides: Partial<AuditData> = {}): AuditData {
     render_used: "llm",
     provider: "claude",
     model: "claude-sonnet-4",
+    provider_attempts: [],
     fellback: false,
     hash: "sha256:deadbeef",
     accumulated_count: 0,
+    ...overrides,
+  };
+}
+
+export function makeCloudFolder(
+  overrides: Partial<CloudFolder> = {},
+): CloudFolder {
+  return {
+    id: "icloud-drive",
+    label: "iCloud Drive",
+    path: "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs",
+    dailies_path:
+      "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs/autostand",
+    exists: true,
+    provider: "iCloud",
     ...overrides,
   };
 }

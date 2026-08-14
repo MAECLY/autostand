@@ -1,15 +1,19 @@
 //! Tauri IPC command handlers.
 //!
-//! The full 25-command inventory is defined in `docs/tauri/02-ipc-contracts.md`.
+//! The full command inventory is defined in `docs/tauri/02-ipc-contracts.md`.
 //! Shared DTOs live in [`types`]; the actual command fns live in the domain
 //! submodules and are registered with `generate_handler!` in `lib.rs`.
 
 pub mod data_sources;
 pub mod llm;
+pub mod local_models;
+pub mod os;
 pub mod pipeline;
+pub mod regeneration;
 pub mod repos;
 pub mod settings;
 pub mod standup;
+pub mod sync;
 pub mod types;
 
 use std::path::{Path, PathBuf};

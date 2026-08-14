@@ -7,12 +7,13 @@ Anthropic's Claude is the default provider for `autostand`. It is available via 
 **Command:**
 
 ```
-claude -p --model <model> "<prompt>"
+claude -p --no-session-persistence --model <model> < prompt.txt
 ```
 
 - `-p` / `--print` — non-interactive "print" mode (exit after producing output, no REPL).
 - `--model <model>` — overrides the model the CLI uses.
-- The full render prompt is passed as the trailing positional argument.
+- The full render prompt is sent on stdin, and `--no-session-persistence`
+  prevents the synthetic render from being gathered into a future standup.
 
 **Binary:** `claude` (the Anthropic CLI, distributed either via npm `@anthropic-ai/claude-code` or the native installer).
 
@@ -30,6 +31,8 @@ Discovery runs `<path> --version` to populate `CliInfo.version`.
 ## CLI auth
 
 Claude CLI manages its own auth, stored at `~/.claude/.credentials.json` (OAuth token from `claude login` or an `ANTHROPIC_API_KEY` env var). autostand does **not** read, write, or manage this file. If the CLI is authenticated, CLI-mode rendering just works.
+
+Claude Code exposes usage interactively and to its own statusline, but Autostand does not alter the user's statusline configuration or scrape interactive output. Settings therefore reports Claude usage as `unknown` unless an actual render provides a safe classified availability failure. An inferred exhausted/auth/rate-limit state never includes a fabricated percentage or reset time.
 
 ## API mode
 

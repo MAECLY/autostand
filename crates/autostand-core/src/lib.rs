@@ -10,6 +10,8 @@
 //! - [`pipeline`] — gather → scrub → anti-backdate → render → accumulate → redact → write → audit.
 //! - [`scrub`] — anti-backdate scrub (CLAIM regex, FORBIDDEN/COVERED).
 //! - [`meta`] — meta-work filter (standup tooling self-references).
+//! - [`pace`] — burn-rate projection for a provider quota window.
+//! - [`prompt_echo`] — anti-recursion: our own render prompt read back from a session log.
 //! - [`accumulate`] — never-delete: re-inject uncovered PREV bullets.
 //! - [`redact`] — secrets redaction (regex-based, pre-LLM + pre-write).
 //! - [`textsim`] — fuzzy text similarity (shared by accumulate + audit).
@@ -29,7 +31,9 @@ pub mod format;
 pub mod hashes;
 pub mod host;
 pub mod meta;
+pub mod pace;
 pub mod pipeline;
+pub mod prompt_echo;
 pub mod provenance;
 pub mod redact;
 pub mod scrub;

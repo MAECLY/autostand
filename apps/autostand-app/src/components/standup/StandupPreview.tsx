@@ -22,23 +22,9 @@ import {
   CardTitle,
 } from "@autostand/ui/components/card";
 
+import { CopyButton } from "@/components/common/CopyButton";
 import type { StandupFileContent } from "@/lib/types";
-import { cn, hostColor } from "@/lib/utils";
-
-/**
- * Block bodies may contain HTML comments (the MANUAL placeholder line, block
- * markers left by a union merge). We never enable `rehype-raw`, so strip them
- * instead of leaving react-markdown to silently drop them mid-paragraph.
- */
-const HTML_COMMENT_LINE = /^\s*<!--.*-->\s*$/;
-
-function stripHtmlComments(body: string): string {
-  return body
-    .split("\n")
-    .filter((line) => !HTML_COMMENT_LINE.test(line))
-    .join("\n")
-    .trim();
-}
+import { cn, hostColor, serializeStandup, stripHtmlComments } from "@/lib/utils";
 
 /**
  * Overrides so markdown output picks up the tokens. Props are taken one by one
@@ -70,7 +56,7 @@ const markdownComponents: Components = {
     </code>
   ),
   pre: ({ children }) => (
-    <pre className="overflow-x-auto rounded-md bg-inset p-3 font-mono text-sm">
+    <pre className="max-h-[40rem] overflow-auto rounded-md bg-inset p-3 font-mono text-sm">
       {children}
     </pre>
   ),
@@ -120,14 +106,23 @@ export function StandupPreview({ content, hostSlug }: StandupPreviewProps) {
   }
 
   return (
-    <div className="space-y-4">
-      <header className="space-y-1">
-        <h2 className="text-lg font-semibold text-foreground">
-          {content.title}
-        </h2>
-        <StandupMarkdown className="text-muted-foreground">
-          {content.subtitle}
-        </StandupMarkdown>
+    <div className="min-w-0 space-y-4">
+      <header className="flex items-start justify-between gap-3 space-y-1">
+        <div className="min-w-0 space-y-1">
+          <h2 className="text-lg font-semibold text-foreground">
+            {content.title}
+          </h2>
+          <StandupMarkdown className="text-muted-foreground">
+            {content.subtitle}
+          </StandupMarkdown>
+        </div>
+        <CopyButton
+          text={serializeStandup(content)}
+          label="Copy standup"
+          tooltip="Copy full standup as markdown"
+          size="sm"
+          className="mt-0.5 shrink-0"
+        />
       </header>
 
       {content.auto_blocks.map((block) => {
@@ -141,12 +136,20 @@ export function StandupPreview({ content, hostSlug }: StandupPreviewProps) {
               <CardTitle className="text-sm font-medium text-subtle">
                 Auto
               </CardTitle>
-              <Badge
-                variant={isLocal ? "default" : "outline"}
-                className={cn("font-mono", !isLocal && hostColor(block.host))}
-              >
-                {block.host}
-              </Badge>
+              <div className="flex items-center gap-1">
+                <CopyButton
+                  text={stripHtmlComments(block.body)}
+                  label={`Copy AUTO block for ${block.host}`}
+                  tooltip="Copy this block"
+                  size="sm"
+                />
+                <Badge
+                  variant={isLocal ? "default" : "outline"}
+                  className={cn("font-mono", !isLocal && hostColor(block.host))}
+                >
+                  {block.host}
+                </Badge>
+              </div>
             </CardHeader>
             <CardContent>
               <StandupMarkdown>{stripHtmlComments(block.body)}</StandupMarkdown>
@@ -161,7 +164,15 @@ export function StandupPreview({ content, hostSlug }: StandupPreviewProps) {
             <CardTitle className="text-sm font-medium text-warning">
               Manual
             </CardTitle>
-            <Badge variant="warning">never overwritten</Badge>
+            <div className="flex items-center gap-1">
+              <CopyButton
+                text={manual}
+                label="Copy manual region"
+                tooltip="Copy manual items"
+                size="sm"
+              />
+              <Badge variant="warning">never overwritten</Badge>
+            </div>
           </CardHeader>
           <CardContent>
             <StandupMarkdown>{manual}</StandupMarkdown>

@@ -13,7 +13,7 @@ This guide walks you through getting the `autostand` development environment run
 | `gh` CLI | latest, authenticated | GitHub data source (PRs, reviews) |
 | At least one LLM CLI | — | Render provider. Any of: `claude`, `ollama`, `codex`, `gemini`, `grok` |
 
-> **Note on LLM CLIs:** autostand auto-detects installed CLIs via `which`. For local development you only need ONE. For full coverage, install all five. Each is optional — the app gracefully falls back to the deterministic renderer when no LLM is available.
+> **Note on LLM CLIs:** autostand auto-detects installed CLIs via `which`. For local development you only need one provider. Full coverage includes the five external provider CLIs plus the built-in local sidecar/runtime. Each is optional — `Auto` gracefully falls back to the deterministic renderer when no LLM is available.
 
 ### Installing prerequisites
 

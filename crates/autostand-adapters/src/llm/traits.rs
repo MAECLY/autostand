@@ -42,6 +42,17 @@ pub enum RenderModeUsed {
     Api,
 }
 
+/// Reuse policy for the built-in local llama.cpp runtime.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalRuntimePolicy {
+    /// Load the model for one render without a reusable prompt-state file.
+    #[default]
+    OnDemand,
+    /// Persist and reuse llama.cpp's prompt/KV state across render processes.
+    KeepReady,
+}
+
 /// LLM adapter errors.
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
 pub enum LlmError {
@@ -78,6 +89,8 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub api_base_url: Option<String>,
     pub timeout_secs: u64,
+    #[serde(default)]
+    pub local_runtime_policy: LocalRuntimePolicy,
 }
 
 /// The trait every LLM provider implements.

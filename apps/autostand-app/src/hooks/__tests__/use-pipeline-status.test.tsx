@@ -34,6 +34,7 @@ import { createTestQueryClient, createWrapper } from "@/test/render";
 const PIPELINE_EVENTS = [
   "pipeline-done",
   "pipeline-error",
+  "pipeline-log",
   "pipeline-progress",
   "pipeline-started",
   "scheduler-tick",

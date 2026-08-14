@@ -42,11 +42,12 @@ use autostand_scheduler::triggers::TriggerSource;
 use crate::commands::pipeline::{PipelineError, PipelineStarted};
 use crate::commands::types::{
     AppConfig, CommitDto, CompileResult, CompileStatus, DateRangeDto, GatherPreview, LastTrigger,
-    NoteRef, PipelineProgress, RenderMode, RenderUsed, RepoFacts, SkewRecord,
+    NoteRef, PipelineLogLevel, PipelineLogLine, PipelineProgress, RenderMode, RenderUsed,
+    RepoFacts, SkewRecord,
 };
 use crate::error::AppError;
 use crate::gather::{self, Gathered};
-use crate::render::{self, PromptInputs, RenderedBody};
+use crate::render::{self, LlmRenderOutcome, PromptInputs, ProviderAttempt, RenderedBody};
 use crate::state::{AppState, PipelineStateKind};
 
 /// Date format used by every `date` argument and DTO field in the IPC contract.
@@ -391,6 +392,19 @@ pub enum RenderDecision {
     },
 }
 
+/// Whether a compile is a durable run or an isolated regeneration candidate.
+///
+/// Preview compiles still exercise the exact gather/render/validation pipeline,
+/// but must not deliver user notifications. Their output, audit and hash paths
+/// point at an isolated temporary directory owned by the regeneration command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilePurpose {
+    /// Normal scheduler or manual compile.
+    Persist,
+    /// Candidate generation before an explicit user resolution.
+    Preview,
+}
+
 impl RenderDecision {
     /// The validated LLM body, when there is one.
     pub fn llm_body(&self) -> Option<&str> {
@@ -440,11 +454,10 @@ impl RenderDecision {
 ///
 /// Pure. `rendered` is whatever `render::render_llm` returned (`None` when the
 /// LLM was unavailable or every attempt failed) and validation is the pure
-/// `render::validate_render`. A rejected or missing body is never an error: per
-/// `docs/specs/pipeline.md` § Error recovery the compile continues with the
-/// deterministic body and reports `fellback = true`. That holds for
-/// `render_mode = Llm` too — a configured preference must not be able to leave
-/// a working day without a standup.
+/// `render::validate_render`. This pure decision keeps representing a missing
+/// candidate as deterministic fallback; [`compile_one`] converts that decision
+/// into an explicit error when the user selected strict `render_mode = Llm`.
+/// `Auto` continues with the deterministic body and reports `fellback = true`.
 pub fn decide_render(
     mode: RenderMode,
     rendered: Option<&RenderedBody>,
@@ -479,6 +492,22 @@ pub fn outcome_message(decision: &RenderDecision, rendered: Option<&RenderedBody
             format!("llm render rejected ({message}); deterministic fallback")
         }
     }
+}
+
+/// `Llm` is a strict user request: unlike `Auto`, it must surface exhaustion or
+/// validation failure instead of silently reporting a deterministic success.
+fn required_llm_failure(
+    mode: RenderMode,
+    decision: &RenderDecision,
+    outcome: &LlmRenderOutcome,
+) -> Option<String> {
+    if mode != RenderMode::Llm || matches!(decision, RenderDecision::Accepted(_)) {
+        return None;
+    }
+    Some(match decision {
+        RenderDecision::Rejected { code, .. } => format!("LLM render rejected ({code})"),
+        _ => outcome.failure_summary(),
+    })
 }
 
 // ── title + subtitle ──────────────────────────────────────────────────────
@@ -701,6 +730,15 @@ pub fn parse_note_refs(notes: &str) -> Vec<NoteRef> {
 ///
 /// Covers every source listed in `docs/architecture/03-data-flow.md` step 5h, so
 /// a change in any of them re-renders.
+/// Version of everything that turns gathered inputs into a body: the render
+/// prompt, the format presets, and `render::sanitize_body`.
+///
+/// The dirty check hashes the *inputs*, so improving the prompt or the
+/// sanitizer used to leave every already-compiled day marked unchanged — the
+/// fix shipped but nobody could see it without deleting `state_dir()/hashes/`.
+/// Bump this whenever a change should make previously-compiled days recompile.
+pub const RENDER_CONTRACT_VERSION: &str = "2";
+
 pub fn inputs_hash(facts: &str, gathered: &Gathered) -> String {
     let claude = gathered.claude_files.join("\n");
     let opencode = gathered.opencode_sessions.join("\n");
@@ -708,6 +746,7 @@ pub fn inputs_hash(facts: &str, gathered: &Gathered) -> String {
     let gemini = gathered.gemini_sessions.join("\n");
     let grok = gathered.grok_sessions.join("\n");
     hashes::input_hash(&[
+        RENDER_CONTRACT_VERSION,
         facts,
         gathered.notes.as_str(),
         gathered.conv.as_deref().unwrap_or_default(),
@@ -810,6 +849,7 @@ pub fn audit_patch(
     gathered: &Gathered,
     decision: &RenderDecision,
     rendered: Option<&RenderedBody>,
+    provider_attempts: &[ProviderAttempt],
     hash: &str,
 ) -> serde_json::Value {
     let render_used = match decision.render_used() {
@@ -844,6 +884,7 @@ pub fn audit_patch(
         "fellback": decision.fellback(),
         "provider": rendered.map(|body| body.provider.clone()),
         "model": rendered.map(|body| body.model.clone()),
+        "provider_attempts": provider_attempts,
         "hash": hash,
         "gather_failures": failures,
         "validation_failure": validation,
@@ -1037,6 +1078,33 @@ fn fail(
     warn_event(app, date, step, code, message);
 }
 
+/// Emit a single `pipeline-log` line for the terminal viewer.
+///
+/// `None` app (headless) drops the line. The viewer never shows token streaming;
+/// each call is one completed sub-step or a summary.
+fn emit_log(
+    app: Option<&AppHandle>,
+    date: &str,
+    host: &str,
+    step: Step,
+    level: PipelineLogLevel,
+    message: impl Into<String>,
+    detail: Option<String>,
+) {
+    emit(
+        app,
+        "pipeline-log",
+        PipelineLogLine {
+            date: date.to_string(),
+            host: host.to_string(),
+            step: step.label().to_string(),
+            level,
+            message: message.into(),
+            detail,
+        },
+    );
+}
+
 // ── the pipeline ──────────────────────────────────────────────────────────
 
 /// Steps 1–5 of `docs/specs/pipeline.md`: lock, sync, compute targets, compile
@@ -1055,7 +1123,24 @@ pub async fn trigger(
     source: TriggerSource,
     only_date: Option<NaiveDate>,
 ) -> Result<Vec<CompileResult>, AppError> {
-    run(Some(app), state, source, only_date).await
+    let outcome = run(Some(app), state, source, only_date).await;
+    if let Ok(config) = crate::commands::load_config(app) {
+        for notification in crate::commands::llm::scheduled_low_usage_notifications(&config).await {
+            if let Err(err) =
+                crate::notifications::notify_gui(app, &config.notifications, &notification)
+            {
+                tracing::warn!(error = %err, "could not deliver low-usage notification");
+            }
+        }
+        if let Some(notification) = crate::notifications::compile_notification(outcome.as_deref()) {
+            if let Err(err) =
+                crate::notifications::notify_gui(app, &config.notifications, &notification)
+            {
+                tracing::warn!(error = %err, "could not deliver system notification");
+            }
+        }
+    }
+    outcome
 }
 
 /// [`trigger`] with no window: the `autostand-app --compile` entry point.
@@ -1069,10 +1154,28 @@ pub async fn trigger_headless(
     source: TriggerSource,
     only_date: Option<NaiveDate>,
 ) -> Result<Vec<CompileResult>, AppError> {
-    run(None, state, source, only_date).await
+    let outcome = run(None, state, source, only_date).await;
+    if let Ok(config) = load_config_from_disk(dirs::data_dir().as_deref()) {
+        for notification in crate::commands::llm::scheduled_low_usage_notifications(&config).await {
+            if let Err(err) =
+                crate::notifications::notify_headless(&config.notifications, &notification)
+            {
+                tracing::warn!(error = %err, "could not deliver headless low-usage notification");
+            }
+        }
+        if let Some(notification) = crate::notifications::compile_notification(outcome.as_deref()) {
+            if let Err(err) =
+                crate::notifications::notify_headless(&config.notifications, &notification)
+            {
+                tracing::warn!(error = %err, "could not deliver headless system notification");
+            }
+        }
+    }
+    outcome
 }
 
 /// The run itself, shared by both front ends.
+#[allow(clippy::too_many_lines)]
 #[tracing::instrument(skip_all, fields(trigger = source.label(), only_date = ?only_date, headless = app.is_none()))]
 async fn run(
     app: Option<&AppHandle>,
@@ -1093,21 +1196,65 @@ async fn run(
         AppError::Lock(message)
     })?;
 
-    // 2. Announce, then sync the dailies repo (warn-only: the local copy wins).
+    // 2. Announce, then sync the dailies repo when the user explicitly enabled
+    // Repo Sync and both authenticated CLI prerequisites remain available.
     emit(
         app,
         "pipeline-started",
         PipelineStarted {
-            date: primary_str,
+            date: primary_str.clone(),
             host: env.host.clone(),
             trigger: last_trigger(source),
         },
     );
-    if let Err(err) = crate::git_ops::sync_pull(&env.repo_dir).await {
-        tracing::warn!(error = %err, "dailies sync skipped; continuing with the local copy");
-    }
-    if let Err(err) = crate::git_ops::ensure_gitattributes(&env.repo_dir) {
-        tracing::warn!(error = %err, "could not install the union merge driver rule");
+    let repo_sync = crate::commands::sync::should_run_repo_sync(
+        &env.config,
+        crate::commands::sync::repo_sync_prerequisites().await,
+    );
+    if repo_sync {
+        emit_log(
+            app,
+            &primary_str,
+            &env.host,
+            Step::Gather,
+            PipelineLogLevel::Info,
+            format!("git pull — {}", env.repo_dir.display()),
+            None,
+        );
+        if let Err(err) = crate::git_ops::sync_pull(&env.repo_dir).await {
+            tracing::warn!(error = %err, "dailies sync skipped; continuing with the local copy");
+            emit_log(
+                app,
+                &primary_str,
+                &env.host,
+                Step::Gather,
+                PipelineLogLevel::Warn,
+                format!("git pull skipped — {err}"),
+                None,
+            );
+        } else {
+            emit_log(
+                app,
+                &primary_str,
+                &env.host,
+                Step::Gather,
+                PipelineLogLevel::Done,
+                "git pull ok",
+                None,
+            );
+        }
+        if let Err(err) = crate::git_ops::ensure_gitattributes(&env.repo_dir) {
+            tracing::warn!(error = %err, "could not install the union merge driver rule");
+            emit_log(
+                app,
+                &primary_str,
+                &env.host,
+                Step::Gather,
+                PipelineLogLevel::Warn,
+                format!(".gitattributes not installed — {err}"),
+                None,
+            );
+        }
     }
 
     // 3-5. Compile each target; the second one is the self-heal slot.
@@ -1124,15 +1271,22 @@ async fn run(
             results.push(skip_result(date, &env.host, &env.file_path(date), reason));
             continue;
         }
-        let result = compile_one(app, state, &env, date, target_source)
-            .await
-            .unwrap_or_else(|err| {
-                let message = err.to_string();
-                tracing::error!(date = %date, error = %message, "compile failed");
-                let date_str = date.format(DATE_FORMAT).to_string();
-                fail(app, state, &date_str, Step::Write, "io", &message);
-                error_result(date, &env.host, message)
-            });
+        let result = compile_one(
+            app,
+            state,
+            &env,
+            date,
+            target_source,
+            CompilePurpose::Persist,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            let message = err.to_string();
+            tracing::error!(date = %date, error = %message, "compile failed");
+            let date_str = date.format(DATE_FORMAT).to_string();
+            fail(app, state, &date_str, Step::Write, "io", &message);
+            error_result(date, &env.host, message)
+        });
         if result.status == CompileStatus::Ok {
             touched.push(env.file_path(date));
         }
@@ -1140,14 +1294,45 @@ async fn run(
     }
 
     // 6. Commit + push (warn-only), then announce every result.
-    match crate::git_ops::commit_push(&env.repo_dir, &touched).await {
-        Ok(outcome) => tracing::info!(
-            committed = outcome.committed,
-            pushed = outcome.pushed,
-            message = %outcome.message,
-            "commit_push finished"
-        ),
-        Err(err) => tracing::warn!(error = %err, "commit_push skipped"),
+    if repo_sync {
+        match crate::git_ops::commit_push(&env.repo_dir, &touched).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    committed = outcome.committed,
+                    pushed = outcome.pushed,
+                    message = %outcome.message,
+                    "commit_push finished"
+                );
+                emit_log(
+                    app,
+                    &primary_str,
+                    &env.host,
+                    Step::Done,
+                    if outcome.committed || outcome.pushed {
+                        PipelineLogLevel::Done
+                    } else {
+                        PipelineLogLevel::Info
+                    },
+                    outcome.message.clone(),
+                    Some(format!(
+                        "committed={}, pushed={}",
+                        outcome.committed, outcome.pushed
+                    )),
+                );
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "commit_push skipped");
+                emit_log(
+                    app,
+                    &primary_str,
+                    &env.host,
+                    Step::Done,
+                    PipelineLogLevel::Warn,
+                    format!("commit_push skipped — {err}"),
+                    None,
+                );
+            }
+        }
     }
 
     // `SchedulerStatus.last_run_at` means "when did this machine last compile",
@@ -1184,9 +1369,9 @@ fn self_heal_gate(
 
 /// Step 3 (a…s) of `docs/specs/pipeline.md`: compile one filing date.
 ///
-/// Returns `Err` only when the file could not be written — every other failure
-/// (a dead data source, an absent LLM, a rejected render) degrades to the
-/// deterministic body and still produces a `status: "ok"` result.
+/// Returns `Err` when the file could not be written or strict `render_mode = Llm`
+/// exhausted/rejected every provider. In `Auto`, dead providers and rejected
+/// renders degrade to the deterministic body and produce `status: "ok"`.
 // The step list *is* the function: splitting it would hide the ordering the
 // spec pins. Each step's decision already lives in its own tested free function.
 #[allow(clippy::too_many_lines)]
@@ -1197,6 +1382,7 @@ pub async fn compile_one(
     env: &RunEnv,
     date: NaiveDate,
     source: TriggerSource,
+    purpose: CompilePurpose,
 ) -> Result<CompileResult, AppError> {
     let date_str = date.format(DATE_FORMAT).to_string();
     let file_path = env.file_path(date);
@@ -1210,9 +1396,31 @@ pub async fn compile_one(
     // (a) window
     progress(app, state, &date_str, &env.host, Step::Window);
     let window = dates::compute_window(date);
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Window,
+        PipelineLogLevel::Done,
+        format!(
+            "window {} → {}",
+            window.range_start.format(DATE_FORMAT),
+            window.range_end.format(DATE_FORMAT)
+        ),
+        None,
+    );
 
     // (b, c, e) gather — never fatal; failures are recorded on `Gathered`.
     progress(app, state, &date_str, &env.host, Step::Gather);
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Gather,
+        PipelineLogLevel::Info,
+        "gathering data sources",
+        None,
+    );
     let gathered = gather::gather_all(
         &gather::to_date_window(&window),
         &env.config,
@@ -1220,6 +1428,34 @@ pub async fn compile_one(
     )
     .await;
     let (facts, all_git_tickets) = split_ticket_days(&gathered.facts);
+    let repo_count = parse_repo_facts(&facts).len();
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Gather,
+        PipelineLogLevel::Done,
+        format!(
+            "gathered — {} repo(s), {} note(s), github={}, conv={}, claude_files={}",
+            repo_count,
+            parse_note_refs(&gathered.notes).len(),
+            gathered.github.is_some(),
+            gathered.conv.is_some(),
+            gathered.claude_files.len(),
+        ),
+        None,
+    );
+    for (source, error) in &gathered.failures {
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Gather,
+            PipelineLogLevel::Warn,
+            format!("source {source} failed — {error}"),
+            None,
+        );
+    }
 
     // (d) anti-regression guard
     progress(app, state, &date_str, &env.host, Step::AntiRegression);
@@ -1235,10 +1471,28 @@ pub async fn compile_one(
             "anti_regression",
             &message,
         );
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::AntiRegression,
+            PipelineLogLevel::Warn,
+            &message,
+            None,
+        );
         let result = skip_result(date, &env.host, &file_path, message);
         state.set_done(result.clone());
         return Ok(result);
     }
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::AntiRegression,
+        PipelineLogLevel::Done,
+        "anti-regression ok",
+        None,
+    );
 
     // (f) provenance
     progress(app, state, &date_str, &env.host, Step::Provenance);
@@ -1275,7 +1529,101 @@ pub async fn compile_one(
         Step::RenderLlm.label().to_string(),
     );
     progress(app, state, &date_str, &env.host, Step::RenderLlm);
-    let rendered = render_body(env, &facts, &gathered, &prov, &window, date, &prev_auto).await;
+    if env.config.render_mode == RenderMode::Det {
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::RenderLlm,
+            PipelineLogLevel::Info,
+            "render mode = Det — skipping LLM",
+            None,
+        );
+    } else {
+        let provider = env.config.llm.preferred_provider.clone();
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::RenderLlm,
+            PipelineLogLevel::Info,
+            format!("LLM render — provider: {provider}"),
+            Some(format!("provider={provider}")),
+        );
+    }
+    let render_outcome = render_body(
+        env,
+        &facts,
+        &gathered,
+        &prov,
+        &window,
+        date,
+        &prev_auto,
+        &prov.range_tickets,
+        &prov.forbidden_tickets,
+        |message| {
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::RenderLlm,
+                PipelineLogLevel::Info,
+                message,
+                None,
+            );
+        },
+    )
+    .await;
+    crate::commands::llm::record_provider_attempts(&render_outcome.attempts);
+    if purpose == CompilePurpose::Persist {
+        for notification in crate::notifications::provider_notifications(
+            &render_outcome.attempts,
+            render_outcome
+                .rendered
+                .as_ref()
+                .map(|body| body.provider.as_str()),
+        ) {
+            let delivered = match app {
+                Some(app) => {
+                    crate::notifications::notify_gui(app, &env.config.notifications, &notification)
+                }
+                None => {
+                    crate::notifications::notify_headless(&env.config.notifications, &notification)
+                }
+            };
+            if let Err(err) = delivered {
+                tracing::warn!(error = %err, "could not deliver provider notification");
+            }
+        }
+    }
+    let rendered = render_outcome.rendered.clone();
+    match &rendered {
+        Some(body) => {
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::RenderLlm,
+                PipelineLogLevel::Done,
+                format!("LLM ok — {} ({})", body.provider, body.model),
+                Some(format!(
+                    "provider={}, model={}, api={}",
+                    body.provider, body.model, body.used_api
+                )),
+            );
+        }
+        None => {
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::RenderLlm,
+                PipelineLogLevel::Warn,
+                "no LLM body — deterministic fallback",
+                None,
+            );
+        }
+    }
 
     // (n) validate
     progress(app, state, &date_str, &env.host, Step::Validate);
@@ -1285,17 +1633,71 @@ pub async fn compile_one(
         &prov.range_tickets,
         &prov.forbidden_tickets,
     );
+    if let Some(message) = required_llm_failure(env.config.render_mode, &decision, &render_outcome)
+    {
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Validate,
+            PipelineLogLevel::Error,
+            &message,
+            Some("render_mode=Llm".to_string()),
+        );
+        return Err(AppError::Llm(message));
+    }
     if let RenderDecision::Rejected { code, message } = &decision {
         tracing::warn!(code, "{message}");
         warn_event(app, &date_str, Step::RenderLlm, "llm", message);
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Validate,
+            PipelineLogLevel::Warn,
+            format!("LLM rejected ({code}) — {message}"),
+            Some(format!("code={code}")),
+        );
     } else if decision == RenderDecision::Missing {
         let message = "no LLM body produced; using the deterministic render";
         tracing::warn!("{message}");
         warn_event(app, &date_str, Step::RenderLlm, "llm", message);
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Validate,
+            PipelineLogLevel::Warn,
+            message,
+            None,
+        );
+    } else {
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Validate,
+            PipelineLogLevel::Done,
+            match &decision {
+                RenderDecision::Accepted(_) => "LLM body accepted",
+                RenderDecision::Deterministic => "deterministic render",
+                _ => "validated",
+            },
+            None,
+        );
     }
 
     // (l, o, p, r) deterministic render, accumulate, redact, atomic write.
     progress(app, state, &date_str, &env.host, Step::Write);
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Write,
+        PipelineLogLevel::Info,
+        format!("write {}", file_path.display()),
+        None,
+    );
     std::fs::create_dir_all(&env.dailies_dir)?;
     let inputs = CompileInputs {
         facts: facts.clone(),
@@ -1321,6 +1723,18 @@ pub async fn compile_one(
     };
     let outputs = autostand_core::pipeline::compile_file(&inputs)
         .map_err(|e| AppError::Io(format!("write {}: {e}", file_path.display())))?;
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Write,
+        PipelineLogLevel::Done,
+        format!(
+            "written — accumulated {} bullet(s)",
+            outputs.accumulated_count
+        ),
+        None,
+    );
 
     // (q) audit sidecar: patch in what the pure core could not know.
     progress(app, state, &date_str, &env.host, Step::Audit);
@@ -1331,10 +1745,30 @@ pub async fn compile_one(
             &gathered,
             &decision,
             rendered.as_ref(),
+            &render_outcome.attempts,
             &hash,
         );
         if let Err(err) = enrich_sidecar(path, &overlay) {
             tracing::warn!(error = %err, "could not enrich the audit sidecar");
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::Audit,
+                PipelineLogLevel::Warn,
+                format!("audit sidecar not enriched — {err}"),
+                None,
+            );
+        } else {
+            emit_log(
+                app,
+                &date_str,
+                &env.host,
+                Step::Audit,
+                PipelineLogLevel::Done,
+                format!("audit sidecar — {}", path.display()),
+                None,
+            );
         }
     }
 
@@ -1345,6 +1779,15 @@ pub async fn compile_one(
             tracing::warn!(error = %err, "could not persist the inputs hash");
         }
     }
+    emit_log(
+        app,
+        &date_str,
+        &env.host,
+        Step::Done,
+        PipelineLogLevel::Done,
+        outcome_message(&decision, rendered.as_ref()),
+        None,
+    );
 
     let result = ok_result(
         date,
@@ -1369,6 +1812,7 @@ pub async fn compile_one(
 /// The prompt gets *scrubbed and redacted* notes: the LLM must never see a
 /// clause the anti-backdating rules already dropped, nor a secret the final
 /// redaction pass would only have removed after the fact.
+#[allow(clippy::too_many_arguments)]
 async fn render_body(
     env: &RunEnv,
     facts: &str,
@@ -1377,9 +1821,12 @@ async fn render_body(
     window: &Window,
     date: NaiveDate,
     prev_auto: &str,
-) -> Option<RenderedBody> {
+    range_tickets: &[String],
+    forbidden_tickets: &[String],
+    log: impl FnMut(&str),
+) -> LlmRenderOutcome {
     if env.config.render_mode == RenderMode::Det {
-        return None;
+        return LlmRenderOutcome::default();
     }
     let meta_extra = env.config.scrub.meta_extra.as_deref();
     let facts_clean = redact::redact(facts);
@@ -1407,9 +1854,6 @@ async fn render_body(
     let file_date = date.format(DATE_FORMAT).to_string();
     let range_start = window.range_start.format(DATE_FORMAT).to_string();
     let range_end = window.range_end.format(DATE_FORMAT).to_string();
-    let title = title_for(date);
-    let subtitle = subtitle_for(window);
-
     let inputs = PromptInputs {
         facts: &facts_clean,
         github: github.as_deref(),
@@ -1420,11 +1864,17 @@ async fn render_body(
         file_date: &file_date,
         range_start: &range_start,
         range_end: &range_end,
-        title: &title,
-        subtitle: &subtitle,
         prev_auto: Some(prev_auto).filter(|body| !body.trim().is_empty()),
+        format: Some(&env.config.format),
     };
-    render::render_llm(&inputs, &env.config).await
+    render::render_llm_outcome_validated_logged(
+        &inputs,
+        &env.config,
+        range_tickets,
+        forbidden_tickets,
+        log,
+    )
+    .await
 }
 
 /// Gather-only debug path (`preview_gather`): steps (a), (b), (c), (e) and (f).
@@ -1475,8 +1925,9 @@ mod tests {
         audit_patch, base_result, config_from_store_bytes, config_store_path, decide_render,
         error_result, git_root_for, inputs_hash, is_regression, last_trigger,
         load_config_from_disk, ok_result, outcome_message, parse_note_refs, parse_repo_facts,
-        should_skip_unchanged, sidecar_repo_count, skip_result, split_ticket_days, subtitle_for,
-        targets, title_for, RenderDecision, Step, STEPS,
+        required_llm_failure, should_skip_unchanged, sidecar_repo_count, skip_result,
+        split_ticket_days, subtitle_for, targets, title_for, RenderDecision, Step,
+        RENDER_CONTRACT_VERSION, STEPS,
     };
     use crate::commands::types::{
         AppConfig, CompileStatus, LastTrigger, RenderMode, RenderUsed, SchedulerConfig,
@@ -1626,6 +2077,36 @@ mod tests {
         }
     }
 
+    /// The dirty check hashes inputs, so a better prompt or sanitizer would
+    /// otherwise leave every compiled day marked unchanged and the fix invisible.
+    #[test]
+    fn the_inputs_hash_is_scoped_to_the_render_contract_version() {
+        let parts = [
+            RENDER_CONTRACT_VERSION,
+            "facts",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ];
+        assert_eq!(
+            inputs_hash("facts", &Gathered::default()),
+            autostand_core::hashes::input_hash(&parts)
+        );
+        let mut bumped = parts;
+        bumped[0] = "next";
+        assert_ne!(
+            inputs_hash("facts", &Gathered::default()),
+            autostand_core::hashes::input_hash(&bumped),
+            "bumping the contract version must force a recompile"
+        );
+    }
+
     #[test]
     fn the_inputs_hash_covers_every_gathered_source() {
         let baseline = inputs_hash("facts", &Gathered::default());
@@ -1747,12 +2228,26 @@ mod tests {
     }
 
     #[test]
-    fn llm_mode_also_falls_back_rather_than_writing_nothing() {
-        // A configured preference must not leave a working day without a standup.
+    fn llm_mode_surfaces_missing_provider_while_auto_can_fallback() {
         let decision = decide_render(RenderMode::Llm, None, &tickets(), &[]);
         assert_eq!(decision.core_mode(), CoreMode::Det);
         assert_eq!(decision.render_used(), RenderUsed::LlmFallback);
         assert!(decision.fellback());
+        let failure = required_llm_failure(
+            RenderMode::Llm,
+            &decision,
+            &crate::render::LlmRenderOutcome::default(),
+        );
+        assert_eq!(
+            failure.as_deref(),
+            Some("no enabled LLM provider was available")
+        );
+        assert!(required_llm_failure(
+            RenderMode::Auto,
+            &decision,
+            &crate::render::LlmRenderOutcome::default()
+        )
+        .is_none());
     }
 
     #[test]
@@ -2172,6 +2667,7 @@ mod tests {
             &gathered,
             &RenderDecision::Accepted(GOOD_BODY.into()),
             Some(&body),
+            &[],
             "deadbeef",
         );
         // `start` / `end` are core's key names — commands::standup reads them.
@@ -2202,6 +2698,7 @@ mod tests {
                 message: "render invents ticket FIF-999".into(),
             },
             None,
+            &[],
             "cafe",
         );
         assert_eq!(patch["render_used"], serde_json::json!("llm_fallback"));

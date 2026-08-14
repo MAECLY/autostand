@@ -1,17 +1,14 @@
 /**
- * History: browse the standup files already on disk.
+ * History: browse standup files already on disk.
  *
- * The backend exposes no directory listing — only `read_standup_file(date)` —
- * so the rail probes the last `WINDOW_DAYS` filing dates and treats a
- * rejection as "nothing filed that day". Every probe shares the `["standup",
- * date]` key with the dashboard, so a compile invalidates this list too.
+ * `list_standup_dates` does one `read_dir` for the visible window. Individual
+ * files still load through `["standup", date]` so a compile refreshes the
+ * preview the same way the dashboard does.
  */
 
 import { useMemo } from "react";
 
-import { useQueries } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { format, subDays } from "date-fns";
 import { CalendarX2, FileQuestion } from "lucide-react";
 
 import {
@@ -19,110 +16,141 @@ import {
   AlertDescription,
   AlertTitle,
 } from "@autostand/ui/components/alert";
-import { Badge } from "@autostand/ui/components/badge";
 import { Spinner } from "@autostand/ui/components/spinner";
 
+import { AgendaView } from "@/components/history/AgendaView";
+import { DayView } from "@/components/history/DayView";
+import { HistoryList } from "@/components/history/HistoryList";
+import { HistoryNavigator } from "@/components/history/HistoryNavigator";
+import { HistoryViewToggle } from "@/components/history/HistoryViewToggle";
+import { MonthGrid } from "@/components/history/MonthGrid";
+import { WeekGrid } from "@/components/history/WeekGrid";
+import {
+  daysInRange,
+  historyRange,
+  historyRangeLabel,
+  shiftHistoryAnchor,
+} from "@/components/history/range";
 import { StandupPreview } from "@/components/standup/StandupPreview";
 import { useHostSlug } from "@/hooks/use-config";
-import { standupKey, useStandupFile } from "@/hooks/use-standup";
+import { useStandupFile } from "@/hooks/use-standup";
+import { useStandupDatesInRange } from "@/hooks/use-standup-dates";
 import { toAppError } from "@/lib/error";
 import { useUiStore } from "@/lib/store";
-import { tauriApi } from "@/lib/tauri";
-import { cn, formatIsoDate, ISO_DATE_FORMAT } from "@/lib/utils";
+import { formatIsoDate, todayIso } from "@/lib/utils";
 
 export const Route = createFileRoute("/history")({
   component: HistoryPage,
 });
 
-/** How far back the rail probes. Each day costs one `read_standup_file` call. */
-const WINDOW_DAYS = 14;
-
-function recentDates(today: Date): string[] {
-  return Array.from({ length: WINDOW_DAYS }, (_, offset) =>
-    format(subDays(today, offset), ISO_DATE_FORMAT),
-  );
-}
-
 function HistoryPage() {
-  // Anchored once per mount: a re-render must not shift the window.
-  const dates = useMemo(() => recentDates(new Date()), []);
-
   const selectedDate = useUiStore((state) => state.selectedDate);
   const setSelectedDate = useUiStore((state) => state.setSelectedDate);
+  const historyView = useUiStore((state) => state.historyView);
+  const setHistoryView = useUiStore((state) => state.setHistoryView);
+  const historyAnchor = useUiStore((state) => state.historyAnchor);
+  const setHistoryAnchor = useUiStore((state) => state.setHistoryAnchor);
   const hostSlug = useHostSlug();
 
-  const probes = useQueries({
-    queries: dates.map((date) => ({
-      queryKey: standupKey(date),
-      queryFn: () => tauriApi.readStandupFile(date),
-    })),
-  });
+  const range = useMemo(
+    () => historyRange(historyView, historyAnchor),
+    [historyView, historyAnchor],
+  );
+  const windowDays = useMemo(
+    () => daysInRange(range.since, range.until),
+    [range.since, range.until],
+  );
+  const datesQuery = useStandupDatesInRange(range.since, range.until);
+  const filed = useMemo(
+    () => new Set(datesQuery.data ?? []),
+    [datesQuery.data],
+  );
 
-  // Shares the cache entry the probe above filled, and covers a selected date
-  // that has since fallen out of the window.
   const selected = useStandupFile(selectedDate);
 
-  const filed = probes.filter((probe) => probe.data !== undefined).length;
-  const settled = probes.every((probe) => !probe.isPending);
+  const filedCount = datesQuery.data?.length ?? 0;
+  const settled = !datesQuery.isPending;
+
+  function selectDate(date: string) {
+    setSelectedDate(date);
+  }
 
   return (
-    <div className="grid gap-6 p-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
-      <aside className="space-y-3">
+    <div className="grid min-h-0 min-w-0 gap-6 p-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
+      <aside className="min-h-0 space-y-3 overflow-y-auto">
+        <HistoryViewToggle
+          value={historyView}
+          onChange={(view) => {
+            setHistoryView(view);
+            if (view === "day") setHistoryAnchor(selectedDate);
+          }}
+        />
+        <HistoryNavigator
+          label={historyRangeLabel(historyView, historyAnchor)}
+          onPrevious={() => {
+            const next = shiftHistoryAnchor(historyView, historyAnchor, -1);
+            setHistoryAnchor(next);
+            if (historyView === "day") setSelectedDate(next);
+          }}
+          onNext={() => {
+            const next = shiftHistoryAnchor(historyView, historyAnchor, 1);
+            setHistoryAnchor(next);
+            if (historyView === "day") setSelectedDate(next);
+          }}
+          onToday={() => {
+            const today = todayIso();
+            setHistoryAnchor(today);
+            setSelectedDate(today);
+          }}
+        />
+
         <div className="space-y-1">
           <h2 className="text-sm font-semibold text-foreground">
-            Last {WINDOW_DAYS} days
+            {historyRangeLabel(historyView, historyAnchor)}
           </h2>
           <p className="text-xs text-muted-foreground">
             {settled
-              ? `${filed} day${filed === 1 ? "" : "s"} with a standup file`
+              ? `${filedCount} day${filedCount === 1 ? "" : "s"} with a standup file`
               : "Checking the dailies directory…"}
           </p>
         </div>
 
-        <ul className="space-y-1">
-          {probes.map((probe, index) => {
-            const date = dates[index];
-            const file = probe.data;
-            const isSelected = date === selectedDate;
+        {historyView === "list" ? (
+          <HistoryList
+            dates={windowDays.slice().reverse()}
+            filed={filed}
+            selectedDate={selectedDate}
+            onSelect={selectDate}
+          />
+        ) : null}
+        {historyView === "month" ? (
+          <MonthGrid
+            anchor={historyAnchor}
+            filed={filed}
+            selectedDate={selectedDate}
+            onSelect={selectDate}
+          />
+        ) : null}
+        {historyView === "week" ? (
+          <WeekGrid
+            dates={windowDays}
+            filed={filed}
+            selectedDate={selectedDate}
+            onSelect={selectDate}
+          />
+        ) : null}
+        {historyView === "day" ? (
+          <DayView date={selectedDate} hasFile={filed.has(selectedDate)} />
+        ) : null}
+        {historyView === "agenda" ? (
+          <AgendaView
+            dates={datesQuery.data ?? []}
+            selectedDate={selectedDate}
+            onSelect={selectDate}
+          />
+        ) : null}
 
-            return (
-              <li key={date}>
-                <button
-                  type="button"
-                  disabled={file === undefined}
-                  aria-current={isSelected ? "true" : undefined}
-                  onClick={() => setSelectedDate(date)}
-                  className={cn(
-                    "flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    isSelected
-                      ? "bg-muted font-medium text-foreground"
-                      : "text-muted-foreground",
-                    file !== undefined
-                      ? "hover:bg-muted hover:text-foreground"
-                      : "opacity-60",
-                  )}
-                >
-                  <span className="truncate">
-                    {formatIsoDate(date, "EEE MMM d")}
-                  </span>
-                  {probe.isPending ? (
-                    <Spinner size="sm" label={`Checking ${date}`} />
-                  ) : file !== undefined ? (
-                    <Badge variant="secondary">
-                      {file.auto_blocks.length} host
-                      {file.auto_blocks.length === 1 ? "" : "s"}
-                    </Badge>
-                  ) : (
-                    <span className="shrink-0 text-xs text-subtle">no file</span>
-                  )}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-
-        {settled && filed === 0 && (
+        {settled && filedCount === 0 && historyView === "list" ? (
           <Alert>
             <CalendarX2 />
             <AlertTitle>Nothing filed yet</AlertTitle>
@@ -130,7 +158,7 @@ function HistoryPage() {
               No standup file exists in the dailies directory for these dates.
             </AlertDescription>
           </Alert>
-        )}
+        ) : null}
       </aside>
 
       <section className="min-w-0">

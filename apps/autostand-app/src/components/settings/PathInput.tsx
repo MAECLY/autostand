@@ -15,6 +15,7 @@ import { Button } from "@autostand/ui/components/button";
 import { Input } from "@autostand/ui/components/input";
 import { Label } from "@autostand/ui/components/label";
 
+import { OpenPathButton } from "@/components/common/OpenPathButton";
 import { useValidatePaths } from "@/hooks/use-paths";
 import type { PathValidation } from "@/lib/types";
 
@@ -98,6 +99,11 @@ export function PathInput({
           <FolderOpen className="size-4" aria-hidden="true" />
           Browse…
         </Button>
+        <OpenPathButton
+          path={value}
+          label={`Open ${label} in the file manager`}
+          disabled={validation !== null && !ok}
+        />
       </div>
 
       {validation !== null ? (

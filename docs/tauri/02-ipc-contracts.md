@@ -36,12 +36,28 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `set_host_slug` | `{ slug: string }` | `void` | Manual override; rejects numeric/IP-like | `autostand-core::host::persist` |
 | `list_data_sources` | — | `DataSourceConfig[]` | List configured data sources + enabled state | `autostand-core::config::data_sources` |
 | `toggle_data_source` | `{ id: string, enabled: boolean }` | `void` | Flip a source flag, persist config | `autostand-core::config::set_source` |
-| `list_llm_providers` | — | `LlmProviderConfig[]` | List 5 providers with status: CLI detected? API key set? | `autostand-adapters::llm::registry` |
+| `list_llm_providers` | — | `LlmProviderConfig[]` | List 6 providers with status: CLI detected? API key set? | `autostand-adapters::llm::registry` |
 | `test_llm_provider` | `{ provider: string, mode: "cli" \| "api" }` | `{ ok: boolean, message: string, latency_ms: number }` | Ping provider (echo prompt); never throws | `autostand-adapters::llm::test` |
+| `list_provider_models` | `{ provider: string }` | `string[]` | Probe the provider API for model ids. Empty on missing key / unreachable host; `invalid` only for an unknown provider | `autostand-adapters::llm::helpers` |
+| `get_provider_health` | — | `ProviderHealth[]` | Probe supported usage sources for all providers and merge safe inferred failures | `commands::llm` |
+| `refresh_provider_health` | `{ provider: string \| null }` | `ProviderHealth[]` | Refresh one provider or all; emits `provider-health-updated` | `commands::llm` |
+| `list_local_models` | — | `LocalModelInfo[]` | List the pinned built-in catalog and derived on-disk status | `commands::local_models` |
+| `download_local_model` | `{ modelId: string }` | `void` | Start/resume a user-initiated, hash-verified model download | `commands::local_models` |
+| `cancel_local_model_download` | `{ modelId: string }` | `boolean` | Signal cancellation and retain the partial file for resume | `commands::local_models` |
+| `delete_local_model` | `{ modelId: string }` | `void` | Delete final and partial model files and clear selection when applicable | `commands::local_models` |
+| `select_local_model` | `{ modelId: string }` | `void` | Select an installed, size-valid catalog model | `commands::local_models` |
+| `accept_local_model_terms` | `{ modelId: string }` | `void` | Persist acceptance of the catalog's exact terms version | `commands::local_models` |
+| `unload_local_models` | — | `LocalRuntimeUnload` | Terminate any process still holding a managed GGUF and delete the reusable prompt caches; model files are kept | `commands::local_models` |
+| `get_notification_status` | — | `NotificationStatus` | Read OS permission and saved notification preferences without prompting | `notifications` |
+| `request_notification_permission` | — | `string` | Ask for OS permission after an explicit Settings action | `notifications` |
+| `send_test_notification` | — | `boolean` | Send a content-free test alert; respects master opt-in and dedup policy | `notifications` |
 | `compile_standup` | `{ date?: string }` | `CompileResult` | Run full pipeline for one date (default: today) | `autostand-core::pipeline::trigger` |
 | `compile_all` | — | `CompileResult[]` | Recompile F_TODAY + F_PREV (business-day aware) | `autostand-core::pipeline::trigger_all` |
+| `preview_regeneration` | `{ date?: string }` | `RegenerationPreview` | Generate a fresh, isolated F_TODAY candidate and return current/candidate AUTO bodies without writing the live standup | `autostand-app::pipeline_runner::compile_one(Preview)` |
+| `apply_regeneration` | `{ token: string, resolution: "keep_current" \| "use_candidate" \| "merge", mergedAuto?: string }` | `RegenerationApplied` | Apply an explicit resolution after expiry/base-hash checks; replaces only this host's AUTO block | `autostand-core::fileops::set_auto` |
 | `read_standup_file` | `{ date: string }` | `StandupFileContent` | Parse `dailies/<date>.md` → AUTO blocks per host, MANUAL region, title, subtitle | `autostand-core::format::parse_file` |
 | `add_manual_item` | `{ date: string, item: string }` | `void` | Append line to MANUAL region of `<date>.md` (atomic) | `autostand-core::format::append_manual` |
+| `list_standup_dates` | `{ since: string, until: string }` | `string[]` | One `read_dir` of `dailies_dir`; `YYYY-MM-DD.md` stems in the inclusive range | `std::fs::read_dir` |
 | `list_audit_sidecars` | `{ date: string }` | `AuditSidecar[]` | List `state/audit/<date>-*.json` files | `autostand-core::audit::list_for_date` |
 | `read_audit_sidecar` | `{ path: string }` | `AuditData` | Parse one sidecar JSON | `autostand-core::audit::read` |
 | `get_pipeline_status` | — | `PipelineStatus` | Current run state (idle/gathering/rendering/done/error) + last run info | `autostand-app::state::status` |
@@ -52,6 +68,7 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `discover_repos` | — | `RepoInfo[]` | Scan `GITHUB_DIR` for git repos (depth-1) | `autostand-adapters::git::discover` |
 | `get_settings_paths` | — | `SettingsPaths` | Return all configured paths (GITHUB_DIR, dailies dir, claude dir, etc.) | `autostand-core::config::paths` |
 | `validate_paths` | — | `PathValidation[]` | Check each path exists + readable; returns per-path ok/missing | `autostand-core::config::validate` |
+| `open_in_file_manager` | `{ path: string }` | `void` | Open a directory in the OS file manager (Finder / Explorer / `xdg-open`). Rejects blank, relative, and non-directory paths before the shell handoff: `invalid`, or `not_found` when the directory is gone | `tauri_plugin_opener::open_path` |
 | `store_api_key` | `{ provider: string, key: string }` | `void` | Store key in OS keychain (`keyring` crate) under `autostand.<provider>` | `autostand-app::secrets::store` |
 | `get_api_key_status` | `{ provider: string }` | `{ set: boolean, mode: "keychain" \| "env" \| "none" }` | Whether a key is set and where it came from | `autostand-app::secrets::status` |
 | `detect_cli` | `{ provider: string }` | `{ found: boolean, path: string, version: string }` | Locate CLI binary on PATH + `--version` probe | `autostand-adapters::cli::detect` |
@@ -78,15 +95,45 @@ export interface AppConfig {
   scheduler: SchedulerConfig;
   review: ReviewConfig;
   scrub: ScrubConfig;
+  format: StandupFormatConfig;
+  notifications: NotificationConfig;
+  sync: { cloud_root: string | null; repo_enabled: boolean };
+  regeneration: { replace_immediately: boolean };
 }
 
 export interface LlmConfig {
   preferred_provider: string;
   providers: ProviderConfig[];
+  fallback_enabled: boolean;
+  provider_order: string[];
+  fallback_policy: ProviderFallbackPolicy;
+  local_runtime_policy: "on_demand" | "keep_ready";
+}
+
+export interface ProviderFallbackPolicy {
+  retry_rate_limits: boolean;
+  max_retry_after_secs: number;
+}
+
+export interface NotificationConfig {
+  enabled: boolean;
+  low_usage: boolean;
+  low_usage_threshold_percent: number;
+  provider_exhausted: boolean;
+  provider_fallback: boolean;
+  local_model_downloads: boolean;
+  standup_complete: boolean;
+  standup_failed: boolean;
+}
+
+export interface NotificationStatus {
+  supported: boolean;
+  permission: string;
+  config: NotificationConfig;
 }
 
 export interface ProviderConfig {
-  id: string;          // "claude" | "ollama" | "openai" | "gemini" | "grok"
+  id: string;          // cloud/CLI provider id or "builtin-local"
   enabled: boolean;
   mode: "CliFirst" | "ApiFallback" | "CliOnly" | "ApiOnly";
   model: string;
@@ -144,6 +191,79 @@ export interface LlmProviderConfig {
   api_key: { set: boolean; mode: "keychain" | "env" | "none" };
 }
 
+export type UsageSource =
+  | "provider_reported"
+  | "response_headers"
+  | "management_api"
+  | "failure_inferred"
+  | "unknown";
+
+export type ProviderAvailability =
+  | "available"
+  | "low"
+  | "exhausted"
+  | "rate_limited"
+  | "auth_required"
+  | "model_unavailable"
+  | "unavailable"
+  | "unknown";
+
+export interface UsageWindow {
+  id: string;
+  used_percent: number | null;
+  remaining_percent: number | null;
+  resets_at: string | null;
+}
+
+export interface ProviderHealth {
+  provider: string;
+  availability: ProviderAvailability;
+  source: UsageSource;
+  windows: UsageWindow[];
+  reason: string | null;
+  checked_at: string;
+}
+
+export type LocalModelStatus =
+  | "not_downloaded"
+  | "downloading"
+  | "available"
+  | "corrupted"
+  | "error";
+
+export interface LocalModelInfo {
+  id: string;
+  display_name: string;
+  tier: string;
+  quality: string;
+  format: "GGUF";
+  size_bytes: number;
+  context_length: number;
+  status: LocalModelStatus;
+  selected: boolean;
+  license: string;
+  license_url: string;
+  terms_required: boolean;
+  downloaded_bytes: number;
+  runtime_cache_bytes: number;   // reusable llama.cpp prompt/KV cache, 0 when cold
+  error: string | null;
+}
+
+export interface LocalRuntimeUnload {
+  processes_terminated: number;
+  caches_removed: number;
+  bytes_freed: number;
+}
+
+export interface LocalModelProgressEvent {
+  model_id: string;
+  status: LocalModelStatus;
+  downloaded_bytes: number;
+  total_bytes: number;
+  bytes_per_second: number;
+  error: string | null;
+}
+
 export interface CompileResult {
   date: string;                 // "2026-08-03"
   host: string;
@@ -153,6 +273,32 @@ export interface CompileResult {
   audit_path: string | null;
   file_path: string;
   accumulated_count: number;    // bullets re-injected from PREV
+  message: string;
+}
+
+export interface RegenerationPreview {
+  token: string;                // opaque; expires after 30 minutes
+  date: string;
+  host: string;
+  current_auto: string;
+  candidate_auto: string;
+  base_hash: string;            // exact live-file SHA-256 used for TOCTOU protection
+  expires_at: string;
+  render_used: "llm" | "det" | "llm_fallback";
+  fellback: boolean;
+  message: string;
+}
+
+export type RegenerationResolution = "keep_current" | "use_candidate" | "merge";
+
+export interface RegenerationApplied {
+  date: string;
+  host: string;
+  file_path: string;
+  resolution: RegenerationResolution;
+  auto_body: string;
+  committed: boolean;
+  pushed: boolean;
   message: string;
 }
 
@@ -200,9 +346,19 @@ export interface AuditData {
   render_used: "llm" | "det" | "llm_fallback";
   provider: string | null;
   model: string | null;
+  provider_attempts: ProviderAttempt[];
   fellback: boolean;
   hash: string;
   accumulated_count: number;
+}
+
+export interface ProviderAttempt {
+  provider: string;
+  channel: "cli" | "api" | null;
+  model: string;
+  status: "succeeded" | "failed" | "empty" | "skipped";
+  reason: string | null;
+  latency_ms: number | null;
 }
 
 export interface RepoFacts {
@@ -318,20 +474,32 @@ export const tauriApi = {
   testLlmProvider:     (provider: string, mode: "cli" | "api") =>
                           invoke<{ ok: boolean; message: string; latency_ms: number }>(
                             "test_llm_provider", { provider, mode }),
+  listProviderModels:  (provider: string)          =>
+                          invoke<string[]>("list_provider_models", { provider }),
   compileStandup:       (date?: string)             => invoke<CompileResult>("compile_standup", { date }),
   compileAll:          ()                          => invoke<CompileResult[]>("compile_all"),
   readStandupFile:      (date: string)              => invoke<StandupFileContent>("read_standup_file", { date }),
   addManualItem:       (date: string, item: string) => invoke<void>("add_manual_item", { date, item }),
+  listStandupDates:    (since: string, until: string) =>
+                          invoke<string[]>("list_standup_dates", { since, until }),
   listAuditSidecars:   (date: string)               => invoke<AuditSidecar[]>("list_audit_sidecars", { date }),
   readAuditSidecar:    (path: string)               => invoke<AuditData>("read_audit_sidecar", { path }),
   getPipelineStatus:   ()                          => invoke<PipelineStatus>("get_pipeline_status"),
   previewGather:       (date: string)               => invoke<GatherPreview>("preview_gather", { date }),
   getSchedulerStatus:  ()                          => invoke<SchedulerStatus>("get_scheduler_status"),
   setSchedulerSchedule:(cron: string)              => invoke<void>("set_scheduler_schedule", { cron }),
+  setSchedulerEnabled:(enabled: boolean)            => invoke<void>("set_scheduler_enabled", { enabled }),
   triggerRunNow:       ()                          => invoke<CompileResult>("trigger_run_now"),
+  previewRegeneration:(date?: string)               => invoke<RegenerationPreview>("preview_regeneration", { date }),
+  applyRegeneration:  (token, resolution, mergedAuto?) => invoke<RegenerationApplied>("apply_regeneration", { token, resolution, mergedAuto }),
   discoverRepos:       ()                          => invoke<RepoInfo[]>("discover_repos"),
   getSettingsPaths:    ()                          => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths:       ()                          => invoke<PathValidation[]>("validate_paths"),
+  openInFileManager:  (path: string)                => invoke<void>("open_in_file_manager", { path }),
+  detectCloudFolders:  ()                          => invoke<CloudFolder[]>("detect_cloud_folders"),
+  configureCloudSync: (rootPath: string)            => invoke<CloudSyncSelection>("configure_cloud_sync", { rootPath }),
+  getRepoSyncStatus:  ()                           => invoke<RepoSyncStatus>("get_repo_sync_status"),
+  setupRepoSync:      (repoName?: string)           => invoke<RepoSyncStatus>("setup_repo_sync", { repoName }),
   storeApiKey:         (provider: string, key: string) =>
                           invoke<void>("store_api_key", { provider, key }),
   getApiKeyStatus:     (provider: string) =>
@@ -358,6 +526,8 @@ The backend emits events using the Tauri app handle. The frontend subscribes wit
 | `pipeline-done` | `CompileResult` | `pipeline::trigger` | After commit_push (or skip) |
 | `pipeline-error` | `{ code: string, message: string, step: string, date: string }` | `pipeline::trigger` catch | On any step failure that aborts the run |
 | `scheduler-tick` | `{ next_run_at: string, source: string }` | `autostand-scheduler` | On each scheduler poll (every 60s in-process, or on unit activation) |
+| `provider-health-updated` | `ProviderHealth[]` | `refresh_provider_health` | After an explicit/all-provider usage probe |
+| `local-model-progress` | `LocalModelProgressEvent` | local model downloader | While downloading, after verification, or on corruption |
 
 ### Backend emit (Rust)
 

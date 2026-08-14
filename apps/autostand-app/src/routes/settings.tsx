@@ -25,7 +25,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@autostand/ui/components/card";
+import { Label } from "@autostand/ui/components/label";
 import { Separator } from "@autostand/ui/components/separator";
+import { Switch } from "@autostand/ui/components/switch";
 import {
   Tabs,
   TabsContent,
@@ -34,10 +36,15 @@ import {
 } from "@autostand/ui/components/tabs";
 
 import { DataSourceToggle } from "@/components/settings/DataSourceToggle";
+import { FormatTab } from "@/components/settings/FormatTab";
+import { LocalModelsTab } from "@/components/settings/LocalModelsTab";
+import { NotificationsTab } from "@/components/settings/NotificationsTab";
 import { PathInput } from "@/components/settings/PathInput";
 import { ProviderCard } from "@/components/settings/ProviderCard";
+import { ProviderUsage } from "@/components/settings/ProviderUsage";
 import { RepoTable } from "@/components/settings/RepoTable";
 import { SchedulerForm } from "@/components/settings/SchedulerForm";
+import { SyncTab } from "@/components/settings/SyncTab";
 import { useConfig, useSetConfig } from "@/hooks/use-config";
 import { useDataSources } from "@/hooks/use-data-sources";
 import {
@@ -46,6 +53,12 @@ import {
   useTestProvider,
 } from "@/hooks/use-providers";
 import { toAppError } from "@/lib/error";
+import {
+  SETTINGS_TABS,
+  isSettingsTab,
+  useUiStore,
+  type SettingsTab,
+} from "@/lib/store";
 import type {
   AppConfig,
   LlmProviderConfig,
@@ -156,6 +169,7 @@ function upsertProvider(
 }
 
 function ProvidersTab() {
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const { data: config } = useConfig();
   const providers = useLlmProviders();
   const setConfig = useSetConfig();
@@ -167,6 +181,18 @@ function ProvidersTab() {
     setConfig.mutate(upsertProvider(config, id, changes));
   }
 
+  function setProviderOrder(order: string[]) {
+    if (config === undefined) return;
+    setConfig.mutate({
+      ...config,
+      llm: {
+        ...config.llm,
+        provider_order: order,
+        preferred_provider: order[0] ?? config.llm.preferred_provider,
+      },
+    });
+  }
+
   if (providers.isPending) return <TabSkeleton rows={3} />;
   if (providers.isError) {
     return (
@@ -174,9 +200,47 @@ function ProvidersTab() {
     );
   }
 
+  const providerById = new Map(
+    providers.data.map((provider) => [provider.id, provider]),
+  );
+  const configuredOrder = config?.llm.provider_order ?? [];
+  const orderedIds = [
+    ...configuredOrder.filter((id) => providerById.has(id)),
+    ...providers.data
+      .map((provider) => provider.id)
+      .filter((id) => !configuredOrder.includes(id)),
+  ];
+
   return (
-    <div className="flex flex-col gap-4">
-      {providers.data.map((provider) => {
+    <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="flex min-w-0 flex-col gap-3">
+        <div className="flex items-start justify-between gap-5 rounded-xl border border-border bg-surface p-4">
+          <div>
+            <p className="text-sm font-semibold">Provider priority</p>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Autostand starts at the top and continues with the next enabled provider when usage, authentication or service availability blocks a render.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            <Label htmlFor="provider-fallback-enabled" className="text-xs font-normal">
+              Automatic fallback
+            </Label>
+            <Switch
+              id="provider-fallback-enabled"
+              checked={config?.llm.fallback_enabled ?? true}
+              disabled={config === undefined}
+              onCheckedChange={(fallback_enabled) => {
+                if (config === undefined) return;
+                setConfig.mutate({ ...config, llm: { ...config.llm, fallback_enabled } });
+              }}
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2" role="radiogroup" aria-label="Preferred AI provider">
+        {orderedIds.map((providerId, index) => {
+        const provider = providerById.get(providerId);
+        if (provider === undefined) return null;
         const stored = config?.llm.providers.find(
           (candidate) => candidate.id === provider.id,
         );
@@ -198,12 +262,41 @@ function ProvidersTab() {
             provider={merged}
             timeoutSecs={stored?.timeout_secs ?? defaultTimeoutSecs(provider.id)}
             isPreferred={config?.llm.preferred_provider === provider.id}
+            canMoveUp={index > 0}
+            canMoveDown={index < orderedIds.length - 1}
             onSetPreferred={() => {
               if (config === undefined) return;
+              const order = [
+                provider.id,
+                ...orderedIds.filter((id) => id !== provider.id),
+              ];
               setConfig.mutate({
                 ...config,
-                llm: { ...config.llm, preferred_provider: provider.id },
+                llm: {
+                  ...config.llm,
+                  preferred_provider: provider.id,
+                  provider_order: order,
+                },
               });
+            }}
+            onSetEnabled={(enabled) => patchProvider(provider.id, { enabled })}
+            onMoveUp={() => {
+              if (index === 0) return;
+              const order = [...orderedIds];
+              [order[index - 1], order[index]] = [
+                order[index],
+                order[index - 1],
+              ];
+              setProviderOrder(order);
+            }}
+            onMoveDown={() => {
+              if (index >= orderedIds.length - 1) return;
+              const order = [...orderedIds];
+              [order[index], order[index + 1]] = [
+                order[index + 1],
+                order[index],
+              ];
+              setProviderOrder(order);
             }}
             onSetMode={(mode) => patchProvider(provider.id, { mode })}
             onSetModel={(model) => patchProvider(provider.id, { model })}
@@ -216,9 +309,19 @@ function ProvidersTab() {
             onSaveKey={(key) =>
               storeApiKey.mutateAsync({ provider: provider.id, key })
             }
+            expanded={expandedProvider === provider.id}
+            onToggleDetails={() =>
+              setExpandedProvider((current) => current === provider.id ? null : provider.id)
+            }
           />
         );
-      })}
+        })}
+        </div>
+      </div>
+
+      <aside className="sticky top-4 min-w-0 rounded-xl border border-border bg-surface p-4">
+        <ProviderUsage compact />
+      </aside>
     </div>
   );
 }
@@ -351,22 +454,49 @@ function PathsTab() {
 
 // ── Page ──────────────────────────────────────────────────────────────────
 
+/**
+ * Labels for the tab ids owned by the store. A `Record` keyed by
+ * {@link SettingsTab} makes a forgotten label a type error, so the strip and
+ * the remembered tab cannot drift apart.
+ */
+const TAB_LABELS: Record<SettingsTab, string> = {
+  providers: "Providers",
+  "data-sources": "Data Sources",
+  format: "Standup Format",
+  paths: "Paths",
+  sync: "Sync",
+  scheduler: "Scheduler",
+  notifications: "Notifications",
+  "local-models": "Local AI",
+};
+
 function SettingsPage() {
+  // The route unmounts on every navigation away, so the open tab lives in the
+  // UI store instead of Radix's internal state.
+  const settingsTab = useUiStore((state) => state.settingsTab);
+  const setSettingsTab = useUiStore((state) => state.setSettingsTab);
+
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="flex min-h-0 flex-col gap-6 p-6">
       <header className="min-w-0">
         <h2 className="text-lg font-semibold text-foreground">Settings</h2>
         <p className="text-sm text-muted-foreground">
-          Providers, data sources, paths and the compile schedule.
+          Providers, data sources, paths, cloud sync and the compile schedule.
         </p>
       </header>
 
-      <Tabs defaultValue="providers">
+      <Tabs
+        value={settingsTab}
+        onValueChange={(value) => {
+          if (isSettingsTab(value)) setSettingsTab(value);
+        }}
+      >
         <TabsList>
-          <TabsTrigger value="providers">Providers</TabsTrigger>
-          <TabsTrigger value="data-sources">Data Sources</TabsTrigger>
-          <TabsTrigger value="paths">Paths</TabsTrigger>
-          <TabsTrigger value="scheduler">Scheduler</TabsTrigger>
+          {SETTINGS_TABS.map((tab) => (
+            <TabsTrigger key={tab} value={tab}>
+              {TAB_LABELS[tab]}
+            </TabsTrigger>
+          ))}
         </TabsList>
 
         <TabsContent value="providers">
@@ -377,16 +507,42 @@ function SettingsPage() {
           <DataSourcesTab />
         </TabsContent>
 
+        <TabsContent value="format">
+          <FormatTab />
+        </TabsContent>
+
         <TabsContent value="paths">
           <PathsTab />
+        </TabsContent>
+
+        <TabsContent value="sync">
+          <SyncTab />
         </TabsContent>
 
         <TabsContent value="scheduler">
           <Section
             title="Scheduler"
-            description="Cron expression, self-heal, and what the installed scheduler is doing."
+            description="Choose when Autostand runs in plain language. Advanced cron remains available when needed."
           >
             <SchedulerForm />
+          </Section>
+        </TabsContent>
+
+        <TabsContent value="notifications">
+          <Section
+            title="Notifications"
+            description="Choose which provider, usage and scheduler events may reach the operating system."
+          >
+            <NotificationsTab />
+          </Section>
+        </TabsContent>
+
+        <TabsContent value="local-models">
+          <Section
+            title="Built-in local AI"
+            description="Download and select a private GGUF model for offline provider fallback."
+          >
+            <LocalModelsTab />
           </Section>
         </TabsContent>
       </Tabs>

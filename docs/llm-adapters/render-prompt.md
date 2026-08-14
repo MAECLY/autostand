@@ -22,10 +22,9 @@ You are a daily standup compiler. Given structured activity data, produce a clea
 
 ## Rules
 - Past tense, concrete, English.
-- One section per repo: `**<repo-name> — [TICKET](<jira_base>/TICKET) — <title>**` followed by `- ` bullets.
-- Jira key is the only link. Repo name is plain text.
-- Non-repo work goes under `**General — <topic>**` or `**<Spike name>**`.
-- Trailing `**PR Review**` section (one bullet per PR reviewed): `repo #num — "title" (by author) — State`. Omit if empty.
+- The OUTPUT block below is the sole authority for headings and section order. Do not use a legacy repo-section layout when a preset is present.
+- Place repo names, Jira keys, titles and PR-review facts inside the required preset bullets; the Jira key is the only link.
+- When a required forward-looking or evaluative section has no supported fact, write exactly `- None`; never ask a question, explain a conflict, or refuse the format.
 - NEVER claim work was committed/pushed/merged if it's only in notes.
 - NEVER include secrets, API keys, tokens, passwords.
 - NEVER attribute to AI. Write as if the human did the work.
@@ -60,4 +59,4 @@ The user prompt (the structured activity data) is always the **user** role or th
 - The canonical text is stored at `crates/autostand-core/src/render_prompt.txt` and embedded at compile time via `include_str!("render_prompt.txt")`. This guarantees the binary always ships with a matching prompt and there is no runtime file lookup.
 - The embedded string is exposed as `autostand_core::RENDER_PROMPT: &str`.
 - For advanced users, the prompt can be overridden via `config.llm.render_prompt_override: Option<PathBuf>` — if set, autostand reads and substitutes that file at render time instead of the embedded string. This lets users iterate on the prompt without rebuilding, but the embedded version is always the fallback if the override file is missing or unreadable.
-- The prompt is intentionally short and rule-dense. Changes to it should be reviewed carefully — it is the single biggest lever on render quality, and a subtle wording change can shift model behavior across all five providers at once.
+- The prompt is intentionally short and rule-dense. Changes to it should be reviewed carefully — it is the single biggest lever on render quality, and a subtle wording change can shift model behavior across every provider at once.

@@ -52,6 +52,8 @@ export default defineConfig({
   // One browser: the suite asserts application behaviour through a mocked
   // backend, not cross-engine rendering. The shipped app runs in a single
   // webview per platform, so a matrix here would only buy runtime.
+  // Viewport coverage (640/1024/1440/1920) lives in
+  // `regression_dashboard_overflow.spec.ts` instead of multiplying every spec.
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 
   webServer: {

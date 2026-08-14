@@ -5,6 +5,7 @@ members = [
     "crates/autostand-adapters",
     "crates/autostand-scheduler",
     "apps/autostand-app/src-tauri",
+    "crates/autostand-local-llm",
 ]
 
 [workspace.package]
@@ -73,7 +74,7 @@ dirs = "5"
 hostname = "0.4"
 
 # HTTP client (LLM API calls)
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 
 # Internal crates
 autostand-core = { path = "crates/autostand-core" }

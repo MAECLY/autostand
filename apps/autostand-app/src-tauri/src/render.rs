@@ -9,8 +9,9 @@
 //!
 //! Three invariants shape the code:
 //!
-//! 1. **A failed LLM never fails the compile.** Every error path in [`render_llm`] ends in
-//!    `None`, and the caller falls back to the deterministic renderer (`render_det`).
+//! 1. **Fallback is explicit.** [`render_llm`] preserves its `Option` compatibility API,
+//!    while [`render_llm_outcome_logged`] retains every safe failure so `Auto` can fall back
+//!    deterministically and strict `Llm` mode can report an actionable error.
 //! 2. **Anti-recursion.** A rendering CLI session must not be picked up as a data source on
 //!    the next run, so every CLI subprocess carries `AUTOSTAND_RENDER=1` (set by
 //!    `autostand_adapters::llm::helpers::run_cli`), and [`render_llm`] refuses to render at
@@ -22,15 +23,19 @@
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use autostand_adapters::llm::helpers;
 use autostand_adapters::llm::traits::{
-    LlmAdapter, LlmError, ProviderConfig as AdapterConfig, ProviderMode as AdapterMode,
-    RenderModeUsed, RenderOutput,
+    LlmAdapter, LlmError, LocalRuntimePolicy as AdapterLocalRuntimePolicy,
+    ProviderConfig as AdapterConfig, ProviderMode as AdapterMode, RenderModeUsed, RenderOutput,
 };
 use autostand_core::provenance::extract_tickets;
 
-use crate::commands::types::{AppConfig, ProviderConfig, ProviderMode, RenderMode};
+use crate::commands::types::{
+    AppConfig, LocalRuntimePolicy, ProviderConfig, ProviderFallbackPolicy, ProviderMode,
+    RenderMode, StandupFormatConfig,
+};
 
 // ── Canonical prompt ──────────────────────────────────────────────────────
 
@@ -53,10 +58,9 @@ const RENDER_PROMPT: &str = r#"You are a daily standup compiler. Given structure
 
 ## Rules
 - Past tense, concrete, English.
-- One section per repo: `**<repo-name> — [TICKET](<jira_base>/TICKET) — <title>**` followed by `- ` bullets.
-- Jira key is the only link. Repo name is plain text.
-- Non-repo work goes under `**General — <topic>**` or `**<Spike name>**`.
-- Trailing `**PR Review**` section (one bullet per PR reviewed): `repo #num — "title" (by author) — State`. Omit if empty.
+- The OUTPUT block below is the sole authority for headings and section order. Do not use a legacy repo-section layout when a preset is present.
+- Place repo names, Jira keys, titles and PR-review facts inside the required preset bullets; the Jira key is the only link.
+- When a required forward-looking or evaluative section has no supported fact, write exactly `- None`; never ask a question, explain a conflict, or refuse the format.
 - NEVER claim work was committed/pushed/merged if it's only in notes.
 - NEVER include secrets, API keys, tokens, passwords.
 - NEVER attribute to AI. Write as if the human did the work.
@@ -112,14 +116,18 @@ pub struct PromptInputs<'a> {
     pub range_start: &'a str,
     /// Inclusive end of the work window (`YYYY-MM-DD`).
     pub range_end: &'a str,
-    /// Standup title, e.g. `Daily Standup — August 03, 2026`.
-    pub title: &'a str,
-    /// Standup subtitle, e.g. `_Work completed August 01–02, 2026._`.
-    pub subtitle: &'a str,
+    // NOTE: the document title and subtitle are deliberately absent. They belong
+    // to the file skeleton `fileops::set_auto` writes, and showing them here made
+    // small models restate them as bullets ("- Filed August 13, 2026") or, worse,
+    // reproduce the whole document instead of answering.
     /// This host's previous AUTO body, if any.
     ///
     /// Shown to the model so it does not restate bullets `accumulate` will re-inject anyway.
     pub prev_auto: Option<&'a str>,
+    /// Standup format configuration (presets mold the `## OUTPUT` section).
+    ///
+    /// When `None`, the default fixed output block is used (Det mode or legacy).
+    pub format: Option<&'a StandupFormatConfig>,
 }
 
 /// Heading used for the previous-render section.
@@ -135,7 +143,8 @@ const PREV_RENDER_HEADING: &str = "## PREVIOUS RENDER (already reported — do n
 /// GITHUB → PR REVIEWS → EDITED FILES → NOTES), and empty ones are skipped.
 pub fn build_prompt(inputs: &PromptInputs<'_>) -> String {
     let mut out = String::with_capacity(1024);
-    out.push_str("# Standup render request\n\n");
+    out.push_str(autostand_core::prompt_echo::RENDER_REQUEST_SENTINEL);
+    out.push_str("\n\n");
 
     push_context_line(&mut out, "Filing date", inputs.file_date);
     if !inputs.range_start.trim().is_empty() && !inputs.range_end.trim().is_empty() {
@@ -145,8 +154,6 @@ pub fn build_prompt(inputs: &PromptInputs<'_>) -> String {
         out.push_str(inputs.range_end.trim());
         out.push('\n');
     }
-    push_context_line(&mut out, "Title", inputs.title);
-    push_context_line(&mut out, "Subtitle", inputs.subtitle);
     push_context_line(&mut out, "Jira base", inputs.jira_base);
 
     push_section(&mut out, "## GIT FACTS", Some(inputs.facts));
@@ -156,11 +163,15 @@ pub fn build_prompt(inputs: &PromptInputs<'_>) -> String {
     push_section(&mut out, "## NOTES", Some(inputs.notes));
     push_section(&mut out, PREV_RENDER_HEADING, inputs.prev_auto);
 
-    out.push_str("\n## OUTPUT\n");
-    out.push_str(
-        "Return only the standup Markdown body: section headers and `- ` bullets. \
-         No preamble, no closing commentary, no code fences.\n",
-    );
+    if let Some(format) = inputs.format {
+        out.push_str(&crate::format_presets::output_section(format));
+    } else {
+        out.push_str("\n## OUTPUT\n");
+        out.push_str(
+            "Return only the standup Markdown body: section headers and `- ` bullets. \
+             No preamble, no closing commentary, no code fences.\n",
+        );
+    }
     out
 }
 
@@ -232,16 +243,20 @@ fn default_model_for(provider_id: &str) -> &'static str {
     match provider_id {
         "claude" => "sonnet",
         "ollama" => "llama3.2",
-        "openai" => "gpt-5",
         "gemini" => "gemini-2.5-flash",
         "grok" => "grok-4.5",
+        // Codex accounts do not all expose the same model ids. Leaving OpenAI
+        // blank lets the CLI use the compatible model selected by the user's
+        // Codex configuration. Built-in local uses the same blank value to
+        // resolve the model-manager selection; unknown providers stay blank.
+        // The HTTP adapter owns its separate API default.
         _ => "",
     }
 }
 
 /// Default timeout for a provider when config leaves `timeout_secs` at 0.
 fn default_timeout_for(provider_id: &str) -> u64 {
-    if provider_id == "ollama" {
+    if matches!(provider_id, "ollama" | "builtin-local") {
         OLLAMA_TIMEOUT_SECS
     } else {
         DEFAULT_TIMEOUT_SECS
@@ -278,6 +293,17 @@ fn parse_mode(raw: &str) -> Option<AdapterMode> {
 /// the Settings UI stores `""` for "not chosen yet", and sending that straight to a CLI's
 /// `--model` flag would fail every render.
 pub fn provider_config(cfg: &ProviderConfig, api_key: Option<String>) -> AdapterConfig {
+    provider_config_with_local_policy(cfg, api_key, LocalRuntimePolicy::OnDemand)
+}
+
+/// Translate provider settings while preserving the app-level local lifecycle
+/// policy. Non-local adapters receive the value but intentionally ignore it.
+pub fn provider_config_with_local_policy(
+    cfg: &ProviderConfig,
+    api_key: Option<String>,
+    local_runtime_policy: LocalRuntimePolicy,
+) -> AdapterConfig {
+    let is_builtin_local = cfg.id == "builtin-local";
     let model = if cfg.model.trim().is_empty() {
         default_model_for(&cfg.id).to_string()
     } else {
@@ -289,7 +315,11 @@ pub fn provider_config(cfg: &ProviderConfig, api_key: Option<String>) -> Adapter
         cfg.timeout_secs
     };
     AdapterConfig {
-        mode: adapter_mode(cfg.mode),
+        mode: if is_builtin_local {
+            AdapterMode::CliOnly
+        } else {
+            adapter_mode(cfg.mode)
+        },
         model,
         cli_path: cfg
             .cli_path
@@ -297,26 +327,62 @@ pub fn provider_config(cfg: &ProviderConfig, api_key: Option<String>) -> Adapter
             .map(|p| p.trim())
             .filter(|p| !p.is_empty())
             .map(PathBuf::from),
-        api_key,
-        api_base_url: cfg
-            .api_base_url
-            .as_ref()
-            .map(|u| u.trim().to_string())
-            .filter(|u| !u.is_empty()),
+        api_key: if is_builtin_local { None } else { api_key },
+        api_base_url: if is_builtin_local {
+            None
+        } else {
+            cfg.api_base_url
+                .as_ref()
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty())
+        },
         timeout_secs,
+        local_runtime_policy: match local_runtime_policy {
+            LocalRuntimePolicy::OnDemand => AdapterLocalRuntimePolicy::OnDemand,
+            LocalRuntimePolicy::KeepReady => AdapterLocalRuntimePolicy::KeepReady,
+        },
     }
 }
 
-/// Resolve the provider id from an env override and the config, in that precedence.
+/// Resolve the provider failover chain, preserving legacy configurations.
 ///
-/// Returns an empty string when neither is set — the caller treats that as "no LLM
-/// configured" and renders deterministically.
-fn resolve_provider_id(config: &AppConfig, env_override: Option<&str>) -> String {
-    env_override
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| config.llm.preferred_provider.trim())
-        .to_string()
+/// An environment override is an explicit single-provider request and therefore
+/// never silently fans out to configured alternatives. Without it, an explicit
+/// `provider_order` wins; legacy configs start with `preferred_provider` and
+/// then append configured providers in storage order. Duplicate/blank ids are
+/// removed without reordering the remaining entries.
+fn provider_chain(config: &AppConfig, env_override: Option<&str>) -> Vec<String> {
+    if let Some(provider) = env_override.map(str::trim).filter(|id| !id.is_empty()) {
+        return vec![provider.to_string()];
+    }
+
+    let mut candidates = if config.llm.provider_order.is_empty() {
+        let mut legacy = Vec::with_capacity(config.llm.providers.len() + 1);
+        legacy.push(config.llm.preferred_provider.clone());
+        legacy.extend(
+            config
+                .llm
+                .providers
+                .iter()
+                .map(|provider| provider.id.clone()),
+        );
+        legacy
+    } else {
+        config.llm.provider_order.clone()
+    };
+    candidates.retain(|id| !id.trim().is_empty());
+
+    let mut ordered = Vec::with_capacity(candidates.len());
+    for id in candidates {
+        let id = id.trim().to_string();
+        if !ordered.contains(&id) {
+            ordered.push(id);
+        }
+    }
+    if !config.llm.fallback_enabled {
+        ordered.truncate(1);
+    }
+    ordered
 }
 
 /// Synthesize the provider entry for `provider_id`, defaulting when config has none.
@@ -383,11 +449,45 @@ fn error_kind(err: &LlmError) -> &'static str {
     match err {
         LlmError::Timeout { .. } => "timeout",
         LlmError::CliNotFound { .. } => "cli_not_found",
-        LlmError::CliExitError { .. } => "cli_exit_error",
-        LlmError::ApiError { .. } => "api_error",
-        LlmError::AuthError => "auth_error",
+        LlmError::CliExitError { stderr, .. } => safe_provider_error(stderr, "cli_exit_error"),
+        LlmError::ApiError { status: 402, body } => safe_provider_error(body, "payment_required"),
+        LlmError::ApiError {
+            status: 401 | 403, ..
+        }
+        | LlmError::AuthError => "auth_error",
+        LlmError::ApiError { body, .. } => safe_provider_error(body, "api_error"),
         LlmError::ParseError { .. } => "parse_error",
         LlmError::RateLimit { .. } => "rate_limit",
+    }
+}
+
+/// Recognise a small allow-list of actionable provider failures.
+///
+/// Raw CLI/API bodies can contain prompts, URLs, or credentials, so they must
+/// never enter the pipeline log. These stable labels reveal only the category
+/// of several common failures observed in the supported CLIs.
+fn safe_provider_error(message: &str, fallback: &'static str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("usage balance exhausted")
+        || lower.contains("quota exhausted")
+        || lower.contains("quota exceeded")
+    {
+        "usage_balance_exhausted"
+    } else if lower.contains("payment required") {
+        "payment_required"
+    } else if lower.contains("not logged in") || lower.contains("please run /login") {
+        "not_logged_in"
+    } else if lower.contains("model is not supported")
+        || (lower.contains("model") && lower.contains("not supported"))
+        || lower.contains("unsupported_model")
+    {
+        "unsupported_model"
+    } else if lower.contains("model_not_installed") || lower.contains("invalid_model") {
+        "model_not_installed"
+    } else if lower.contains("runtime_missing") {
+        "runtime_missing"
+    } else {
+        fallback
     }
 }
 
@@ -404,6 +504,71 @@ pub struct RenderedBody {
     pub model: String,
     /// True when the HTTP API produced it, false when a local CLI did.
     pub used_api: bool,
+}
+
+/// Transport used by one provider attempt.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAttemptChannel {
+    Cli,
+    Api,
+}
+
+/// Result of one secret-free provider/transport attempt.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAttemptStatus {
+    Succeeded,
+    Failed,
+    Empty,
+    Skipped,
+}
+
+/// Structured render telemetry safe for logs, events and audit sidecars.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ProviderAttempt {
+    pub provider: String,
+    pub channel: Option<ProviderAttemptChannel>,
+    pub model: String,
+    pub status: ProviderAttemptStatus,
+    /// Stable classifier only; raw provider output must never be stored here.
+    pub reason: Option<String>,
+    pub latency_ms: Option<u64>,
+}
+
+/// Detailed result of a provider chain. The compatibility APIs project this to
+/// `Option<RenderedBody>`, while the pipeline keeps the attempts for auditing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LlmRenderOutcome {
+    pub rendered: Option<RenderedBody>,
+    pub attempts: Vec<ProviderAttempt>,
+}
+
+impl LlmRenderOutcome {
+    /// A stable, secret-free summary suitable for `AppError::Llm`.
+    pub fn failure_summary(&self) -> String {
+        let failures: Vec<String> = self
+            .attempts
+            .iter()
+            .filter_map(|attempt| {
+                attempt
+                    .reason
+                    .as_ref()
+                    .map(|reason| format!("{}:{reason}", attempt.provider))
+            })
+            .collect();
+        if failures.is_empty() {
+            "no enabled LLM provider was available".to_string()
+        } else {
+            format!("all LLM providers failed ({})", failures.join(", "))
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BackendRenderOutcome {
+    output: Option<RenderOutput>,
+    attempts: Vec<ProviderAttempt>,
 }
 
 /// The slice of `LlmAdapter` the orchestrator actually needs.
@@ -449,16 +614,16 @@ impl RenderBackend for AdapterBackend<'_> {
     }
 }
 
-/// Run the attempt plan for `config.mode` against `backend`, returning the first success.
-///
-/// Never returns an error: an exhausted plan is `None`, and the caller falls back to the
-/// deterministic renderer.
+/// Run one provider's transport plan, returning its structured attempts.
 async fn render_via_backend<B: RenderBackend>(
     backend: &B,
+    provider: &str,
     prompt: &str,
     system: &str,
     config: &AdapterConfig,
-) -> Option<RenderOutput> {
+    policy: ProviderFallbackPolicy,
+    mut log: impl FnMut(&str),
+) -> BackendRenderOutcome {
     // Only `ApiFallback` branches on CLI availability; probing for the other modes would
     // spawn a pointless `--version` subprocess on every render.
     let cli_available = if config.mode == AdapterMode::ApiFallback {
@@ -467,20 +632,96 @@ async fn render_via_backend<B: RenderBackend>(
         false
     };
 
+    let mut attempts = Vec::new();
     for &step in attempt_plan(config.mode, cli_available) {
+        let channel = match step {
+            AdapterMode::CliOnly | AdapterMode::CliFirst => "CLI",
+            AdapterMode::ApiOnly | AdapterMode::ApiFallback => "API",
+        };
+        let channel_kind = match step {
+            AdapterMode::CliOnly | AdapterMode::CliFirst => ProviderAttemptChannel::Cli,
+            AdapterMode::ApiOnly | AdapterMode::ApiFallback => ProviderAttemptChannel::Api,
+        };
+        log(&format!(
+            "trying {channel} — model {} (timeout {}s)",
+            if config.model.is_empty() {
+                "(default)"
+            } else {
+                config.model.as_str()
+            },
+            config.timeout_secs.max(1)
+        ));
         let mut attempt = config.clone();
         attempt.mode = step;
-        match backend.render(prompt, system, &attempt).await {
-            Ok(output) if output.body.trim().is_empty() => {
-                tracing::warn!(mode = ?step, "LLM returned an empty body");
-            }
-            Ok(output) => return Some(output),
-            Err(err) => {
-                tracing::warn!(mode = ?step, kind = error_kind(&err), "LLM render attempt failed");
+        let mut retried_rate_limit = false;
+        loop {
+            match backend.render(prompt, system, &attempt).await {
+                Ok(output) if output.body.trim().is_empty() => {
+                    tracing::warn!(mode = ?step, "LLM returned an empty body");
+                    log(&format!("{channel} returned an empty body"));
+                    attempts.push(ProviderAttempt {
+                        provider: provider.to_string(),
+                        channel: Some(channel_kind),
+                        model: config.model.clone(),
+                        status: ProviderAttemptStatus::Empty,
+                        reason: Some("empty_body".to_string()),
+                        latency_ms: Some(output.latency_ms),
+                    });
+                    break;
+                }
+                Ok(output) => {
+                    log(&format!(
+                        "{channel} ok — {} ({} ms)",
+                        output.model, output.latency_ms
+                    ));
+                    attempts.push(ProviderAttempt {
+                        provider: provider.to_string(),
+                        channel: Some(channel_kind),
+                        model: output.model.clone(),
+                        status: ProviderAttemptStatus::Succeeded,
+                        reason: None,
+                        latency_ms: Some(output.latency_ms),
+                    });
+                    return BackendRenderOutcome {
+                        output: Some(output),
+                        attempts,
+                    };
+                }
+                Err(err) => {
+                    let kind = error_kind(&err);
+                    tracing::warn!(mode = ?step, kind, "LLM render attempt failed");
+                    log(&format!("{channel} failed — {kind}"));
+                    attempts.push(ProviderAttempt {
+                        provider: provider.to_string(),
+                        channel: Some(channel_kind),
+                        model: config.model.clone(),
+                        status: ProviderAttemptStatus::Failed,
+                        reason: Some(kind.to_string()),
+                        latency_ms: None,
+                    });
+                    let retry_after = match err {
+                        LlmError::RateLimit { retry_after_secs } => retry_after_secs,
+                        _ => None,
+                    };
+                    if !retried_rate_limit
+                        && policy.retry_rate_limits
+                        && retry_after.is_some_and(|secs| secs <= policy.max_retry_after_secs)
+                    {
+                        let delay = retry_after.unwrap_or_default();
+                        retried_rate_limit = true;
+                        log(&format!("{channel} retrying after {delay}s"));
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        continue;
+                    }
+                    break;
+                }
             }
         }
     }
-    None
+    BackendRenderOutcome {
+        output: None,
+        attempts,
+    }
 }
 
 /// Strip a wrapping Markdown code fence, if the model added one.
@@ -502,73 +743,354 @@ fn strip_code_fence(body: &str) -> &str {
     }
 }
 
-/// Produce the LLM standup body, or `None` when the deterministic renderer should win.
+/// Runtime decorations a model or its runtime can leave in the completion.
+///
+/// `[end of text]` is llama.cpp's own end-of-generation marker, printed on the
+/// same stdout stream as the tokens. The sidecar strips it at the source; this
+/// repeats the work because a CLI provider can leak the same class of artifact.
+const RUNTIME_ARTIFACTS: &[&str] = &[
+    "[end of text]",
+    "<end_of_turn>",
+    "<|im_end|>",
+    "<|endoftext|>",
+    "<|eot_id|>",
+    "</s>",
+];
+
+/// Repair a raw LLM body into something safe to write between the AUTO markers.
+///
+/// Deterministic and idempotent. It repairs mechanical damage only — artifacts,
+/// fences, the file skeleton the model was never asked to produce, a section
+/// emitted twice, an unclosed inline-code span. Anything semantic (invented
+/// tickets, an echoed prompt, a "no work done" claim) stays a
+/// [`ValidationFailure`], because silently rewriting meaning would be worse than
+/// falling back to the deterministic renderer.
+///
+/// Order matters: artifacts come off first, otherwise a trailing `[end of text]`
+/// sits after the closing fence and [`strip_code_fence`] no longer recognises the
+/// body as fenced — which is exactly how fences reached committed standup files.
+#[must_use]
+pub fn sanitize_body(raw: &str) -> String {
+    let stripped = strip_runtime_artifacts(raw);
+    let unfenced = strip_code_fence(&stripped).to_string();
+    let skeletonless = strip_file_skeleton(&unfenced);
+    let deduped = dedupe_sections(&skeletonless);
+    balance_inline_code(&deduped)
+}
+
+/// Remove runtime end-of-generation markers and leaked chat control tokens.
+fn strip_runtime_artifacts(raw: &str) -> String {
+    let mut out = raw.to_string();
+    for artifact in RUNTIME_ARTIFACTS {
+        out = out.replace(artifact, "");
+    }
+    out.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// Drop the surrounding standup-file structure that `fileops::set_auto` owns.
+///
+/// The model is asked for the AUTO body only. A small model handed a Markdown
+/// document sometimes continues it instead of answering, reproducing the H1
+/// title, the italic subtitle and even the AUTO markers — which would nest a
+/// block inside itself.
+fn strip_file_skeleton(body: &str) -> String {
+    body.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("<!-- AUTO:") || trimmed.starts_with("<!-- MANUAL:") {
+                return false;
+            }
+            // The document title: `# August 13, 2026`. `##` headings are not
+            // ours to remove — a preset may legitimately use them.
+            if trimmed.starts_with("# ") {
+                return false;
+            }
+            // The generated subtitle: `_Work completed August 11–12, 2026._`
+            !(trimmed.starts_with("_Work completed ") && trimmed.ends_with('_'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// Collapse a section header emitted more than once, merging its bullets.
+///
+/// Greedy decoding with penalties disabled makes small models repeat a whole
+/// section verbatim — the observed `**Blockers**` / `- None` twice. Bullets are
+/// deduped only within one header, so two sections that legitimately both read
+/// `- None` keep both.
+fn dedupe_sections(body: &str) -> String {
+    let mut preamble: Vec<String> = Vec::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut sections: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut current: Option<String> = None;
+
+    for line in body.lines() {
+        if is_section_header(line.trim()) {
+            let header = line.trim().to_string();
+            if !sections.contains_key(&header) {
+                order.push(header.clone());
+                sections.insert(header.clone(), Vec::new());
+            }
+            current = Some(header);
+            continue;
+        }
+        match current {
+            Some(ref header) => {
+                let entry = sections.entry(header.clone()).or_default();
+                let trimmed = line.trim();
+                if trimmed.is_empty() || !entry.iter().any(|kept| kept.trim() == trimmed) {
+                    entry.push(line.to_string());
+                }
+            }
+            None => preamble.push(line.to_string()),
+        }
+    }
+
+    if order.is_empty() {
+        return body.trim().to_string();
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let preamble = preamble.join("\n").trim().to_string();
+    if !preamble.is_empty() {
+        out.push(preamble);
+    }
+    for header in order {
+        let body = sections
+            .remove(&header)
+            .unwrap_or_default()
+            .join("\n")
+            .trim()
+            .to_string();
+        out.push(if body.is_empty() {
+            header
+        } else {
+            format!("{header}\n{body}")
+        });
+    }
+    out.join("\n\n")
+}
+
+/// A `**Bold**` line on its own is how every preset marks a section.
+fn is_section_header(trimmed: &str) -> bool {
+    trimmed.len() > 4
+        && trimmed.starts_with("**")
+        && trimmed.ends_with("**")
+        && !trimmed[2..trimmed.len() - 2].contains("**")
+}
+
+/// Close an inline-code span a model left open on a single line.
+///
+/// A 2B truncating mid-bullet leaves `` `repo #934 — "title" `` with one
+/// backtick, which turns the rest of the file into code when rendered.
+fn balance_inline_code(body: &str) -> String {
+    body.lines()
+        .map(|line| {
+            if line.trim() == "```" || line.matches('`').count() % 2 == 0 {
+                line.to_string()
+            } else {
+                format!("{}`", line.trim_end())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Produce the LLM standup body, or `None` when no provider in the chain succeeds.
 ///
 /// Step (m) of `docs/specs/pipeline.md`. `None` is returned — always after a
 /// `tracing::warn!` — when: the render mode is `Det`, no provider is configured, the provider
 /// id is unknown, the provider is disabled, this process is itself a render subprocess, or
-/// every attempt in the mode's plan failed. A failed LLM must never fail the compile.
-#[tracing::instrument(skip_all, fields(provider, mode))]
+/// every attempt in the provider chain failed. The caller applies the selected
+/// `Auto` versus strict `Llm` policy.
 pub async fn render_llm(inputs: &PromptInputs<'_>, config: &AppConfig) -> Option<RenderedBody> {
+    render_llm_logged(inputs, config, |_| {}).await
+}
+
+/// [`render_llm`] that reports each CLI/API attempt so the pipeline log can
+/// show *why* a render is still sitting at 72 %.
+#[tracing::instrument(skip_all, fields(provider, mode))]
+pub async fn render_llm_logged(
+    inputs: &PromptInputs<'_>,
+    config: &AppConfig,
+    log: impl FnMut(&str),
+) -> Option<RenderedBody> {
+    render_llm_outcome_logged(inputs, config, log)
+        .await
+        .rendered
+}
+
+/// Render through the configured provider chain and retain every safe attempt.
+#[tracing::instrument(skip_all, fields(provider, mode))]
+#[allow(clippy::too_many_lines)]
+pub async fn render_llm_outcome_logged(
+    inputs: &PromptInputs<'_>,
+    config: &AppConfig,
+    log: impl FnMut(&str),
+) -> LlmRenderOutcome {
+    render_llm_outcome_inner(inputs, config, None, log).await
+}
+
+/// Pipeline variant that rejects a provider's invalid body and continues the
+/// failover chain. This keeps provenance validation inside the same sequence as
+/// transport failures instead of accepting the first syntactically successful response.
+pub async fn render_llm_outcome_validated_logged(
+    inputs: &PromptInputs<'_>,
+    config: &AppConfig,
+    range_tickets: &[String],
+    forbidden_tickets: &[String],
+    log: impl FnMut(&str),
+) -> LlmRenderOutcome {
+    render_llm_outcome_inner(
+        inputs,
+        config,
+        Some((range_tickets, forbidden_tickets)),
+        log,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn render_llm_outcome_inner(
+    inputs: &PromptInputs<'_>,
+    config: &AppConfig,
+    validation: Option<(&[String], &[String])>,
+    mut log: impl FnMut(&str),
+) -> LlmRenderOutcome {
     if config.render_mode == RenderMode::Det {
         tracing::info!("render_mode=Det: skipping the LLM");
-        return None;
+        log("render mode = Det — skipping LLM");
+        return LlmRenderOutcome::default();
     }
     if is_render_subprocess(std::env::var(RENDER_ENV).ok().as_deref()) {
         tracing::warn!("{RENDER_ENV} is set: refusing to render from inside a render subprocess");
-        return None;
+        log("refusing to render: AUTOSTAND_RENDER is set");
+        return LlmRenderOutcome::default();
     }
 
-    let provider_id = resolve_provider_id(config, std::env::var(PROVIDER_ENV).ok().as_deref());
-    if provider_id.is_empty() {
+    let env_provider = std::env::var(PROVIDER_ENV).ok();
+    let providers = provider_chain(config, env_provider.as_deref());
+    if providers.is_empty() {
         tracing::warn!("no LLM provider configured; using the deterministic renderer");
-        return None;
+        log("no preferred provider configured");
+        return LlmRenderOutcome::default();
     }
-    tracing::Span::current().record("provider", provider_id.as_str());
-
-    let entry = provider_entry(config, &provider_id);
-    if !entry.enabled {
-        tracing::warn!(provider = %provider_id, "preferred provider is disabled");
-        return None;
-    }
-    let Some(adapter) = adapter_for(&provider_id) else {
-        tracing::warn!(provider = %provider_id, "unknown LLM provider id");
-        return None;
-    };
-
-    let mode = std::env::var(MODE_ENV)
-        .ok()
-        .and_then(|raw| parse_mode(&raw))
-        .unwrap_or_else(|| adapter_mode(entry.mode));
-    tracing::Span::current().record("mode", tracing::field::debug(mode));
-
-    // A CLI-only provider must never unlock the keychain.
-    let api_key = if mode == AdapterMode::CliOnly {
-        None
-    } else {
-        helpers::load_api_key(&provider_id, env_vars_for(&provider_id))
-    };
-    let mut adapter_cfg = provider_config(&entry, api_key);
-    adapter_cfg.mode = mode;
 
     let system = system_prompt_for(inputs.jira_base);
     let prompt = build_prompt(inputs);
+    let mut attempts = Vec::new();
 
-    let backend = AdapterBackend(adapter.as_ref());
-    let output = render_via_backend(&backend, &prompt, &system, &adapter_cfg).await?;
+    for provider_id in providers {
+        tracing::Span::current().record("provider", provider_id.as_str());
+        let entry = provider_entry(config, &provider_id);
+        if !entry.enabled {
+            tracing::warn!(provider = %provider_id, "provider is disabled");
+            log(&format!("provider {provider_id} skipped — disabled"));
+            attempts.push(ProviderAttempt {
+                provider: provider_id,
+                channel: None,
+                model: entry.model,
+                status: ProviderAttemptStatus::Skipped,
+                reason: Some("disabled".to_string()),
+                latency_ms: None,
+            });
+            continue;
+        }
+        let Some(adapter) = adapter_for(&provider_id) else {
+            tracing::warn!(provider = %provider_id, "unknown LLM provider id");
+            log(&format!(
+                "provider {provider_id} skipped — unknown provider"
+            ));
+            attempts.push(ProviderAttempt {
+                provider: provider_id,
+                channel: None,
+                model: entry.model,
+                status: ProviderAttemptStatus::Skipped,
+                reason: Some("unknown_provider".to_string()),
+                latency_ms: None,
+            });
+            continue;
+        };
 
-    tracing::info!(
-        provider = %provider_id,
-        model = %output.model,
-        latency_ms = output.latency_ms,
-        "LLM render succeeded"
-    );
-    Some(RenderedBody {
-        body: strip_code_fence(&output.body).to_string(),
-        provider: provider_id,
-        model: output.model,
-        used_api: output.mode_used == RenderModeUsed::Api,
-    })
+        let mode = if provider_id == "builtin-local" {
+            AdapterMode::CliOnly
+        } else {
+            std::env::var(MODE_ENV)
+                .ok()
+                .and_then(|raw| parse_mode(&raw))
+                .unwrap_or_else(|| adapter_mode(entry.mode))
+        };
+        tracing::Span::current().record("mode", tracing::field::debug(mode));
+        let api_key = if mode == AdapterMode::CliOnly {
+            None
+        } else {
+            helpers::load_api_key(&provider_id, env_vars_for(&provider_id))
+        };
+        let mut adapter_cfg =
+            provider_config_with_local_policy(&entry, api_key, config.llm.local_runtime_policy);
+        adapter_cfg.mode = mode;
+        log(&format!(
+            "prompt ready — {} chars, provider {provider_id}, mode {mode:?}",
+            prompt.len()
+        ));
+
+        let backend = AdapterBackend(adapter.as_ref());
+        let provider_outcome = render_via_backend(
+            &backend,
+            &provider_id,
+            &prompt,
+            &system,
+            &adapter_cfg,
+            config.llm.fallback_policy,
+            &mut log,
+        )
+        .await;
+        attempts.extend(provider_outcome.attempts);
+        if let Some(output) = provider_outcome.output {
+            let body = sanitize_body(&output.body);
+            if let Some((range_tickets, forbidden_tickets)) = validation {
+                if let Err(failure) = validate_render(&body, range_tickets, forbidden_tickets) {
+                    let code = format!("validation_{}", failure.code());
+                    tracing::warn!(provider = %provider_id, code, "LLM render failed validation");
+                    log(&format!("provider {provider_id} rejected — {code}"));
+                    if let Some(attempt) = attempts.last_mut() {
+                        attempt.status = ProviderAttemptStatus::Failed;
+                        attempt.reason = Some(code);
+                    }
+                    continue;
+                }
+            }
+            tracing::info!(
+                provider = %provider_id,
+                model = %output.model,
+                latency_ms = output.latency_ms,
+                "LLM render succeeded"
+            );
+            return LlmRenderOutcome {
+                rendered: Some(RenderedBody {
+                    body,
+                    provider: provider_id,
+                    model: output.model,
+                    used_api: output.mode_used == RenderModeUsed::Api,
+                }),
+                attempts,
+            };
+        }
+        log(&format!("provider {provider_id} exhausted — trying next"));
+    }
+
+    LlmRenderOutcome {
+        rendered: None,
+        attempts,
+    }
 }
 
 // ── Validation ────────────────────────────────────────────────────────────
@@ -608,6 +1130,13 @@ pub enum ValidationFailure {
     /// The body had no `- ` bullet at all, so it is not a standup.
     #[error("render body has no bullet lines")]
     NoBullets,
+    /// The provider echoed the prompt, a conversation transcript, or a raw diff
+    /// instead of summarizing the work as a standup.
+    #[error("render appears to contain raw prompt or source context ({reason})")]
+    ContextDump {
+        /// Stable, human-readable signal that caused the rejection.
+        reason: &'static str,
+    },
     /// The body claimed nothing happened while the window had facts.
     #[error("render claims no work was done, but the window has facts")]
     NoWorkClaim,
@@ -635,11 +1164,56 @@ impl ValidationFailure {
             Self::Empty => "empty",
             Self::TooLong { .. } => "too_long",
             Self::NoBullets => "no_bullets",
+            Self::ContextDump { .. } => "context_dump",
             Self::NoWorkClaim => "no_work_claim",
             Self::ForbiddenTicket { .. } => "forbidden_ticket",
             Self::InventedTicket { .. } => "invented_ticket",
         }
     }
+}
+
+/// Return a high-confidence reason when a render is actually an echoed input.
+///
+/// These checks intentionally require either a very specific marker or a pair
+/// of related markers. Standup presets are free to use headings and discuss
+/// prompts/diffs; what is unsafe is reproducing the pipeline's own envelope or
+/// a tool's raw review request verbatim.
+fn context_dump_reason(body: &str) -> Option<&'static str> {
+    let lower = body.to_ascii_lowercase();
+
+    if lower.contains("unified diff (only + lines are new)")
+        || (lower.contains("=== diff:")
+            && lower
+                .lines()
+                .any(|line| line.trim_start_matches([' ', '-', '+']).starts_with("@@ -")))
+    {
+        return Some("raw_diff");
+    }
+
+    if lower.contains("## context")
+        && (lower.lines().any(|line| line.trim() == "prompts:")
+            || lower.contains("changed files (you may read"))
+    {
+        return Some("conversation_context");
+    }
+
+    let prompt_sections = [
+        "## git facts",
+        "## github",
+        "## pr reviews",
+        "## edited files",
+        "## notes",
+        "## previous render",
+        "## output",
+    ]
+    .iter()
+    .filter(|marker| lower.contains(**marker))
+    .count();
+    if prompt_sections >= 3 {
+        return Some("prompt_envelope");
+    }
+
+    None
 }
 
 /// Validate an LLM body against the window's provenance — step (n) of the pipeline spec.
@@ -676,6 +1250,10 @@ pub fn validate_render(
         return Err(ValidationFailure::NoBullets);
     }
 
+    if let Some(reason) = context_dump_reason(trimmed) {
+        return Err(ValidationFailure::ContextDump { reason });
+    }
+
     if !range_tickets.is_empty() {
         let lower = trimmed.to_lowercase();
         if NO_WORK_PHRASES.iter().any(|p| lower.contains(p)) {
@@ -698,12 +1276,15 @@ pub fn validate_render(
 mod tests {
     use super::{
         adapter_for, attempt_plan, build_prompt, error_kind, is_render_subprocess, parse_mode,
-        provider_config, render_via_backend, resolve_provider_id, strip_code_fence, system_prompt,
-        system_prompt_for, validate_render, AdapterConfig, AdapterMode, LlmError, PromptInputs,
-        ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed, RenderOutput,
-        MAX_RENDER_CHARS, PROVIDER_ENV,
+        provider_chain, provider_config, provider_config_with_local_policy, render_via_backend,
+        sanitize_body, strip_code_fence, system_prompt, system_prompt_for, validate_render,
+        AdapterConfig, AdapterLocalRuntimePolicy, AdapterMode, LlmError, PromptInputs,
+        ProviderAttemptStatus, ProviderConfig, ProviderMode, RenderBackend, RenderModeUsed,
+        RenderOutput, MAX_RENDER_CHARS, PROVIDER_ENV,
     };
-    use crate::commands::types::{AppConfig, LlmConfig};
+    use crate::commands::types::{
+        AppConfig, LlmConfig, LocalRuntimePolicy, ProviderFallbackPolicy, StandupFormatConfig,
+    };
     use std::future::Future;
     use std::sync::Mutex;
 
@@ -721,9 +1302,8 @@ mod tests {
             file_date: "2026-08-03",
             range_start: "2026-08-01",
             range_end: "2026-08-02",
-            title: "Daily Standup — August 03, 2026",
-            subtitle: "_Work completed August 01–02, 2026._",
             prev_auto: Some("- Refactored the queue processor"),
+            format: None,
         }
     }
 
@@ -735,14 +1315,23 @@ mod tests {
         assert_eq!(build_prompt(&inputs), build_prompt(&inputs));
     }
 
+    /// The title and subtitle belong to the file skeleton, not to the prompt.
+    /// Showing them made small models restate them as bullets, and a Gemma 4B
+    /// reproduce the whole document instead of answering.
+    #[test]
+    fn build_prompt_does_not_leak_the_file_skeleton() {
+        let prompt = build_prompt(&full_inputs());
+        assert!(!prompt.contains("Title:"), "got: {prompt}");
+        assert!(!prompt.contains("Subtitle:"), "got: {prompt}");
+        assert!(!prompt.contains("_Work completed"), "got: {prompt}");
+    }
+
     #[test]
     fn build_prompt_includes_every_non_empty_section() {
         let prompt = build_prompt(&full_inputs());
         for needle in [
             "Filing date: 2026-08-03",
             "Work window: 2026-08-01 .. 2026-08-02",
-            "Title: Daily Standup",
-            "Subtitle: _Work completed",
             "Jira base: https://jira.example.com/browse",
             "## GIT FACTS",
             "## GITHUB",
@@ -771,6 +1360,26 @@ mod tests {
         assert!(at("## PR REVIEWS") < at("## EDITED FILES"));
         assert!(at("## EDITED FILES") < at("## NOTES"));
         assert!(at("## NOTES") < at("## OUTPUT"));
+    }
+
+    #[test]
+    fn build_prompt_embeds_every_preset_marker() {
+        for preset in crate::format_presets::all_presets() {
+            let format = StandupFormatConfig {
+                preset,
+                ..StandupFormatConfig::default()
+            };
+            let prompt = build_prompt(&PromptInputs {
+                format: Some(&format),
+                ..full_inputs()
+            });
+            for marker in crate::format_presets::preset_section_markers(preset) {
+                assert!(
+                    prompt.contains(marker),
+                    "{preset:?} prompt is missing {marker}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -882,6 +1491,169 @@ mod tests {
         assert_eq!(err.code(), "no_bullets");
     }
 
+    /// Observed with Gemma 3 1B (fast) and Qwen 3.5 2B: the last section is
+    /// emitted twice, the body is fenced, and llama.cpp's `[end of text]` sits
+    /// after the closing fence.
+    const OBSERVED_DUPLICATE_BLOCKERS: &str = "```\n\
+**Yesterday**\n\
+- Working on August 13th release.\n\
+\n\
+**Today**\n\
+- Reviewing Gorgias claim security vulnerabilities.\n\
+- Testing the new claim submission functionality.\n\
+\n\
+**Blockers**\n\
+- None\n\
+\n\
+**Blockers**\n\
+- None\n\
+``` [end of text]";
+
+    /// Observed with Gemma 3 4B (balanced): the model continued the document it
+    /// was shown instead of answering, reproducing the title, the subtitle and
+    /// the AUTO markers.
+    const OBSERVED_FULL_DOCUMENT: &str = "# August 13, 2026\n\
+\n\
+_Work completed August 11–12, 2026._\n\
+\n\
+<!-- AUTO:MacStudio-de-Miguel:START -->\n\
+**Yesterday**\n\
+- Reviewed security vulnerabilities in the Gorgias claim ticket payload.\n\
+\n\
+**Today**\n\
+- None\n\
+\n\
+**Blockers**\n\
+- None\n\
+<!-- AUTO:MacStudio-de-Miguel:END -->";
+
+    #[test]
+    fn sanitize_removes_the_runtime_end_of_text_marker() {
+        let out = sanitize_body("**Today**\n- Shipped the fix\n [end of text]\n");
+        assert!(!out.contains("[end of text]"), "got: {out}");
+        assert!(out.contains("- Shipped the fix"));
+    }
+
+    /// Regression: `strip_code_fence` requires the body to *end* with the fence,
+    /// so a trailing `[end of text]` used to leave the backticks in the file.
+    #[test]
+    fn sanitize_unwraps_a_fence_that_is_followed_by_the_end_of_text_marker() {
+        let out = sanitize_body(OBSERVED_DUPLICATE_BLOCKERS);
+        assert!(!out.contains("```"), "fence survived: {out}");
+        assert!(out.starts_with("**Yesterday**"), "got: {out}");
+    }
+
+    #[test]
+    fn sanitize_collapses_a_section_emitted_twice() {
+        let out = sanitize_body(OBSERVED_DUPLICATE_BLOCKERS);
+        assert_eq!(out.matches("**Blockers**").count(), 1, "got: {out}");
+        assert_eq!(out.matches("- None").count(), 1, "got: {out}");
+        // The other sections survive intact.
+        assert!(out.contains("- Working on August 13th release."));
+        assert!(out.contains("- Reviewing Gorgias claim security vulnerabilities."));
+    }
+
+    /// Two different sections may each legitimately read `- None`.
+    #[test]
+    fn sanitize_keeps_the_same_bullet_under_different_headers() {
+        let out = sanitize_body("**Today**\n- None\n\n**Blockers**\n- None\n");
+        assert_eq!(out.matches("- None").count(), 2, "got: {out}");
+    }
+
+    #[test]
+    fn sanitize_drops_the_file_skeleton_the_model_should_never_emit() {
+        let out = sanitize_body(OBSERVED_FULL_DOCUMENT);
+        assert!(!out.contains("<!-- AUTO:"), "AUTO marker survived: {out}");
+        assert!(!out.contains("# August 13, 2026"), "title survived: {out}");
+        assert!(!out.contains("_Work completed"), "subtitle survived: {out}");
+        assert!(out.starts_with("**Yesterday**"), "got: {out}");
+        assert!(out
+            .contains("- Reviewed security vulnerabilities in the Gorgias claim ticket payload."));
+    }
+
+    /// Observed with Qwen 3.5 2B (balanced): a PR Review bullet truncated
+    /// mid-span, leaving one backtick that would code-format the rest of the file.
+    #[test]
+    fn sanitize_closes_an_unbalanced_inline_code_span() {
+        let out = sanitize_body(
+            "**PR Review**\n- `shopify-theme2.0 #934 — \"update-navigation-consultations\"\n",
+        );
+        assert_eq!(out.matches('`').count() % 2, 0, "odd backticks: {out}");
+    }
+
+    #[test]
+    fn sanitize_leaves_a_clean_body_untouched() {
+        let clean = "**Yesterday**\n- Shipped the fix\n\n**Today**\n- Review the PR\n\n**Blockers**\n- None";
+        assert_eq!(sanitize_body(clean), clean);
+    }
+
+    #[test]
+    fn sanitize_is_idempotent() {
+        for raw in [OBSERVED_DUPLICATE_BLOCKERS, OBSERVED_FULL_DOCUMENT] {
+            let once = sanitize_body(raw);
+            assert_eq!(sanitize_body(&once), once, "not idempotent for: {raw}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_the_observed_claude_context_dump() {
+        let body = "**Claude Code context**\n\
+            ## CONTEXT\n\
+            prompts:\n\
+            - Review this change for security vulnerabilities.\n\
+            - Changed files (you may Read these and any other file in the repo):\n\
+            - Unified diff (only + lines are new):\n\
+            === DIFF: package.json ===\n\
+            @@ -54,7 +54,7 @@\n\
+            - Updated a dependency\n";
+        let err = validate_render(body, &[], &[]).expect_err("context dumps are rejected");
+        assert_eq!(err.code(), "context_dump");
+        assert!(err.to_string().contains("raw_diff"));
+    }
+
+    #[test]
+    fn validate_rejects_an_echoed_pipeline_prompt() {
+        let body = "**Summary**\n\
+            ## GIT FACTS\n\
+            - raw commit\n\
+            ## NOTES\n\
+            - raw note\n\
+            ## OUTPUT\n\
+            - instruction text\n";
+        let err = validate_render(body, &[], &[]).expect_err("prompt envelopes are rejected");
+        assert_eq!(err.code(), "context_dump");
+    }
+
+    #[test]
+    fn validate_does_not_reject_normal_standup_headings_or_diff_work() {
+        let bodies = [
+            "## Context\n- Reviewed the authentication flow and documented the findings\n",
+            "**API**\n- Reviewed a unified diff and fixed the request validator\n",
+            "## Notes\n- Implemented the output renderer and added regression coverage\n",
+        ];
+        for body in bodies {
+            assert!(
+                validate_render(body, &[], &[]).is_ok(),
+                "normal standup was rejected: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_accepts_every_configured_preset_shape() {
+        for preset in crate::format_presets::all_presets() {
+            let body = crate::format_presets::preset_section_markers(preset)
+                .iter()
+                .map(|marker| format!("{marker}\n- Completed the relevant work"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            assert!(
+                validate_render(&body, &[], &[]).is_ok(),
+                "preset {preset:?} was rejected: {body}"
+            );
+        }
+    }
+
     #[test]
     fn validate_rejects_an_invented_ticket() {
         let range = vec!["FIF-133".to_string()];
@@ -939,6 +1711,7 @@ mod tests {
             llm: LlmConfig {
                 preferred_provider: preferred.to_string(),
                 providers,
+                ..LlmConfig::default()
             },
             ..AppConfig::default()
         }
@@ -958,8 +1731,15 @@ mod tests {
     }
 
     #[test]
-    fn adapter_for_resolves_the_five_providers_and_rejects_others() {
-        for id in ["claude", "ollama", "openai", "gemini", "grok"] {
+    fn adapter_for_resolves_all_providers_and_rejects_others() {
+        for id in [
+            "builtin-local",
+            "claude",
+            "ollama",
+            "openai",
+            "gemini",
+            "grok",
+        ] {
             let adapter = adapter_for(id).expect("provider is registered");
             assert_eq!(adapter.id(), id);
         }
@@ -968,12 +1748,40 @@ mod tests {
     }
 
     #[test]
-    fn resolve_provider_id_prefers_the_env_override() {
-        let config = cfg_with("claude", vec![]);
-        assert_eq!(resolve_provider_id(&config, Some("gemini")), "gemini");
-        assert_eq!(resolve_provider_id(&config, Some("  ")), "claude");
-        assert_eq!(resolve_provider_id(&config, None), "claude");
-        assert_eq!(resolve_provider_id(&cfg_with("", vec![]), None), "");
+    fn provider_chain_migrates_legacy_order_and_deduplicates() {
+        let config = cfg_with(
+            "grok",
+            vec![
+                provider("claude", ProviderMode::CliOnly),
+                provider("grok", ProviderMode::CliOnly),
+                provider("openai", ProviderMode::CliOnly),
+            ],
+        );
+        assert_eq!(provider_chain(&config, None), ["grok", "claude", "openai"]);
+    }
+
+    #[test]
+    fn explicit_provider_order_and_fallback_switch_are_respected() {
+        let mut config = cfg_with("grok", vec![]);
+        config.llm.provider_order = vec![" openai ".into(), "claude".into(), "openai".into()];
+        assert_eq!(provider_chain(&config, None), ["openai", "claude"]);
+        config.llm.fallback_enabled = false;
+        assert_eq!(provider_chain(&config, None), ["openai"]);
+        assert_eq!(provider_chain(&config, Some("grok")), ["grok"]);
+    }
+
+    #[test]
+    fn legacy_llm_json_enables_safe_fallback_defaults() {
+        let config: LlmConfig = serde_json::from_value(serde_json::json!({
+            "preferred_provider": "grok",
+            "providers": []
+        }))
+        .expect("legacy LlmConfig");
+        assert!(config.fallback_enabled);
+        assert!(config.provider_order.is_empty());
+        assert!(config.fallback_policy.retry_rate_limits);
+        assert_eq!(config.fallback_policy.max_retry_after_secs, 30);
+        assert_eq!(config.local_runtime_policy, LocalRuntimePolicy::OnDemand);
     }
 
     #[test]
@@ -983,9 +1791,9 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::env::set_var(PROVIDER_ENV, "grok");
         let read = std::env::var(PROVIDER_ENV).ok();
-        let resolved = resolve_provider_id(&cfg_with("claude", vec![]), read.as_deref());
+        let resolved = provider_chain(&cfg_with("claude", vec![]), read.as_deref());
         std::env::remove_var(PROVIDER_ENV);
-        assert_eq!(resolved, "grok");
+        assert_eq!(resolved, ["grok"]);
     }
 
     #[test]
@@ -1000,6 +1808,26 @@ mod tests {
         let claude = provider_config(&provider("claude", ProviderMode::ApiOnly), None);
         assert_eq!(claude.model, "sonnet");
         assert_eq!(claude.timeout_secs, 180);
+
+        let codex = provider_config(&provider("openai", ProviderMode::CliFirst), None);
+        assert_eq!(codex.model, "");
+        assert_eq!(codex.timeout_secs, 180);
+
+        let local = provider_config(&provider("builtin-local", ProviderMode::ApiOnly), None);
+        assert_eq!(local.model, "");
+        assert_eq!(local.mode, AdapterMode::CliOnly);
+        assert_eq!(local.timeout_secs, 300);
+        assert!(local.api_key.is_none());
+
+        let cached = provider_config_with_local_policy(
+            &provider("builtin-local", ProviderMode::CliOnly),
+            None,
+            LocalRuntimePolicy::KeepReady,
+        );
+        assert_eq!(
+            cached.local_runtime_policy,
+            AdapterLocalRuntimePolicy::KeepReady
+        );
     }
 
     #[test]
@@ -1050,6 +1878,41 @@ mod tests {
                 retry_after_secs: None
             }),
             "rate_limit"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: 1,
+                stderr: "402 Payment Required: Grok Build usage balance exhausted".into(),
+            }),
+            "usage_balance_exhausted"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: 1,
+                stderr: "Not logged in · Please run /login".into(),
+            }),
+            "not_logged_in"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: -1,
+                stderr: "model_not_installed".into(),
+            }),
+            "model_not_installed"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: -1,
+                stderr: "runtime_missing".into(),
+            }),
+            "runtime_missing"
+        );
+        assert_eq!(
+            error_kind(&LlmError::CliExitError {
+                code: 1,
+                stderr: "secret-shaped unknown failure sk-test-must-not-leak".into(),
+            }),
+            "cli_exit_error"
         );
     }
 
@@ -1152,11 +2015,22 @@ mod tests {
             api_key: None,
             api_base_url: None,
             timeout_secs: 5,
+            local_runtime_policy: AdapterLocalRuntimePolicy::OnDemand,
         }
     }
 
     async fn run(backend: &FakeBackend, mode: AdapterMode) -> Option<RenderOutput> {
-        render_via_backend(backend, "prompt", "system", &adapter_cfg(mode)).await
+        render_via_backend(
+            backend,
+            "test",
+            "prompt",
+            "system",
+            &adapter_cfg(mode),
+            ProviderFallbackPolicy::default(),
+            |_| {},
+        )
+        .await
+        .output
     }
 
     #[tokio::test]
@@ -1224,5 +2098,28 @@ mod tests {
             backend.attempts(),
             [AdapterMode::CliOnly, AdapterMode::ApiOnly]
         );
+    }
+
+    #[tokio::test]
+    async fn exhausted_provider_plan_retains_safe_attempt_telemetry() {
+        let backend = FakeBackend::new(false, false, false);
+        let outcome = render_via_backend(
+            &backend,
+            "grok",
+            "prompt",
+            "system",
+            &adapter_cfg(AdapterMode::CliFirst),
+            ProviderFallbackPolicy::default(),
+            |_| {},
+        )
+        .await;
+        assert!(outcome.output.is_none());
+        assert_eq!(outcome.attempts.len(), 2);
+        assert!(outcome
+            .attempts
+            .iter()
+            .all(|attempt| attempt.provider == "grok"
+                && attempt.status == ProviderAttemptStatus::Failed
+                && attempt.reason.as_deref() == Some("cli_not_found")));
     }
 }

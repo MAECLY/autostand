@@ -12,6 +12,7 @@ import type {
   AppError,
   AuditData,
   AuditSidecar,
+  CloudFolder,
   CompileResult,
   DataSourceConfig,
   GatherPreview,
@@ -64,6 +65,8 @@ export interface BackendState {
   providers: LlmProviderConfig[];
   /** `test_llm_provider` answers, keyed by provider id. */
   providerTests: Record<string, TestProviderResult>;
+  /** `list_provider_models` answers, keyed by provider id. A miss is `[]`. */
+  providerModels: Record<string, string[]>;
   /** `read_standup_file` answers, keyed by filing date. A miss is `not_found`. */
   standups: Record<string, StandupFileContent>;
   /** `list_audit_sidecars` answers, keyed by filing date. A miss is an empty list. */
@@ -77,6 +80,7 @@ export interface BackendState {
   settingsPaths: SettingsPaths;
   pathValidations: PathValidation[];
   compileResult: CompileResult;
+  cloudFolders: CloudFolder[];
 }
 
 export interface Scenario {
@@ -146,6 +150,20 @@ export function makeAppConfig(): AppConfig {
       include_self_reviews: false,
     },
     scrub: { alias_scrub: true, alias_scrub_min: 4, meta_extra: null },
+    format: {
+      preset: "classic-scrum",
+      verbosity: "standard",
+      include_pr_review: true,
+      include_confidence: false,
+      include_risks: false,
+      conventional: false,
+    },
+    // `SyncTab` reads `sync.cloud_root` without a fallback, so the Sync tab
+    // cannot render at all when the fixture omits it.
+    sync: { cloud_root: null, repo_enabled: false },
+    // `CompileButton` reads this without a fallback, so the dashboard cannot
+    // render at all when the fixture omits it.
+    regeneration: { replace_immediately: false },
   };
 }
 
@@ -174,6 +192,30 @@ export function makeDataSources(): DataSourceConfig[] {
       label: "Remember plugin",
       enabled: false,
       description: "Daily notes captured by the remember plugin.",
+    },
+    {
+      id: "opencode",
+      label: "opencode",
+      enabled: false,
+      description: "Session transcripts written by opencode.",
+    },
+    {
+      id: "codex",
+      label: "Codex",
+      enabled: false,
+      description: "Session transcripts written by Codex.",
+    },
+    {
+      id: "gemini-cli",
+      label: "Gemini CLI",
+      enabled: false,
+      description: "Session transcripts written by Gemini CLI.",
+    },
+    {
+      id: "grok-cli",
+      label: "Grok CLI",
+      enabled: false,
+      description: "Session transcripts written by Grok CLI.",
     },
   ];
 }
@@ -336,6 +378,36 @@ function makeSettingsPaths(): SettingsPaths {
   };
 }
 
+export function makeCloudFolders(): CloudFolder[] {
+  return [
+    {
+      id: "icloud-drive",
+      label: "iCloud Drive",
+      path: "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs",
+      dailies_path:
+        "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs/autostand",
+      exists: true,
+      provider: "iCloud",
+    },
+    {
+      id: "onedrive",
+      label: "OneDrive",
+      path: "/Users/tester/OneDrive",
+      dailies_path: "/Users/tester/OneDrive/autostand",
+      exists: false,
+      provider: "OneDrive",
+    },
+    {
+      id: "syncthing",
+      label: "Syncthing",
+      path: "/Users/tester/Sync",
+      dailies_path: "/Users/tester/Sync/autostand",
+      exists: false,
+      provider: "Syncthing",
+    },
+  ];
+}
+
 function makeGatherPreview(): GatherPreview {
   return {
     date: TODAY,
@@ -372,6 +444,10 @@ export function makeScenario(): Scenario {
       providerTests: {
         claude: { ok: true, message: "claude-sonnet-4 responded", latency_ms: 42 },
         ollama: { ok: false, message: "connection refused", latency_ms: 0 },
+      },
+      providerModels: {
+        claude: ["claude-sonnet-4", "claude-opus-4"],
+        ollama: ["llama3.1", "llama3.2:latest"],
       },
       standups: { [TODAY]: makeStandupFile() },
       sidecars: { [TODAY]: makeSidecars() },
@@ -426,6 +502,7 @@ export function makeScenario(): Scenario {
         },
       ],
       compileResult: makeCompileResult(),
+      cloudFolders: makeCloudFolders(),
     },
     defer: [],
     errors: {},

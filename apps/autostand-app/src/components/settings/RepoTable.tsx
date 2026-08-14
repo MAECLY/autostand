@@ -17,6 +17,7 @@ import {
   TableRow,
 } from "@autostand/ui/components/table";
 
+import { OpenPathButton } from "@/components/common/OpenPathButton";
 import { useDiscoverRepos } from "@/hooks/use-paths";
 import { formatRelative } from "@/lib/utils";
 
@@ -65,22 +66,37 @@ export function RepoTable() {
                 <TableHead>Path</TableHead>
                 <TableHead>Remote</TableHead>
                 <TableHead>Last commit</TableHead>
+                <TableHead>
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {repos.map((repo) => (
                 <TableRow key={repo.path}>
                   <TableCell className="font-medium">{repo.name}</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
+                  <TableCell
+                    className="max-w-xs truncate font-mono text-xs text-muted-foreground"
+                    title={repo.path}
+                  >
                     {repo.path}
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
+                  <TableCell
+                    className="max-w-xs truncate font-mono text-xs text-muted-foreground"
+                    title={repo.remote ?? undefined}
+                  >
                     {repo.remote ?? "—"}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {repo.last_commit_at === null
                       ? "—"
                       : formatRelative(repo.last_commit_at)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <OpenPathButton
+                      path={repo.path}
+                      label={`Open ${repo.name} in the file manager`}
+                    />
                   </TableCell>
                 </TableRow>
               ))}

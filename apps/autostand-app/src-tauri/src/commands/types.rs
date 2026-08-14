@@ -16,6 +16,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::notifications::NotificationConfig;
+
 // ── AppConfig + nested config ─────────────────────────────────────────────
 
 /// Full app configuration persisted to the Tauri Store.
@@ -45,6 +47,35 @@ pub struct AppConfig {
     pub review: ReviewConfig,
     /// Secret-scrub configuration block.
     pub scrub: ScrubConfig,
+    /// Standup format configuration (LLM-only; ignored when `render_mode = Det`).
+    #[serde(default)]
+    pub format: StandupFormatConfig,
+    /// Native system-notification preferences.
+    #[serde(default)]
+    pub notifications: NotificationConfig,
+    /// Cloud-folder selection and optional GitHub repository sync.
+    #[serde(default)]
+    pub sync: SyncConfig,
+    /// Manual Compile Now review behaviour.
+    #[serde(default)]
+    pub regeneration: RegenerationConfig,
+}
+
+/// Controls whether a manual regeneration pauses for comparison.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RegenerationConfig {
+    /// Apply a fresh candidate immediately instead of opening the merge review.
+    pub replace_immediately: bool,
+}
+
+/// The two sync transports are intentionally independent: a cloud provider
+/// mirrors the working directory while GitHub supplies versioned history.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SyncConfig {
+    /// Selected provider root. Standups live in its `autostand/` child.
+    pub cloud_root: Option<String>,
+    /// Whether the pipeline may pull/commit/push the dailies directory.
+    pub repo_enabled: bool,
 }
 
 /// Render mode preference.
@@ -63,12 +94,83 @@ pub enum RenderMode {
 }
 
 /// LLM configuration block.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     /// Preferred provider id (`claude` | `ollama` | `openai` | `gemini` | `grok`).
     pub preferred_provider: String,
     /// Per-provider configuration.
     pub providers: Vec<ProviderConfig>,
+    /// Whether an unavailable provider should yield to the next configured provider.
+    #[serde(default = "default_fallback_enabled")]
+    pub fallback_enabled: bool,
+    /// Explicit provider priority. An empty list preserves the legacy preferred/provider order.
+    #[serde(default)]
+    pub provider_order: Vec<String>,
+    /// Bounded retry behaviour before advancing to the next provider.
+    #[serde(default)]
+    pub fallback_policy: ProviderFallbackPolicy,
+    /// Lifecycle policy for the managed built-in local runtime.
+    ///
+    /// This is deliberately part of the render configuration (rather than UI
+    /// state), so manual, scheduled, and headless compiles take the same path.
+    #[serde(default)]
+    pub local_runtime_policy: LocalRuntimePolicy,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            preferred_provider: String::new(),
+            providers: Vec::new(),
+            fallback_enabled: true,
+            provider_order: Vec::new(),
+            fallback_policy: ProviderFallbackPolicy::default(),
+            local_runtime_policy: LocalRuntimePolicy::default(),
+        }
+    }
+}
+
+/// How built-in local inference handles reusable llama.cpp state.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalRuntimePolicy {
+    /// Start clean for every render and leave no prompt-state cache behind.
+    #[default]
+    OnDemand,
+    /// Reuse an on-disk llama.cpp prompt/KV cache between render processes.
+    KeepReady,
+}
+
+const fn default_fallback_enabled() -> bool {
+    true
+}
+
+/// Retry behaviour within one provider before failover advances the chain.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderFallbackPolicy {
+    /// Retry one provider attempt when it returns a rate-limit reset.
+    #[serde(default = "default_retry_rate_limits")]
+    pub retry_rate_limits: bool,
+    /// Maximum reset delay Autostand waits before advancing to the next provider.
+    #[serde(default = "default_max_retry_after_secs")]
+    pub max_retry_after_secs: u64,
+}
+
+impl Default for ProviderFallbackPolicy {
+    fn default() -> Self {
+        Self {
+            retry_rate_limits: true,
+            max_retry_after_secs: default_max_retry_after_secs(),
+        }
+    }
+}
+
+const fn default_retry_rate_limits() -> bool {
+    true
+}
+
+const fn default_max_retry_after_secs() -> u64 {
+    30
 }
 
 /// Per-provider configuration stored in `AppConfig.llm.providers`.
@@ -208,6 +310,91 @@ pub struct ScrubConfig {
     pub meta_extra: Option<String>,
 }
 
+/// Standup format configuration — molds the LLM prompt's `## OUTPUT` section.
+///
+/// Ignored when `render_mode = Det` (the deterministic renderer has a fixed
+/// format). Only affects the LLM render path.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandupFormatConfig {
+    /// Which preset template to use.
+    pub preset: StandupPreset,
+    /// Output verbosity.
+    pub verbosity: Verbosity,
+    /// Include a `**PR Review**` trailing section.
+    pub include_pr_review: bool,
+    /// Include a confidence/health rating line.
+    pub include_confidence: bool,
+    /// Include an explicit risks section.
+    pub include_risks: bool,
+    /// Conventional-commits style (scoped bullets).
+    pub conventional: bool,
+}
+
+impl Default for StandupFormatConfig {
+    fn default() -> Self {
+        Self {
+            preset: StandupPreset::ClassicScrum,
+            verbosity: Verbosity::Standard,
+            include_pr_review: true,
+            include_confidence: false,
+            include_risks: false,
+            conventional: false,
+        }
+    }
+}
+
+/// Standup format preset.
+///
+/// Wire values are `kebab-case` (`"classic-scrum"`, `"spotify-4q"`, …).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StandupPreset {
+    /// Classic Scrum 3 Questions (Yesterday / Today / Blockers).
+    #[default]
+    ClassicScrum,
+    /// Scrum 4 Questions (+ help needed).
+    FourQuestion,
+    /// Mad / Sad / Glad emotional check-in.
+    MadSadGlad,
+    /// Start / Stop / Continue.
+    StartStopContinue,
+    /// Keep / Drop / Create.
+    KeepDropCreate,
+    /// 5 Questions (+ confidence / team health).
+    FiveQuestion,
+    /// Spotify-style 4 Questions (Did / Doing / Blocking / Need).
+    #[serde(rename = "spotify-4q")]
+    Spotify4q,
+    /// Async status-block (Done / Doing / Blockers / FYI).
+    AsyncStatus,
+    /// Walking / 15-min timebox (same as classic but terse).
+    WalkingTimebox,
+    /// Walk-the-Board / Kanban (board-driven).
+    WalkTheBoard,
+    /// Yesterday / Today / Blockers / Risks.
+    Ytbr,
+    /// Decisions & Commitments.
+    DecisionsCommitments,
+    /// OKR-tied standup.
+    OkrTied,
+}
+
+/// Output verbosity level.
+///
+/// Wire values: `"terse" | "standard" | "detailed"`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Verbosity {
+    /// One-liner per section.
+    Terse,
+    /// Standard bullet-list depth.
+    #[default]
+    Standard,
+    /// Detailed multi-bullet with context.
+    Detailed,
+}
+
 // ── Data sources list ────────────────────────────────────────────────────
 
 /// Data source descriptor returned by `list_data_sources`.
@@ -290,6 +477,66 @@ pub struct TestProviderResult {
     pub latency_ms: u64,
 }
 
+/// Source of a provider usage reading. Values are intentionally explicit so the
+/// UI never presents an inferred failure as an authoritative quota percentage.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSource {
+    /// Structured data emitted by the provider's supported client protocol.
+    ProviderReported,
+    /// Standard rate-limit headers from an API response.
+    ResponseHeaders,
+    /// A separately authenticated organisation/management API.
+    ManagementApi,
+    /// Availability inferred from a safe, classified provider failure.
+    FailureInferred,
+    /// No supported programmatic usage signal is available.
+    #[default]
+    Unknown,
+}
+
+/// Current provider availability, independent of whether exact quota is known.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAvailability {
+    Available,
+    Low,
+    Exhausted,
+    RateLimited,
+    AuthRequired,
+    ModelUnavailable,
+    Unavailable,
+    #[default]
+    Unknown,
+}
+
+/// One provider-defined quota window such as Codex's five-hour or weekly limit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageWindow {
+    /// Stable provider-defined label (`five_hour`, `weekly`, ...).
+    pub id: String,
+    /// Percentage already consumed, when the provider reports it.
+    pub used_percent: Option<f64>,
+    /// Percentage remaining, when the provider reports it or it can be derived exactly.
+    pub remaining_percent: Option<f64>,
+    /// RFC 3339 reset timestamp, when supplied by the provider.
+    pub resets_at: Option<String>,
+}
+
+/// Secret-free provider health returned by Settings IPC commands.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderHealth {
+    pub provider: String,
+    pub availability: ProviderAvailability,
+    pub source: UsageSource,
+    #[serde(default)]
+    pub windows: Vec<UsageWindow>,
+    /// Stable reason code; never raw stderr/API bodies.
+    pub reason: Option<String>,
+    /// RFC 3339 observation timestamp.
+    pub checked_at: String,
+}
+
 // ── Compile + pipeline ───────────────────────────────────────────────────
 
 /// Result of a compile run.
@@ -344,6 +591,68 @@ pub enum RenderUsed {
     Det,
     /// LLM renderer that fell back to deterministic after validation failure.
     LlmFallback,
+}
+
+/// A fresh Compile Now candidate paired with the currently persisted AUTO body.
+///
+/// The token refers to backend-owned pending state; callers never submit a file
+/// path. `base_hash` lets the UI explain why Apply can fail when another process
+/// edits the standup while the comparison is open.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegenerationPreview {
+    /// Opaque, short-lived identifier consumed by `apply_regeneration`.
+    pub token: String,
+    /// Filing date (`YYYY-MM-DD`).
+    pub date: String,
+    /// Host whose AUTO block is being compared.
+    pub host: String,
+    /// AUTO body present when the preview started.
+    pub current_auto: String,
+    /// Freshly generated AUTO body; never written by the preview command.
+    pub candidate_auto: String,
+    /// SHA-256 of the exact current file bytes.
+    pub base_hash: String,
+    /// RFC 3339 expiry for the pending preview.
+    pub expires_at: String,
+    /// Renderer that produced the candidate.
+    pub render_used: RenderUsed,
+    /// Whether candidate generation used deterministic fallback.
+    pub fellback: bool,
+    /// Human-readable candidate render outcome.
+    pub message: String,
+}
+
+/// Explicit user choice applied to a pending regeneration candidate.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RegenerationResolution {
+    /// Dismiss the candidate without writing anything.
+    KeepCurrent,
+    /// Replace this host's AUTO block with the generated candidate.
+    UseCandidate,
+    /// Replace this host's AUTO block with user-edited merged text.
+    Merge,
+}
+
+/// Result of applying or dismissing a regeneration preview.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegenerationApplied {
+    /// Filing date (`YYYY-MM-DD`).
+    pub date: String,
+    /// Host whose AUTO block was resolved.
+    pub host: String,
+    /// Final standup file path.
+    pub file_path: String,
+    /// Explicit resolution that was applied.
+    pub resolution: RegenerationResolution,
+    /// Final AUTO body, or the unchanged current body when dismissed.
+    pub auto_body: String,
+    /// Whether Repo Sync created a commit.
+    pub committed: bool,
+    /// Whether Repo Sync pushed that commit.
+    pub pushed: bool,
+    /// Human-readable local/Repo Sync outcome.
+    pub message: String,
 }
 
 /// Standup file content returned by `read_standup_file`.
@@ -432,6 +741,9 @@ pub struct AuditData {
     pub provider: Option<String>,
     /// Model id used, if any.
     pub model: Option<String>,
+    /// Secret-free provider and transport attempts made during this render.
+    #[serde(default)]
+    pub provider_attempts: Vec<crate::render::ProviderAttempt>,
     /// Whether the run fell back to deterministic.
     pub fellback: bool,
     /// Audit hash.
@@ -657,6 +969,45 @@ pub struct PipelineProgress {
     pub percent: u8,
 }
 
+/// Payload for the `pipeline-log` event — one structured line of the terminal
+/// viewer. Emitted alongside `pipeline-progress` to give the dashboard a
+/// read-the-board view of what the compile actually did (git, sources, LLM).
+///
+/// Wire values: `"info" | "warn" | "error" | "done"` for `level`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineLogLine {
+    /// Filing date (`YYYY-MM-DD`).
+    pub date: String,
+    /// Host slug.
+    pub host: String,
+    /// Step label this log line belongs to (e.g. `gather`, `render_llm`).
+    pub step: String,
+    /// Severity.
+    pub level: PipelineLogLevel,
+    /// Human-readable line text.
+    pub message: String,
+    /// Optional structured detail (provider, model, source name, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Log severity for a [`PipelineLogLine`].
+///
+/// Wire values: `"info" | "warn" | "error" | "done"`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PipelineLogLevel {
+    /// Informational step start / progress.
+    #[default]
+    Info,
+    /// Non-fatal warning (source failure, fallback).
+    Warn,
+    /// Error.
+    Error,
+    /// Step completed.
+    Done,
+}
+
 /// Per-path validation result returned by `validate_paths`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PathValidation {
@@ -675,8 +1026,9 @@ pub struct PathValidation {
 mod tests {
     use super::{
         ApiKeyMode, ApiKeyStatus, AppConfig, AuditData, AuditRenderMode, AuditSidecar,
-        CompileResult, CompileStatus, LastTrigger, ProviderMode, RenderMode, RenderUsed,
-        SchedulerSource, SchedulerStatus,
+        CompileResult, CompileStatus, LastTrigger, LlmConfig, LocalRuntimePolicy, PipelineLogLevel,
+        PipelineLogLine, ProviderMode, RegenerationResolution, RenderMode, RenderUsed,
+        SchedulerSource, SchedulerStatus, StandupFormatConfig, StandupPreset, Verbosity,
     };
     use serde::{de::DeserializeOwned, Serialize};
     use serde_json::json;
@@ -769,6 +1121,8 @@ mod tests {
             serde_json::to_string(&SchedulerSource::TaskScheduler).unwrap(),
             serde_json::to_string(&LastTrigger::SelfHeal).unwrap(),
             serde_json::to_string(&AuditRenderMode::Auto).unwrap(),
+            serde_json::to_string(&LocalRuntimePolicy::KeepReady).unwrap(),
+            serde_json::to_string(&RegenerationResolution::UseCandidate).unwrap(),
         ];
         for value in leaked {
             assert!(
@@ -776,6 +1130,23 @@ mod tests {
                 "{value} still carries a PascalCase variant name"
             );
         }
+    }
+
+    #[test]
+    fn local_runtime_policy_is_snake_case_and_defaults_to_on_demand() {
+        assert_wire(&LocalRuntimePolicy::OnDemand, "on_demand");
+        assert_wire(&LocalRuntimePolicy::KeepReady, "keep_ready");
+        assert_eq!(
+            LlmConfig::default().local_runtime_policy,
+            LocalRuntimePolicy::OnDemand
+        );
+    }
+
+    #[test]
+    fn regeneration_resolution_is_snake_case() {
+        assert_wire(&RegenerationResolution::KeepCurrent, "keep_current");
+        assert_wire(&RegenerationResolution::UseCandidate, "use_candidate");
+        assert_wire(&RegenerationResolution::Merge, "merge");
     }
 
     #[test]
@@ -879,16 +1250,20 @@ mod tests {
             [
                 "dailies_dir",
                 "data_sources",
+                "format",
                 "git_refs",
                 "github_dir",
                 "host_slug_override",
                 "jira_base",
                 "llm",
+                "notifications",
+                "regeneration",
                 "render_mode",
                 "review",
                 "scheduler",
                 "scrub",
                 "standup_authors",
+                "sync",
             ]
         );
     }
@@ -902,5 +1277,88 @@ mod tests {
         assert_eq!(RenderMode::default(), RenderMode::Auto);
         assert_eq!(ProviderMode::default(), ProviderMode::CliFirst);
         assert_eq!(AuditRenderMode::default(), AuditRenderMode::Auto);
+        assert_eq!(StandupPreset::default(), StandupPreset::ClassicScrum);
+        assert_eq!(Verbosity::default(), Verbosity::Standard);
+    }
+
+    #[test]
+    fn standup_preset_wire_values_are_kebab_case() {
+        assert_wire(&StandupPreset::ClassicScrum, "classic-scrum");
+        assert_wire(&StandupPreset::FourQuestion, "four-question");
+        assert_wire(&StandupPreset::MadSadGlad, "mad-sad-glad");
+        assert_wire(&StandupPreset::StartStopContinue, "start-stop-continue");
+        assert_wire(&StandupPreset::KeepDropCreate, "keep-drop-create");
+        assert_wire(&StandupPreset::FiveQuestion, "five-question");
+        assert_wire(&StandupPreset::Spotify4q, "spotify-4q");
+        assert_wire(&StandupPreset::AsyncStatus, "async-status");
+        assert_wire(&StandupPreset::WalkingTimebox, "walking-timebox");
+        assert_wire(&StandupPreset::WalkTheBoard, "walk-the-board");
+        assert_wire(&StandupPreset::Ytbr, "ytbr");
+        assert_wire(
+            &StandupPreset::DecisionsCommitments,
+            "decisions-commitments",
+        );
+        assert_wire(&StandupPreset::OkrTied, "okr-tied");
+    }
+
+    #[test]
+    fn verbosity_wire_values_are_lowercase() {
+        assert_wire(&Verbosity::Terse, "terse");
+        assert_wire(&Verbosity::Standard, "standard");
+        assert_wire(&Verbosity::Detailed, "detailed");
+    }
+
+    #[test]
+    fn standup_format_config_defaults_match_docs() {
+        let value = serde_json::to_value(StandupFormatConfig::default()).unwrap();
+        assert_eq!(value["preset"], json!("classic-scrum"));
+        assert_eq!(value["verbosity"], json!("standard"));
+        assert_eq!(value["include_pr_review"], json!(true));
+        assert_eq!(value["include_confidence"], json!(false));
+        assert_eq!(value["include_risks"], json!(false));
+        assert_eq!(value["conventional"], json!(false));
+    }
+
+    #[test]
+    fn app_config_default_includes_format_block() {
+        let value = serde_json::to_value(AppConfig::default()).unwrap();
+        assert_eq!(value["format"]["preset"], json!("classic-scrum"));
+    }
+
+    #[test]
+    fn pipeline_log_level_is_lowercase() {
+        assert_wire(&PipelineLogLevel::Info, "info");
+        assert_wire(&PipelineLogLevel::Warn, "warn");
+        assert_wire(&PipelineLogLevel::Error, "error");
+        assert_wire(&PipelineLogLevel::Done, "done");
+    }
+
+    #[test]
+    fn pipeline_log_line_serializes_the_documented_shape() {
+        let line = PipelineLogLine {
+            date: "2026-08-03".into(),
+            host: "mbp-miguel".into(),
+            step: "gather".into(),
+            level: PipelineLogLevel::Info,
+            message: "gathering data sources".into(),
+            detail: None,
+        };
+        let value = serde_json::to_value(&line).unwrap();
+        assert_eq!(value["date"], json!("2026-08-03"));
+        assert_eq!(value["host"], json!("mbp-miguel"));
+        assert_eq!(value["step"], json!("gather"));
+        assert_eq!(value["level"], json!("info"));
+        assert_eq!(value["message"], json!("gathering data sources"));
+        // `detail` is `None` and marked `skip_serializing_if = "Option::is_none"`.
+        assert!(value.get("detail").is_none() || !value["detail"].is_null());
+        assert!(!value.as_object().unwrap().contains_key("detail"));
+
+        // With `Some(detail)` it appears in the payload.
+        let with_detail = PipelineLogLine {
+            detail: Some("provider=claude,model=sonnet".into()),
+            ..line
+        };
+        let value = serde_json::to_value(&with_detail).unwrap();
+        assert_eq!(value["detail"], json!("provider=claude,model=sonnet"));
     }
 }

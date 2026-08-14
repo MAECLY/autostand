@@ -39,7 +39,7 @@ impl GrokAdapter {
     }
 
     async fn detect_cmd(&self) -> Option<(String, GrokVariant)> {
-        for name in ["grok", "grok-cli"] {
+        for name in ["grok", "grok-build", "grok-cli"] {
             if let Some(info) = detect_cli_binary(name).await {
                 let variant = fingerprint(&info.version);
                 return Some((info.path.to_string_lossy().to_string(), variant));
@@ -54,24 +54,42 @@ impl GrokAdapter {
         system_prompt: &str,
         config: &ProviderConfig,
     ) -> Result<RenderOutput, LlmError> {
-        let cmd =
-            match config.cli_path.as_ref() {
-                Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().to_string(),
-                _ => self.detect_cmd().await.map(|(c, _)| c).ok_or_else(|| {
-                    LlmError::CliNotFound {
-                        searched: vec!["grok".into(), "grok-cli".into()],
-                    }
+        let (cmd, variant) = match config.cli_path.as_ref() {
+            Some(p) if !p.as_os_str().is_empty() => {
+                let path = p.to_string_lossy().to_string();
+                let variant = match super::detect::detect_cli_at(p).await {
+                    Some(info) => fingerprint(&info.version),
+                    None => GrokVariant::Official,
+                };
+                (path, variant)
+            }
+            _ => self
+                .detect_cmd()
+                .await
+                .ok_or_else(|| LlmError::CliNotFound {
+                    searched: vec!["grok".into(), "grok-build".into(), "grok-cli".into()],
                 })?,
-            };
+        };
         let model = config.model.clone();
         let combined = if system_prompt.is_empty() {
             prompt.to_string()
         } else {
             format!("{system_prompt}\n\n{prompt}")
         };
-        let args: Vec<&str> = vec![&combined];
         let start = Instant::now();
-        let body = helpers::run_cli(&cmd, &args, "", config.timeout_secs.max(1), &[]).await?;
+        let body = match variant {
+            GrokVariant::Official | GrokVariant::Auto => {
+                // Official Grok Build is a TUI. A bare `grok "<prompt>"` opens
+                // an interactive session and hangs until timeout. Headless
+                // mode is `--prompt-file` (single-turn) + `--output-format
+                // plain`. The prompt goes in a temp file so a 50 KB standup
+                // request cannot blow ARG_MAX.
+                run_official_headless(&cmd, &combined, &model, config.timeout_secs.max(1)).await?
+            }
+            GrokVariant::Superagent | GrokVariant::GrokCliDev => {
+                helpers::run_cli(&cmd, &[&combined], "", config.timeout_secs.max(1), &[]).await?
+            }
+        };
         Ok(RenderOutput {
             body,
             mode_used: RenderModeUsed::Cli,
@@ -174,6 +192,56 @@ impl GrokAdapter {
     }
 }
 
+/// Headless argv for the official Grok Build TUI.
+///
+/// A positional prompt starts the interactive UI; `--prompt-file` is the
+/// documented single-turn path that prints to stdout and exits.
+pub(crate) fn official_headless_args<'a>(prompt_file: &'a str, model: &'a str) -> Vec<&'a str> {
+    let mut args = vec![
+        "--prompt-file",
+        prompt_file,
+        "--output-format",
+        "plain",
+        "--verbatim",
+        "--max-turns",
+        "1",
+        "--permission-mode",
+        "dontAsk",
+        "--no-memory",
+        "--no-subagents",
+        "--disable-web-search",
+    ];
+    if !model.trim().is_empty() {
+        args.extend(["-m", model]);
+    }
+    args
+}
+
+async fn run_official_headless(
+    cmd: &str,
+    prompt: &str,
+    model: &str,
+    timeout_secs: u64,
+) -> Result<String, LlmError> {
+    let path = std::env::temp_dir().join(format!(
+        "autostand-grok-{}-{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&path, prompt).map_err(|err| LlmError::CliExitError {
+        code: -1,
+        stderr: format!("could not write grok prompt file: {err}"),
+    })?;
+    let file = path.to_string_lossy().into_owned();
+    let args = official_headless_args(&file, model);
+    let result = helpers::run_cli(cmd, &args, "", timeout_secs, &[]).await;
+    let _ = std::fs::remove_file(&path);
+    result
+}
+
 fn fingerprint(version: &str) -> GrokVariant {
     let v = version.to_lowercase();
     if v.contains("superagent") || v.contains("super-agent") {
@@ -201,6 +269,9 @@ impl LlmAdapter for GrokAdapter {
             }
         }
         if let Some(info) = detect_cli_binary("grok").await {
+            return Some(info);
+        }
+        if let Some(info) = detect_cli_binary("grok-build").await {
             return Some(info);
         }
         detect_cli_binary("grok-cli").await
@@ -248,5 +319,34 @@ impl LlmAdapter for GrokAdapter {
                 Err(_) => self.test_cli(config).await,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::official_headless_args;
+
+    #[test]
+    fn official_headless_args_are_single_turn_not_a_tui_prompt() {
+        let args = official_headless_args("/tmp/prompt.txt", "grok-4.5");
+        assert!(args.contains(&"--prompt-file"));
+        assert!(args.contains(&"/tmp/prompt.txt"));
+        assert!(args.contains(&"--output-format"));
+        assert!(args.contains(&"plain"));
+        assert!(args.contains(&"--verbatim"));
+        assert!(args.contains(&"--max-turns"));
+        assert!(args.contains(&"1"));
+        assert!(args.contains(&"--no-memory"));
+        assert!(args.contains(&"--no-subagents"));
+        assert!(args.contains(&"-m"));
+        assert!(args.contains(&"grok-4.5"));
+        // A lone positional string is what opens the interactive TUI.
+        assert!(!args.iter().any(|a| a.starts_with("You are a daily")));
+    }
+
+    #[test]
+    fn official_headless_args_omit_blank_model() {
+        let args = official_headless_args("/tmp/p.txt", "");
+        assert!(!args.contains(&"-m"));
     }
 }

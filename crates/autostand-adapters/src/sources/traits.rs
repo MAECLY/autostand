@@ -34,6 +34,14 @@ pub enum DataSourceError {
     Io(#[from] std::io::Error),
     #[error("not available: {0}")]
     NotAvailable(String),
+    /// The source is installed and reachable but wired up wrong — an empty
+    /// author filter, a scan root with no repos, a filter that matches nobody.
+    ///
+    /// Separate from [`DataSourceError::NotAvailable`] because the orchestrator
+    /// records it as a `gather_failure`: a misconfigured authoritative source
+    /// must never be indistinguishable from "the user did no work".
+    #[error("misconfigured: {0}")]
+    Misconfigured(String),
     #[error("parse: {0}")]
     Parse(String),
     #[error("other: {0}")]

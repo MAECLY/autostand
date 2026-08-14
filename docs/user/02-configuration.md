@@ -8,7 +8,7 @@ Open Settings from the sidebar (gear icon) or `Cmd/Ctrl + ,`.
 
 ### Providers tab
 
-Five cards — one per LLM provider:
+Six cards — one per LLM provider:
 
 | Card | CLI detected | API key | Models | Mode | Test |
 |------|--------------|---------|--------|------|------|
@@ -17,6 +17,7 @@ Five cards — one per LLM provider:
 | **OpenAI/Codex** | `codex` CLI path + version | "Set" / "Not set" | `gpt-4o`, `o1`, etc. | CLI-first / CLI-only / API-only | ✓ / ✗ |
 | **Gemini** | `gemini` CLI path + version | "Set" / "Not set" | `gemini-2.0-flash`, `gemini-1.5-pro` | CLI-first / CLI-only / API-only | ✓ / ✗ |
 | **Grok** | `grok` CLI path + version | "Set" / "Not set" | `grok-2`, `grok-3` | CLI-first / CLI-only / API-only | ✓ / ✗ |
+| **Built-in Local AI** | bundled sidecar protocol | N/A (local) | selected curated GGUF | CLI-only | ✓ / ✗ |
 
 Per-card fields:
 - **CLI detected?** — auto-detected via `which`. Shows path + `--version` output.
@@ -26,7 +27,19 @@ Per-card fields:
 - **Timeout** — seconds before falling back to deterministic render.
 - **Test button** — sends a ping, shows "OK" or the error.
 
-Set one provider as your **preferred provider** (radio at top of tab). This is the one the compile uses.
+Enable the providers you want, move them up/down into priority order, and choose whether **Continue with the next provider** is active. The preferred provider is the first entry. Autostand tries the next enabled provider after quota, authentication, model, transport, timeout, empty-output, or validation failures; `Auto` finally uses the deterministic renderer if the chain is exhausted.
+
+The usage panel shows exact percentages only when a supported programmatic source supplies them. Codex reports its account windows through its app-server protocol. Claude Code and Grok remain **Unknown** unless a real render yields an inferred availability failure; Autostand never invents a balance or reset time.
+
+### Notifications tab
+
+Notifications require both OS permission and the **Enable system notifications** master switch. Defaults alert for low reported usage (20% remaining), provider exhaustion/failover, local-model completion/failure, and standup failure. Routine success notifications are off by default. Scheduled headless runs use the native notification service on macOS, Windows, and Linux.
+
+### Local AI tab
+
+Autostand offers four optional GGUF downloads: Gemma 3 1B, Qwen 3.5 2B, Gemma 3 4B, and Qwen 3.5 4B. Nothing downloads automatically. Downloads can be cancelled/resumed, are checked against pinned size and SHA-256, and remain in Autostand's platform state directory. Gemma requires accepting Google's model terms before download; Qwen uses Apache-2.0. Install a model, select **Use model**, then enable `builtin-local` in the provider order. See `docs/llm-adapters/06-built-in-local.md`.
+
+Tagged release bundles include `autostand-local-llm` and a pinned llama.cpp `llama-cli`. Source/development builds must build or provide those binaries separately; this does not affect the independent Ollama provider.
 
 ### Data Sources tab
 

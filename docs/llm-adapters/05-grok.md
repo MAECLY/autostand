@@ -38,11 +38,11 @@ Community-built, Claude-Code-style with a Plan Mode. Uses the xAI API.
 
 Invocation depends on variant:
 
-- Official: `grok "<prompt>"` (or `grok-build "<prompt>"`).
+- Official (Grok Build TUI): `grok --prompt-file <tmp> --output-format plain --verbatim --max-turns 1 --permission-mode dontAsk`. A positional `grok "<prompt>"` starts the **interactive** TUI and hangs until timeout — never use that for a render.
 - superagent: `grok-cli "<prompt>"`.
 - grokcli.dev: `grok-cli "<prompt>"`.
 
-The adapter picks the exact args per variant (some accept `--model`, some read it from `.env`). Prompt is passed as the trailing positional argument; stdout is captured.
+The adapter picks the exact args per variant (some accept `--model`, some read it from `.env`). Official prompts go through a temp file so a large standup request cannot blow `ARG_MAX`; stdout is captured.
 
 ## API mode
 
@@ -82,6 +82,10 @@ Default: `grok-4.5`.
 ## Anti-recursion
 
 `AUTOSTAND_RENDER=1` is set on whichever Grok binary is spawned. The grokcli.dev variant in particular emits Claude-Code-style session events; the guard prevents re-entry into autostand's hook.
+
+## Usage reporting and exhaustion
+
+Grok Build exposes `/usage` in its interactive UI but no supported non-interactive remaining-quota payload used by Autostand. Settings shows `unknown` rather than scraping the TUI. When a real headless render returns the observed 402 text `usage balance exhausted`, the safe error classifier records `usage_balance_exhausted`, marks availability as `failure_inferred`/`exhausted`, optionally notifies the user, and advances to the next configured provider. Raw stderr is never persisted or displayed as health data.
 
 ## Timeout
 

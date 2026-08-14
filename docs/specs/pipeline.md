@@ -70,8 +70,8 @@ This is the heart of the pipeline. Each sub-step is its own function so it can b
 | j | `dirty_check(F, host, hash(inputs))` | `Skip` \| `Continue` |
 | k | `read_existing(F, host)` | `(manual_region, prev_auto)` |
 | l | `render_det(facts, github, notes, conv, prrev)` | `det_body` (always produced) |
-| m | `render_llm(inputs, provider)` | `Option<body>` (per render_mode; CLI-first → API fallback) |
-| n | `validate_render(llm_body, facts)` | `Ok(body)` \| `Err` → use `det_body` |
+| m | `render_llm_outcome_validated_logged(inputs, config, ...)` | body + secret-free provider attempts; invalid output continues the chain |
+| n | render decision | winning LLM body, deterministic fallback, or strict `Llm` error |
 | o | `accumulate(new_body, prev_auto)` | `final_body` (re-inject uncovered PREV bullets) |
 | p | `redact(final_body)` | `clean_body` |
 | q | `write_audit(F, host, inputs, render_info)` | sidecar JSON |
@@ -150,19 +150,23 @@ Parse the existing `dailies/<F>.md` (if any) into `(manual_region, prev_auto)` w
 
 Always produced. A deterministic template render of the facts, github, notes, conv, and prrev. This is the fallback if LLM fails. Never skipped.
 
-#### (m) `render_llm`
+#### (m) provider-chain LLM render
 
 Per `render_mode`:
 
 - `Det` → return `None` (no LLM call).
-- `Llm` → call the preferred provider; on failure, return `None` (no fallback).
-- `Auto` → call the preferred provider in `CliFirst` mode: try CLI, fall back to API. On failure, return `None` (caller will use `det_body`).
+- `Llm` → run the configured provider chain; return an error when no provider produces a valid body.
+- `Auto` → run the same chain; use `det_body` only after every enabled provider fails.
 
-The provider is chosen from `llm.preferred_provider` (or `AUTOSTAND_LLM_PROVIDER` env). CLI-first means: if `claude` CLI is detected and enabled, invoke `claude` as a subprocess; if that fails or the CLI is absent, use the API.
+An explicit `llm.provider_order` supplies the priority. Legacy configs start with `llm.preferred_provider` and append stored providers. Disabled providers are skipped. `fallback_enabled = false` restricts the chain to its first entry, while `AUTOSTAND_LLM_PROVIDER` always represents an explicit single-provider request.
 
-#### (n) `validate_render`
+Within each provider, the access mode controls transport attempts. `CliFirst` tries CLI and then API even when the CLI fails; `ApiFallback` tries API only when CLI detection says the binary is unavailable. A rate-limit error is retried once only when the provider supplies a reset delay no greater than `fallback_policy.max_retry_after_secs` (30 seconds by default).
 
-Validate the LLM output against the facts: every ticket mentioned must appear in `range_tickets`; no FORBIDDEN tickets introduced; bullets are past-tense; length within bounds. On failure, use `det_body` and set `fellback = true`.
+Each transport attempt records only provider, channel, model, status, stable failure classifier, and latency. Raw stderr/API bodies are never copied into events or audit data. The pipeline converts these attempts into process-local provider health inferences and optional exhausted/failover notifications; a later successful attempt clears that provider's inferred failure.
+
+#### (n) validation and render decision
+
+Validate each successful LLM output against the facts before accepting that provider: every ticket mentioned must appear in `range_tickets`; no FORBIDDEN tickets may be introduced; and the required preset sections must be present. Invalid output is recorded as `validation_failed` and the next provider is tried. When the chain is exhausted, `Auto` uses `det_body` and sets `fellback = true`; strict `Llm` returns an error and does not write a deterministic standup.
 
 #### (o) `accumulate`
 
@@ -275,6 +279,33 @@ impl Cache {
 
 ---
 
+## Compile Now regeneration
+
+An interactive regeneration is a two-phase operation. The preview phase runs
+the same single-date gather/render/validation pipeline with an empty previous
+AUTO body, but points both dailies and audit state at an isolated temporary
+directory. It never modifies the live standup, commits, pushes, sends a
+completion notification, or runs the self-heal target.
+
+The backend returns only this host's `current_auto` and `candidate_auto`, plus an
+opaque 30-minute token and a SHA-256 of the exact live file. Apply accepts
+`keep_current`, `use_candidate`, or an edited `merge`. Before an atomic write it
+rechecks the token, expiry, host and base hash; a concurrent edit invalidates the
+preview. Apply uses `set_auto`, so other hosts and the MANUAL region remain
+verbatim. User-edited merged text cannot contain AUTO/MANUAL control markers and
+passes the normal secret-redaction boundary before write.
+
+Dashboard defaults to **Review changes first** and opens a three-part resolver:
+current AUTO, fresh candidate, and an editable combined result. The nearby
+**Replace immediately** preference still uses the isolated preview and safety
+checks, but applies the candidate automatically after it validates. Both modes
+preserve MANUAL content; scheduler compiles continue using the normal
+accumulate-never-delete pipeline rather than an unattended conflict dialog.
+
+The LLM validator rejects prompt/context dumps such as `## CONTEXT` +
+`prompts:`, raw unified diffs, or repeated internal prompt-envelope sections.
+Such output falls back deterministically instead of being filed as a standup.
+
 ## Concurrency
 
 A single-run lock prevents two compiles from racing on the same machine.
@@ -320,8 +351,10 @@ Any step failure logs to the run log + emits a `pipeline-error` event. The **det
 | --- | --- |
 | `gather_git_facts` fails for one repo | skip that repo; continue with others |
 | `gather_enrichment` fails for one source | skip that source; record in audit sidecar; continue |
-| `render_llm` fails (CLI missing, API error, timeout) | use `det_body`; `fellback = true`; `render_used = "llm_fallback"` |
-| `validate_render` rejects LLM body | use `det_body`; `fellback = true` |
+| one provider/transport fails | record a safe attempt and continue according to mode/order |
+| a provider body fails validation | record `validation_failed` and try the next provider |
+| every provider fails in `Auto` | use `det_body`; `fellback = true`; `render_used = "llm_fallback"` |
+| every provider fails in `Llm` | abort the compile with a safe aggregate error |
 | `write_file` fails | abort `compile_file`; `CompileResult.status = "error"` |
 | `git pull`/`git push` fails | log warning; continue (local copy is authoritative) |
 | `acquire_lock` fails | abort `trigger`; emit `pipeline-error` with `code: "lock"` |
@@ -357,9 +390,10 @@ flowchart TD
         CJ -- "yes, clean LLM last run" --> SKIP
         CJ -- "no" --> CK["k: read_existing → (manual_region, prev_auto)"]
         CK --> CL["l: render_det → det_body (always)"]
-        CL --> CM{"m: render_llm<br/>per render_mode"}
-        CM -- "Det / fail" --> CN["n: validate_render → det_body"]
-        CM -- "Auto/Llm ok" --> CN
+        CL --> CM{"m: ordered provider chain<br/>transport + validation"}
+        CM -- "Det / Auto exhausted" --> CN["n: render decision → det_body"]
+        CM -- "valid LLM winner" --> CN
+        CM -- "Llm exhausted" --> ERR["pipeline error"]
         CN --> CO["o: accumulate(new, prev_auto) → final_body"]
         CO --> CP["p: redact(final_body)"]
         CP --> CQ["q: write_audit(sidecar JSON, 0600)"]

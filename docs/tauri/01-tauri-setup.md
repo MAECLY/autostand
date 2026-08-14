@@ -185,6 +185,7 @@ tauri-plugin-shell          = "2"
 tauri-plugin-store          = "2"
 tauri-plugin-dialog         = "2"
 tauri-plugin-notification   = "2"
+tauri-plugin-opener         = "2"          # hand a path/URL to the OS shell (`open_in_file_manager`)
 
 serde       = { workspace = true }
 serde_json  = { workspace = true }
@@ -327,6 +328,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_stronghold::Builder::new(|_app| {
             Box::pin(async { Ok(()) })
         }).build())

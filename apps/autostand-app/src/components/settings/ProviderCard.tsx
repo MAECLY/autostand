@@ -11,8 +11,8 @@
  * to config JSON — `ProviderConfig.api_key_ref` holds a keychain name, not a key.
  */
 
-import { useState } from "react";
-import { KeyRound, Zap } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronDown, KeyRound, Zap } from "lucide-react";
 
 import { Badge } from "@autostand/ui/components/badge";
 import { Button } from "@autostand/ui/components/button";
@@ -32,6 +32,7 @@ import {
 } from "@autostand/ui/components/dialog";
 import { Input } from "@autostand/ui/components/input";
 import { Label } from "@autostand/ui/components/label";
+import { Switch } from "@autostand/ui/components/switch";
 import {
   Select,
   SelectContent,
@@ -40,6 +41,7 @@ import {
   SelectValue,
 } from "@autostand/ui/components/select";
 
+import { useProviderModels } from "@/hooks/use-providers";
 import { toAppError } from "@/lib/error";
 import type {
   ApiKeyMode,
@@ -49,6 +51,9 @@ import type {
   TestProviderResult,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/** Sentinel so the Select can offer a free-text fallback without colliding with a model id. */
+const CUSTOM_MODEL = "__custom__";
 
 const PROVIDER_MODES = [
   "CliFirst",
@@ -84,32 +89,70 @@ export interface ProviderCardProps {
   /** `ProviderConfig.timeout_secs` — lives in config, not in the status DTO. */
   timeoutSecs: number;
   isPreferred: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   onSetPreferred: () => void;
+  onSetEnabled: (enabled: boolean) => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
   onSetMode: (mode: ProviderMode) => void;
   onSetModel: (model: string) => void;
   onSetTimeout: (seconds: number) => void;
   onTest: (mode: ProviderTestMode) => Promise<TestProviderResult>;
   onSaveKey: (key: string) => Promise<void>;
+  /** Only one provider should expose its advanced controls at a time. */
+  expanded?: boolean;
+  onToggleDetails?: () => void;
 }
 
 export function ProviderCard({
   provider,
   timeoutSecs,
   isPreferred,
+  canMoveUp,
+  canMoveDown,
   onSetPreferred,
+  onSetEnabled,
+  onMoveUp,
+  onMoveDown,
   onSetMode,
   onSetModel,
   onSetTimeout,
   onTest,
   onSaveKey,
+  expanded = true,
+  onToggleDetails,
 }: ProviderCardProps) {
   const [modelDraft, setModelDraft] = useState(provider.model);
+  const [customModel, setCustomModel] = useState(false);
   const [timeoutDraft, setTimeoutDraft] = useState(String(timeoutSecs));
   const [testResult, setTestResult] = useState<TestProviderResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [keyDialogOpen, setKeyDialogOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [savingKey, setSavingKey] = useState(false);
+  const isBuiltinLocal = provider.id === "builtin-local";
+
+  useEffect(() => {
+    setModelDraft(provider.model);
+    setCustomModel(false);
+  }, [provider.model]);
+
+  const modelsQuery = useProviderModels(provider.id);
+  const discovered = modelsQuery.data;
+  const modelOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: string[] = [];
+    for (const id of [...(discovered ?? []), provider.model]) {
+      const trimmed = id.trim();
+      if (trimmed.length === 0 || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      options.push(trimmed);
+    }
+    return options;
+  }, [discovered, provider.model]);
+  // An empty probe is not a verdict — CLI-only setups keep the free-text field.
+  const showModelSelect = (discovered ?? []).length > 0;
 
   const modelId = `provider-${provider.id}-model`;
   const modeId = `provider-${provider.id}-mode`;
@@ -199,16 +242,78 @@ export function ProviderCard({
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
+            <Label
+              htmlFor={`provider-${provider.id}-enabled`}
+              className="text-xs font-normal"
+            >
+              Enabled
+            </Label>
+            <Switch
+              id={`provider-${provider.id}-enabled`}
+              checked={provider.enabled}
+              onCheckedChange={onSetEnabled}
+            />
+          </div>
           <Badge variant={provider.cli.found ? "success" : "secondary"}>
-            {provider.cli.found ? "CLI found" : "CLI not found"}
+            {provider.cli.found
+              ? isBuiltinLocal
+                ? "Runtime found"
+                : "CLI found"
+              : isBuiltinLocal
+                ? "Runtime missing"
+                : "CLI not found"}
           </Badge>
-          <Badge variant={provider.api_key.set ? "success" : "secondary"}>
-            {API_KEY_LABELS[provider.api_key.mode]}
-          </Badge>
+          {!isBuiltinLocal ? (
+            <Badge variant={provider.api_key.set ? "success" : "secondary"}>
+              {API_KEY_LABELS[provider.api_key.mode]}
+            </Badge>
+          ) : null}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-expanded={expanded}
+            onClick={onToggleDetails}
+          >
+            {expanded ? "Hide" : "Configure"}
+            <ChevronDown
+              className={cn("size-4 transition-transform", expanded && "rotate-180")}
+              aria-hidden="true"
+            />
+          </Button>
         </div>
       </CardHeader>
 
-      <CardContent className="flex flex-col gap-4">
+      {expanded ? <CardContent className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2">
+          <p className="text-xs text-muted-foreground">
+            Failover priority. Autostand tries providers from top to bottom.
+          </p>
+          <div className="flex shrink-0 gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              disabled={!canMoveUp}
+              aria-label={`Move ${provider.label} up`}
+              onClick={onMoveUp}
+            >
+              <ArrowUp aria-hidden="true" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              disabled={!canMoveDown}
+              aria-label={`Move ${provider.label} down`}
+              onClick={onMoveDown}
+            >
+              <ArrowDown aria-hidden="true" />
+            </Button>
+          </div>
+        </div>
+
         {provider.cli.found ? (
           <p className="font-mono text-xs text-muted-foreground">
             {provider.cli.path}
@@ -216,21 +321,77 @@ export function ProviderCard({
           </p>
         ) : null}
 
-        <div className="grid gap-4 sm:grid-cols-3">
+        {isBuiltinLocal ? (
+          <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/45 px-4 py-3">
+            <div>
+              <p className="text-xs text-muted-foreground">Active model</p>
+              <p className="font-mono text-sm font-medium">
+                {provider.model || "No local model selected"}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Download and change models in the Local AI tab. Built-in AI is always local and never uses an API key.
+              </p>
+            </div>
+          </div>
+        ) : <div className="grid gap-4 sm:grid-cols-3">
           <div className="flex flex-col gap-2">
             <Label htmlFor={modelId}>Model</Label>
-            <Input
-              id={modelId}
-              value={modelDraft}
-              spellCheck={false}
-              autoComplete="off"
-              className="font-mono"
-              onChange={(event) => setModelDraft(event.target.value)}
-              onBlur={commitModel}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") commitModel();
-              }}
-            />
+            {showModelSelect ? (
+              <>
+                <Select
+                  value={customModel ? CUSTOM_MODEL : modelDraft || undefined}
+                  onValueChange={(value) => {
+                    if (value === CUSTOM_MODEL) {
+                      setCustomModel(true);
+                      return;
+                    }
+                    setCustomModel(false);
+                    setModelDraft(value);
+                    if (value !== provider.model) onSetModel(value);
+                  }}
+                >
+                  <SelectTrigger id={modelId} className="font-mono">
+                    <SelectValue placeholder="Choose a model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {modelOptions.map((id) => (
+                      <SelectItem key={id} value={id} className="font-mono">
+                        {id}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value={CUSTOM_MODEL}>Custom…</SelectItem>
+                  </SelectContent>
+                </Select>
+                {customModel ? (
+                  <Input
+                    value={modelDraft}
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="font-mono"
+                    placeholder="model-id"
+                    aria-label={`${provider.label} custom model`}
+                    onChange={(event) => setModelDraft(event.target.value)}
+                    onBlur={commitModel}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") commitModel();
+                    }}
+                  />
+                ) : null}
+              </>
+            ) : (
+              <Input
+                id={modelId}
+                value={modelDraft}
+                spellCheck={false}
+                autoComplete="off"
+                className="font-mono"
+                onChange={(event) => setModelDraft(event.target.value)}
+                onBlur={commitModel}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") commitModel();
+                }}
+              />
+            )}
           </div>
 
           <div className="flex flex-col gap-2">
@@ -269,7 +430,7 @@ export function ProviderCard({
               }}
             />
           </div>
-        </div>
+        </div>}
 
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -281,17 +442,19 @@ export function ProviderCard({
             }}
           >
             <Zap className="size-4" aria-hidden="true" />
-            {testing ? "Testing…" : "Test"}
+            {testing ? "Testing…" : isBuiltinLocal ? "Test local AI" : "Test"}
           </Button>
 
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => setKeyDialog(true)}
-          >
-            <KeyRound className="size-4" aria-hidden="true" />
-            Store key
-          </Button>
+          {!isBuiltinLocal ? (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setKeyDialog(true)}
+            >
+              <KeyRound className="size-4" aria-hidden="true" />
+              Store key
+            </Button>
+          ) : null}
 
           {testResult !== null ? (
             <>
@@ -301,14 +464,14 @@ export function ProviderCard({
                   : "Test failed"}
               </Badge>
               {testResult.message.length > 0 ? (
-                <span className="text-xs text-muted-foreground">
+                <span className="min-w-0 truncate text-xs text-muted-foreground">
                   {testResult.message}
                 </span>
               ) : null}
             </>
           ) : null}
         </div>
-      </CardContent>
+      </CardContent> : null}
 
       <Dialog open={keyDialogOpen} onOpenChange={setKeyDialog}>
         <DialogContent>

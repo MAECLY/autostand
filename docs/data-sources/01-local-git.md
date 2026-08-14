@@ -29,9 +29,9 @@ git -C <repo> log --all --no-merges \
   --author=<authors_regex> \
   --format=%s
 ```
-- `--all` (overridable via `git_refs`) scans all refs.
+- `--all` (overridable via `git_refs`) scans all refs. `git_refs` is split on whitespace, so a multi-token value (`--branches --tags`) becomes several arguments rather than one bogus one.
 - `--no-merges` drops merge commits.
-- `--author` is a regex alternation of every entry in `standup_authors` (matched against committer and author email/name).
+- **One `--author=<value>` flag per entry** in `standup_authors`. git ORs repeated `--author` options, but a single value is a *basic* regular expression in which `|` is a literal character — a `|`-joined alternation matches nothing.
 - `--format=%s` returns only the subject line.
 
 ### Ticket keys
@@ -62,15 +62,41 @@ git -C <repo> log --all --format=%cd|%s --date=short
 
 ## Auth
 
-None. Local git reads are unauthenticated. The only requirement is that `git config user.email` (or `user.name`) in each repo matches one of the entries in `standup_authors`; otherwise the `--author` regex will not match and the repo will appear empty.
+None. Local git reads are unauthenticated. The only requirement is that the commit author matches one of the entries in `standup_authors`; otherwise `--author` will not match and the repo would appear empty — see *Failure modes* below for why that can no longer pass unnoticed.
+
+## Author resolution
+
+1. `standup_authors`, trimmed and deduped. Blank entries do not count.
+2. If that list is empty: this machine's `git config --get user.email`, or `user.name` when no email is configured.
+3. If neither resolves: `DataSourceError::Misconfigured` — the gather fails loudly instead of returning an empty FACTS block.
+
+Step 2 exists because `standup_authors` has no Settings control, so an install that never hand-edits `config.json` carries `[]`. Falling back to the machine identity is deliberately narrow — an *unfiltered* `git log` would report the whole team's commits as the user's own work, which is worse than reporting none. Email alone (not email *and* name) for the same reason: a display name is a basic regex that a teammate's name can also satisfy.
+
+## Failure modes
+
+Local Git is the authoritative source: `provenance::compute` derives `range_tickets` / `covered_tickets` from its FACTS block, and `render::validate_render`'s no-work-claim and out-of-range-ticket checks key on those. An empty FACTS block therefore does not merely lose data — it disarms the validation, and nothing downstream can tell it apart from a day off.
+
+So every "gathered nothing" path is a `DataSourceError::Misconfigured`, surfaced as a `gather_failure` in the audit sidecar and in the UI:
+
+| Situation | Outcome |
+|---|---|
+| `github_dir` is not a directory | error |
+| `github_dir` holds no depth-1 git repos | error |
+| No author filter resolvable (rule 3 above) | error |
+| Filter resolved, but zero commits matched **and** other identities did commit in the window | error, quoting the identities that did commit |
+| Zero commits matched and `git log` failed in some repos | error, quoting the git failures |
+| Zero commits matched and nobody at all committed in the window | `Ok(SourceData::default())` — the one honest empty result |
+| Some repos matched, others' `git log` failed | partial FACTS + a `tracing::warn!` per failed repo |
+
+The identity probe (`git log … --format=%ae|%ce`, no `--author`) only runs when the filtered scan came back empty, so it costs nothing on the path where the filter works.
 
 ## Config fields
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
 | `github_dir` | `PathBuf` | `~/Documents/Github` | Root directory scanned for repos. |
-| `standup_authors` | `Vec<String>` | (user-set) | Author emails/names matched by `--author`. |
-| `git_refs` | `String` | `--all` | Ref selector passed to `git log`. |
+| `standup_authors` | `Vec<String>` | `[]` → machine git identity | Author emails/names matched by `--author`. |
+| `git_refs` | `String` | `--all` | Ref selector passed to `git log`; split on whitespace. |
 
 ## Rust adapter
 

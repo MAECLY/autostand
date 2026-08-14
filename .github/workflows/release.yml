@@ -138,6 +138,39 @@ jobs:
       - name: Build the frontend
         run: pnpm --filter autostand-app build
 
+      # Built-in Local AI is shipped as two process-isolated sidecars. Build
+      # Autostand's JSONL bridge for the exact release target and compile a
+      # pinned llama.cpp revision as a static executable so installed bundles
+      # never depend on Ollama, Homebrew, CUDA, or a system llama.cpp package.
+      - name: Build built-in local AI sidecars
+        shell: bash
+        env:
+          LLAMA_CPP_TAG: b10173
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$LLAMA_CPP_TAG" \
+            https://github.com/ggml-org/llama.cpp.git "$RUNNER_TEMP/llama.cpp"
+          cmake -S "$RUNNER_TEMP/llama.cpp" -B "$RUNNER_TEMP/llama-build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_CURL=OFF
+          cmake --build "$RUNNER_TEMP/llama-build" --config Release \
+            --target llama-cli --parallel 2
+          cargo build --release --target "${{ matrix.target }}" \
+            -p autostand-local-llm
+
+          extension=""
+          if [ "${{ runner.os }}" = "Windows" ]; then extension=".exe"; fi
+          binary_dir="apps/autostand-app/src-tauri/binaries"
+          mkdir -p "$binary_dir"
+          cp "target/${{ matrix.target }}/release/autostand-local-llm${extension}" \
+            "$binary_dir/autostand-local-llm-${{ matrix.target }}${extension}"
+          llama_cli="$(find "$RUNNER_TEMP/llama-build" -type f -name "llama-cli${extension}" | head -1)"
+          test -n "$llama_cli"
+          cp "$llama_cli" "$binary_dir/llama-cli-${{ matrix.target }}${extension}"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -181,4 +214,4 @@ jobs:
             Install notes: docs/user/01-install.md
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json

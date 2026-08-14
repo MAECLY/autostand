@@ -1,5 +1,6 @@
 //! LLM provider adapters. See `docs/llm-adapters/`.
 
+pub mod builtin_local;
 pub mod claude;
 pub mod detect;
 pub mod gemini;
@@ -11,13 +12,14 @@ pub mod traits;
 
 pub use detect::detect_cli_binary;
 pub use traits::{
-    CliInfo, LlmAdapter, LlmError, ProviderConfig, ProviderMode, RenderModeUsed, RenderOutput,
-    TestResult,
+    CliInfo, LlmAdapter, LlmError, LocalRuntimePolicy, ProviderConfig, ProviderMode,
+    RenderModeUsed, RenderOutput, TestResult,
 };
 
-/// Return all 5 provider adapters as trait objects.
+/// Return all supported provider adapters as trait objects.
 pub fn registry() -> Vec<Box<dyn LlmAdapter>> {
     vec![
+        Box::new(builtin_local::BuiltinLocalAdapter),
         Box::new(claude::ClaudeAdapter::default()),
         Box::new(ollama::OllamaAdapter::default()),
         Box::new(openai::OpenAiAdapter::default()),

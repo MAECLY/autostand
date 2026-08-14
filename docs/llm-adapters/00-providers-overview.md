@@ -1,6 +1,6 @@
 # LLM Adapters — Providers Overview
 
-`autostand` supports multiple LLM providers for rendering daily standups from gathered activity data. Each provider is implemented as a Rust `LlmAdapter` and selected at render time via the user's preferred-provider setting.
+`autostand` supports multiple LLM providers for rendering daily standups from gathered activity data. Each cloud/CLI provider implements the Rust `LlmAdapter` contract. At render time the app walks the user's ordered, enabled provider chain until one transport returns a body that also passes standup validation.
 
 ## Supported providers
 
@@ -11,17 +11,40 @@
 | 3 | OpenAI Codex CLI / OpenAI API | OpenAI       | `codex`      | `https://api.openai.com/v1/chat/completions`         |
 | 4 | Gemini         | Google       | `gemini`     | `https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent` |
 | 5 | Grok           | xAI          | `grok` / `grok-cli` | `https://api.x.ai/v1/chat/completions`              |
+| 6 | Built-in Local AI | local / llama.cpp | `autostand-local-llm` + `llama-cli` | none |
 
 ## Access modes
 
-Every provider supports four access modes, configurable per provider in Settings:
+Cloud/CLI adapters support four access modes, configurable per provider in Settings. `builtin-local` is always CLI-only:
 
 - **`CliFirst`** — Try the local CLI first; fall back to the API key if the CLI is unavailable or fails. Default for most providers.
 - **`CliOnly`** — Use the CLI exclusively. Render fails if the CLI binary is not found or exits non-zero. No API key is consulted.
 - **`ApiOnly`** — Use the HTTP API exclusively with the key from the OS keychain. The CLI is never invoked.
-- **`ApiFallback`** — Semantically equivalent to `ApiOnly`, but only enabled when the CLI is known to be unavailable (e.g. binary not detected on this machine). The pipeline still goes through the API code path; the distinction exists so the audit log can record *why* the API was used.
+- **`ApiFallback`** — Use the CLI when it is detected; otherwise use the API. Unlike `CliFirst`, a detected CLI failure does not proceed to API inside the same provider.
 
 Mode selection lives in `ProviderConfig.mode` and is editable from Settings → LLM Providers.
+
+## Ordered provider failover
+
+Settings → Providers stores an explicit `llm.provider_order`, per-provider enablement, and `llm.fallback_enabled`. When no explicit order exists, migration-safe resolution starts with `preferred_provider` and appends providers in their stored order. Disabled providers are skipped; turning fallback off restricts rendering to the first resolved provider.
+
+The CLI/API plan runs inside one provider before the chain advances. Authentication, quota/billing, missing CLI, unsupported model, timeout, transport, empty-body, and validation failures are isolated to that provider. A reported rate-limit delay is retried once when enabled and at or below the configured 30-second default ceiling. User cancellation is not represented as a provider failure.
+
+`Auto` uses the deterministic renderer after the chain is exhausted. `Llm` is strict and returns a safe aggregate error. Every attempt contains only provider/channel/model/status/classifier/latency; raw provider output and credentials never enter the pipeline log or audit trail.
+
+## Provider usage truthfulness
+
+Settings distinguishes authoritative quota windows from inferred availability:
+
+- OpenAI/Codex CLI is probed through `codex app-server --stdio` and the `account/rateLimits/read` JSON-RPC method. Reported primary/secondary windows become five-hour/weekly labels when their durations identify them.
+- Claude Code and Grok consumer CLIs currently have no supported non-interactive quota contract used by Autostand. They remain `unknown` unless a real render produces a classified failure.
+- A provider failure can produce `failure_inferred` states such as `exhausted`, `rate_limited`, `auth_required`, or `model_unavailable`, but never a fabricated percentage or reset time.
+
+The IPC uses `ProviderHealth`, `UsageWindow`, `UsageSource`, and `ProviderAvailability`; see `docs/tauri/02-ipc-contracts.md`.
+
+## Local options
+
+Ollama remains a separately installed and user-managed local provider. Settings → Local AI additionally manages a curated GGUF catalog under Autostand's state directory. See `06-built-in-local.md` for the exact download, licensing, and runtime boundary.
 
 ## `LlmAdapter` trait
 
@@ -79,6 +102,21 @@ AUTOSTAND_RENDER=1
 
 The app's own SessionEnd hook checks `AUTOSTAND_RENDER` and aborts re-entry if it is set. This applies to all providers and both CLI variants. Additional provider-specific guard env vars may also be set (e.g. Claude sets `CLAUDE_STANDUP_RENDER=1` for backward-compat with the original App Script).
 
+### Transcript recursion
+
+`AUTOSTAND_RENDER` stops a render subprocess from re-invoking autostand. It does **not** stop the CLI from *logging* that invocation — and the `claude-code`, `codex`, `gemini-cli`, `grok-cli`, and `opencode` data sources read exactly those logs. Without a second guard the render prompt returns on the next run disguised as work the user did, and the model is shown its own output format as activity.
+
+This was observed in the wild: the 2026-08-13 audit sidecar's `grok_sessions` carried autostand's system prompt (`## Source hierarchy`, `- Past tense, concrete, English.`), its context labels (`Filing date:`, `Subtitle: _Work completed …_`), its section headings (`## GIT FACTS`, `## OUTPUT`), a bare code fence, and the preset skeleton (`**Yesterday**`, `- <what you did>`) — all fed back as notes.
+
+The guard is [`autostand_core::prompt_echo`](../../crates/autostand-core/src/prompt_echo.rs), applied in `PromptCollector::add`, which every session source funnels through:
+
+| Layer | Function | Behaviour |
+| --- | --- | --- |
+| Message | `is_render_prompt_echo` | Drops the **whole** message when it carries `RENDER_REQUEST_SENTINEL` (`# Standup render request`, the first line `build_prompt` emits) or ≥2 distinct scaffolding markers. A partially-kept render prompt still teaches the model our scaffolding, so half-filtering is not enough. |
+| Line | `is_scaffolding_line` | Catches fragments that survive re-chunking by a CLI's logger. Deliberately conservative — generic labels like `Title:` are excluded so a real note is never eaten. |
+
+`build_prompt` and the filter share `RENDER_REQUEST_SENTINEL`, so changing the heading cannot silently disarm the guard.
+
 ## Render flow
 
 Per `render()` call:
@@ -128,4 +166,4 @@ which checks:
 - **(b) Coverage** — at least **80%** of the tickets present in the FACTS source appear in the rendered standup. Missing tickets are logged.
 - **(c) No "no work done" hallucination** — if FACTS or NOTES contain content, the body must not claim "no work done" / "nothing to report".
 
-If validation fails, the pipeline discards the LLM body and falls back to the **deterministic renderer** (template-based, no LLM). The fallback event is recorded in the audit sidecar so the user can see why their AI render was discarded.
+If validation fails, the pipeline discards that provider's body, records `validation_failed`, and advances through the ordered provider chain. After the chain is exhausted, `Auto` uses the **deterministic renderer** (template-based, no LLM) while strict `Llm` returns an error. The attempt history is recorded in the audit sidecar.

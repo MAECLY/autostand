@@ -155,42 +155,192 @@ pub fn is_keepable_prompt(s: &str) -> bool {
     if lower.starts_with("you are") {
         return false;
     }
+    if lower.starts_with("established facts") {
+        return false;
+    }
     if looks_like_code_paste(trimmed) {
+        return false;
+    }
+    if looks_like_agent_dump_line(trimmed) {
         return false;
     }
     if autostand_core::meta::is_meta_work(trimmed, None) {
         return false;
     }
+    // Second anti-recursion layer: a fragment of our own prompt that survived
+    // re-chunking by the CLI's logger, so the message-level guard never saw it whole.
+    if autostand_core::prompt_echo::is_scaffolding_line(trimmed) {
+        return false;
+    }
     true
 }
 
-/// Collector for deduped, filtered user-prompt snippets (max 15, ≤ 200 chars each).
+/// Lines that come from a Claude Code / Codex review dump, not from a human standup note.
+pub fn looks_like_agent_dump_line(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    if lower.starts_with("changed files")
+        || lower.starts_with("unified diff")
+        || lower.starts_with("=== diff")
+        || lower.starts_with("@@ ")
+        || lower == "prompts:"
+        || lower == "plans:"
+        || lower == "files:"
+        || lower == "## context"
+        || trimmed.starts_with("## CONTEXT")
+        || trimmed.starts_with("===")
+    {
+        return true;
+    }
+    // Review-command file lists: `- src/foo.ts` or `- - package.json`.
+    let bullet = trimmed
+        .trim_start_matches('-')
+        .trim_start_matches('-')
+        .trim();
+    looks_like_source_path(bullet)
+}
+
+/// A path-looking token (`src/foo.ts`, `package.json`, `=== DIFF: x ===`).
+fn looks_like_source_path(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.contains(' ') && !s.contains('/') {
+        return false;
+    }
+    let last = s.rsplit(['/', '\\']).next().unwrap_or(s);
+    last.contains('.')
+        && last
+            .rsplit('.')
+            .next()
+            .is_some_and(|ext| ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// Index of the first line that starts a review-diff dump, if any.
+pub fn agent_dump_cut_line(raw: &str) -> Option<usize> {
+    raw.lines().position(|line| {
+        let lower = line.trim().to_lowercase();
+        lower.starts_with("changed files")
+            || lower.starts_with("unified diff")
+            || lower.starts_with("=== diff")
+            || lower.starts_with("@@ ")
+            || lower.starts_with("## context")
+    })
+}
+
+/// Strip Claude Code preamble blocks that are not real user prompts: XML-like
+/// wrappers (`<system-reminder>…</system-reminder>`, `<context>`, `<env>`,
+/// `<dcp-system-reminder>`, etc.) and `ESTABLISHED FACTS:` preambles. Returns the
+/// surviving lines joined with `\n`.
+pub fn strip_preamble(s: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut skip_until: Option<String> = None;
+    for line in s.lines() {
+        let trimmed = line.trim();
+        if let Some(ref close) = skip_until {
+            if trimmed.starts_with(close.as_str()) {
+                skip_until = None;
+            }
+            continue;
+        }
+        if let Some(tag) = open_xml_block(trimmed) {
+            skip_until = Some(tag);
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("ESTABLISHED FACTS (do not re-derive, build on these):")
+            || trimmed.eq_ignore_ascii_case("ESTABLISHED FACTS:")
+            || trimmed.eq_ignore_ascii_case("ESTABLISHED FACTS")
+        {
+            continue;
+        }
+        if trimmed.starts_with('-') {
+            let bullet = trimmed.trim_start_matches('-').trim();
+            if bullet.starts_with("Repo A")
+                || bullet.starts_with("Repo B")
+                || bullet.contains("ESTABLISHED FACTS")
+            {
+                continue;
+            }
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
+/// Detect a `<tag>` opener and return its matching `</tag>` closer prefix.
+fn open_xml_block(trimmed: &str) -> Option<String> {
+    if !(trimmed.starts_with('<') && trimmed.ends_with('>')) {
+        return None;
+    }
+    if !trimmed.starts_with("</") && !trimmed.starts_with("</") {
+        let inner = trimmed
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .split([' ', '/'])
+            .next()?
+            .to_string();
+        if inner.is_empty()
+            || inner
+                .chars()
+                .any(|c| !c.is_alphanumeric() && c != '-' && c != '_')
+        {
+            return None;
+        }
+        return Some(format!("</{inner}>"));
+    }
+    None
+}
+
+/// Collector for deduped, filtered user-prompt snippets. Dedup is line-level so
+/// a recurring multi-line preamble embedded in different surrounding text is
+/// collapsed to one occurrence. Caps at 40 unique lines (≤ 200 chars each).
 #[derive(Debug, Default)]
 pub struct PromptCollector {
-    seen: std::collections::HashSet<String>,
+    seen_lines: std::collections::HashSet<String>,
     snippets: Vec<String>,
 }
 
+const MAX_SNIPPETS: usize = 40;
+
 impl PromptCollector {
-    /// Add a raw user-typed text. It will be filtered, deduped, truncated.
+    /// Add a raw user-typed text. It is split into lines, each line is
+    /// filtered, deduped against all prior lines, and truncated.
     pub fn add(&mut self, raw: &str) {
-        if self.snippets.len() >= 15 {
+        // Anti-recursion: autostand drives `claude`/`codex`/`grok`/`gemini` to render a
+        // standup, and those CLIs log the invocation into the very session files this
+        // collector reads. Drop the whole message rather than filtering it line by line —
+        // a half-kept render prompt still teaches the model to emit our own scaffolding.
+        if autostand_core::prompt_echo::is_render_prompt_echo(raw) {
             return;
         }
-        if !is_keepable_prompt(raw) {
-            return;
+        let stripped = strip_preamble(raw);
+        // A Claude Code "review this change" dump is one user message: a short
+        // intent, then `Changed files` + a unified diff. Keep only the intent.
+        let usable = match agent_dump_cut_line(&stripped) {
+            Some(0) => return,
+            Some(cut) => stripped.lines().take(cut).collect::<Vec<_>>().join("\n"),
+            None => stripped,
+        };
+        for line in usable.lines() {
+            if self.snippets.len() >= MAX_SNIPPETS {
+                return;
+            }
+            if !is_keepable_prompt(line) {
+                continue;
+            }
+            let norm = normalize_text(line);
+            if self.seen_lines.contains(&norm) {
+                continue;
+            }
+            self.seen_lines.insert(norm);
+            self.snippets.push(truncate_str(line.trim(), 200));
         }
-        let norm = normalize_text(raw);
-        if self.seen.contains(&norm) {
-            return;
-        }
-        self.seen.insert(norm);
-        self.snippets.push(truncate_str(raw.trim(), 200));
     }
 
-    /// Returns true if the collector is full (15 snippets).
+    /// Returns true if the collector is full.
     pub fn is_full(&self) -> bool {
-        self.snippets.len() >= 15
+        self.snippets.len() >= MAX_SNIPPETS
     }
 
     /// Render the collected snippets as a markdown CONTEXT block.
@@ -404,6 +554,86 @@ mod tests {
     }
 
     #[test]
+    fn is_keepable_prompt_rejects_review_diff_dumps() {
+        assert!(!is_keepable_prompt(
+            "Changed files (you may Read these and any other file in the repo):"
+        ));
+        assert!(!is_keepable_prompt("Unified diff (only + lines are new):"));
+        assert!(!is_keepable_prompt("=== DIFF: package.json ==="));
+        assert!(!is_keepable_prompt("@@ -54,7 +54,7 @@"));
+        assert!(!is_keepable_prompt("- package.json"));
+        assert!(!is_keepable_prompt(
+            "- src/core/application/gorgias/use-cases/create-ticket.ts"
+        ));
+    }
+
+    #[test]
+    fn prompt_collector_keeps_only_the_intent_before_a_diff_dump() {
+        let mut pc = PromptCollector::default();
+        pc.add(
+            "Review this change for security vulnerabilities.\n\
+             Changed files (you may Read these and any other file in the repo):\n\
+             - package.json\n\
+             Unified diff (only + lines are new):\n\
+             === DIFF: package.json ===\n\
+             @@ -54,7 +54,7 @@\n\
+             +    \"@fifty-git/shared\": \"0.53.40\",\n",
+        );
+        let snips = pc.snippets();
+        assert_eq!(snips, ["Review this change for security vulnerabilities."]);
+        assert!(snips
+            .iter()
+            .all(|s| !s.contains("DIFF") && !s.contains("@@")));
+    }
+
+    /// Regression for the anti-recursion hole found in the 2026-08-13 audit sidecar:
+    /// `grok_sessions` carried autostand's own render prompt — system prompt, context
+    /// labels, section headings, the fence, and the preset skeleton — and every line was
+    /// fed back to the model as work the user had done.
+    #[test]
+    fn prompt_collector_drops_our_own_render_prompt() {
+        let mut pc = PromptCollector::default();
+        pc.add(
+            "## Source hierarchy (most authoritative first)\n\
+             1. GIT FACTS — committed work. Authoritative for what was committed and when.\n\
+             ## Rules\n\
+             - Past tense, concrete, English.\n\
+             - NEVER attribute to AI. Write as if the human did the work.\n\
+             Filing date: 2026-08-03\n\
+             Subtitle: _Work completed August 01–02, 2026._\n\
+             ## GIT FACTS\n\
+             ## OUTPUT\n\
+             Format your output using this structure:\n\
+             ```\n\
+             **Yesterday**\n\
+             - <what you did>\n",
+        );
+        assert!(
+            pc.snippets().is_empty(),
+            "render prompt leaked back as work: {:?}",
+            pc.snippets()
+        );
+    }
+
+    #[test]
+    fn prompt_collector_drops_a_render_request_by_its_sentinel() {
+        let mut pc = PromptCollector::default();
+        pc.add("# Standup render request\n\nFiling date: 2026-08-13\n");
+        assert!(pc.snippets().is_empty());
+    }
+
+    /// The guard must not swallow real work that merely mentions a standup.
+    #[test]
+    fn prompt_collector_keeps_real_work_alongside_the_guard() {
+        let mut pc = PromptCollector::default();
+        pc.add("Implementing August 13th fix for POST /api/v1/external/gorgias/tickets/claim");
+        assert_eq!(
+            pc.snippets(),
+            ["Implementing August 13th fix for POST /api/v1/external/gorgias/tickets/claim"]
+        );
+    }
+
+    #[test]
     fn window_contains_inside_inclusive() {
         let w = window((2026, 8, 3), (2026, 8, 7));
         assert!(window_contains(
@@ -446,14 +676,36 @@ mod tests {
     }
 
     #[test]
-    fn prompt_collector_caps_at_fifteen() {
+    fn prompt_collector_caps_at_forty() {
         let mut pc = PromptCollector::default();
-        for i in 0..20 {
+        for i in 0..60 {
             pc.add(&format!("unique prompt number {i}"));
         }
-        assert_eq!(pc.snippets().len(), 15);
+        assert_eq!(pc.snippets().len(), 40);
         assert!(pc.is_full());
-        assert_eq!(pc.snippets().last().unwrap(), "unique prompt number 14");
+        assert_eq!(pc.snippets().last().unwrap(), "unique prompt number 39");
+    }
+
+    #[test]
+    fn prompt_collector_dedups_across_snippets_at_line_level() {
+        let mut pc = PromptCollector::default();
+        pc.add("ESTABLISHED FACTS (do not re-derive, build on these):\n- Repo A: /tmp/a\n- Repo B: /tmp/b\nwrote the login redirect bug");
+        pc.add("ESTABLISHED FACTS (do not re-derive, build on these):\n- Repo A: /tmp/a\n- Repo B: /tmp/b\nreviewed PR #42 for the auth module");
+        pc.add("ESTABLISHED FACTS (do not re-derive, build on these):\n- Repo A: /tmp/a\n- Repo B: /tmp/b\nwrote the login redirect bug");
+        let snips = pc.snippets();
+        assert_eq!(snips.len(), 2);
+        assert!(snips.iter().all(|s| !s.contains("ESTABLISHED FACTS")));
+        assert!(snips.iter().all(|s| !s.contains("Repo A")));
+    }
+
+    #[test]
+    fn prompt_collector_dedups_repeated_lines_across_adds() {
+        let mut pc = PromptCollector::default();
+        pc.add("wired the pipeline");
+        pc.add("wired the pipeline");
+        pc.add("wired the pipeline");
+        assert_eq!(pc.snippets().len(), 1);
+        assert_eq!(pc.snippets()[0], "wired the pipeline");
     }
 
     #[test]

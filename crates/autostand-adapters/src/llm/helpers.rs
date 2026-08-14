@@ -236,6 +236,7 @@ mod tests {
             api_key,
             api_base_url: None,
             timeout_secs: 30,
+            local_runtime_policy: crate::llm::LocalRuntimePolicy::OnDemand,
         }
     }
 

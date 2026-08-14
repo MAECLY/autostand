@@ -44,6 +44,7 @@ and writes it atomically to a `dailies/` directory that syncs across machines.
 | [llm-adapters/03-openai-codex.md](llm-adapters/03-openai-codex.md) | Codex CLI + OpenAI API adapter. |
 | [llm-adapters/04-gemini.md](llm-adapters/04-gemini.md) | Gemini CLI + Google AI API adapter. |
 | [llm-adapters/05-grok.md](llm-adapters/05-grok.md) | Grok CLI + xAI API adapter. |
+| [llm-adapters/06-built-in-local.md](llm-adapters/06-built-in-local.md) | Curated GGUF downloads, licensing, and process-isolated local inference. |
 | [llm-adapters/adapter-trait.md](llm-adapters/adapter-trait.md) | `LlmAdapter` trait definition and contract. |
 | [llm-adapters/render-prompt.md](llm-adapters/render-prompt.md) | Canonical render prompt + system instructions. |
 
@@ -105,6 +106,7 @@ paths inside them are relative to the `autostand-ui` root unless stated otherwis
 | [specs/pipeline.md](specs/pipeline.md) | Canonical pipeline step list + invariants. |
 | [specs/anti-backdating.md](specs/anti-backdating.md) | FORBIDDEN/COVERED/SKEW/CLAIM rules. |
 | [specs/audit.md](specs/audit.md) | Audit sidecar JSON schema + phantom detector. |
+| [specs/provider-usage.md](specs/provider-usage.md) | Subscription quota probes, normalized usage model, cache, and health-aware fallback. |
 
 ---
 

@@ -57,7 +57,7 @@ export function PipelineCard({ className }: PipelineCardProps) {
       <CardContent className="space-y-3">
         <Progress value={percent} />
         <div className="flex items-center justify-between text-sm">
-          <span className="font-mono text-muted-foreground">
+          <span className="min-w-0 truncate font-mono text-muted-foreground">
             {step ?? "no step"}
           </span>
           <span className="font-mono text-muted-foreground">{percent}%</span>

@@ -8,8 +8,10 @@
 // (dead code) and leak private types through public items.
 pub mod commands;
 pub mod error;
+pub mod format_presets;
 pub mod gather;
 pub mod git_ops;
+pub mod notifications;
 pub mod pipeline_runner;
 pub mod render;
 pub mod scheduler_runtime;
@@ -34,6 +36,8 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(state::AppState::new())
         // The in-process scheduler must start with the app, not on first IPC
         // call: nothing in the UI is required for a cron boundary to come due.
@@ -50,9 +54,20 @@ pub fn run() {
             commands::data_sources::toggle_data_source,
             commands::llm::list_llm_providers,
             commands::llm::test_llm_provider,
+            commands::llm::get_provider_health,
+            commands::llm::refresh_provider_health,
             commands::llm::store_api_key,
             commands::llm::get_api_key_status,
             commands::llm::detect_cli,
+            commands::llm::list_provider_models,
+            commands::local_models::list_local_models,
+            commands::local_models::download_local_model,
+            commands::local_models::cancel_local_model_download,
+            commands::local_models::delete_local_model,
+            commands::local_models::select_local_model,
+            commands::local_models::accept_local_model_terms,
+            commands::local_models::unload_local_models,
+            commands::os::open_in_file_manager,
             commands::pipeline::compile_standup,
             commands::pipeline::compile_all,
             commands::pipeline::trigger_run_now,
@@ -60,13 +75,24 @@ pub fn run() {
             commands::pipeline::preview_gather,
             commands::pipeline::get_scheduler_status,
             commands::pipeline::set_scheduler_schedule,
+            commands::pipeline::set_scheduler_enabled,
+            commands::regeneration::preview_regeneration,
+            commands::regeneration::apply_regeneration,
             commands::standup::read_standup_file,
             commands::standup::add_manual_item,
+            commands::standup::list_standup_dates,
             commands::standup::list_audit_sidecars,
             commands::standup::read_audit_sidecar,
+            commands::sync::detect_cloud_folders,
+            commands::sync::configure_cloud_sync,
+            commands::sync::get_repo_sync_status,
+            commands::sync::setup_repo_sync,
             commands::repos::discover_repos,
             commands::settings::get_settings_paths,
             commands::settings::validate_paths,
+            notifications::get_notification_status,
+            notifications::request_notification_permission,
+            notifications::send_test_notification,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
