@@ -47,6 +47,7 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `delete_local_model` | `{ modelId: string }` | `void` | Delete final and partial model files and clear selection when applicable | `commands::local_models` |
 | `select_local_model` | `{ modelId: string }` | `void` | Select an installed, size-valid catalog model | `commands::local_models` |
 | `accept_local_model_terms` | `{ modelId: string }` | `void` | Persist acceptance of the catalog's exact terms version | `commands::local_models` |
+| `unload_local_models` | — | `LocalRuntimeUnload` | Terminate any process still holding a managed GGUF and delete the reusable prompt caches; model files are kept | `commands::local_models` |
 | `get_notification_status` | — | `NotificationStatus` | Read OS permission and saved notification preferences without prompting | `notifications` |
 | `request_notification_permission` | — | `string` | Ask for OS permission after an explicit Settings action | `notifications` |
 | `send_test_notification` | — | `boolean` | Send a content-free test alert; respects master opt-in and dedup policy | `notifications` |
@@ -67,6 +68,7 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `discover_repos` | — | `RepoInfo[]` | Scan `GITHUB_DIR` for git repos (depth-1) | `autostand-adapters::git::discover` |
 | `get_settings_paths` | — | `SettingsPaths` | Return all configured paths (GITHUB_DIR, dailies dir, claude dir, etc.) | `autostand-core::config::paths` |
 | `validate_paths` | — | `PathValidation[]` | Check each path exists + readable; returns per-path ok/missing | `autostand-core::config::validate` |
+| `open_in_file_manager` | `{ path: string }` | `void` | Open a directory in the OS file manager (Finder / Explorer / `xdg-open`). Rejects blank, relative, and non-directory paths before the shell handoff: `invalid`, or `not_found` when the directory is gone | `tauri_plugin_opener::open_path` |
 | `store_api_key` | `{ provider: string, key: string }` | `void` | Store key in OS keychain (`keyring` crate) under `autostand.<provider>` | `autostand-app::secrets::store` |
 | `get_api_key_status` | `{ provider: string }` | `{ set: boolean, mode: "keychain" \| "env" \| "none" }` | Whether a key is set and where it came from | `autostand-app::secrets::status` |
 | `detect_cli` | `{ provider: string }` | `{ found: boolean, path: string, version: string }` | Locate CLI binary on PATH + `--version` probe | `autostand-adapters::cli::detect` |
@@ -243,7 +245,14 @@ export interface LocalModelInfo {
   license_url: string;
   terms_required: boolean;
   downloaded_bytes: number;
+  runtime_cache_bytes: number;   // reusable llama.cpp prompt/KV cache, 0 when cold
   error: string | null;
+}
+
+export interface LocalRuntimeUnload {
+  processes_terminated: number;
+  caches_removed: number;
+  bytes_freed: number;
 }
 
 export interface LocalModelProgressEvent {
@@ -486,6 +495,7 @@ export const tauriApi = {
   discoverRepos:       ()                          => invoke<RepoInfo[]>("discover_repos"),
   getSettingsPaths:    ()                          => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths:       ()                          => invoke<PathValidation[]>("validate_paths"),
+  openInFileManager:  (path: string)                => invoke<void>("open_in_file_manager", { path }),
   detectCloudFolders:  ()                          => invoke<CloudFolder[]>("detect_cloud_folders"),
   configureCloudSync: (rootPath: string)            => invoke<CloudSyncSelection>("configure_cloud_sync", { rootPath }),
   getRepoSyncStatus:  ()                           => invoke<RepoSyncStatus>("get_repo_sync_status"),

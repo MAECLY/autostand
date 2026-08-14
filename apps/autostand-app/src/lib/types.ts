@@ -282,7 +282,16 @@ export interface LocalModelInfo {
   license_url: string;
   terms_required: boolean;
   downloaded_bytes: number;
+  /** Size of this model's reusable llama.cpp prompt/KV cache, `0` when cold. */
+  runtime_cache_bytes: number;
   error: string | null;
+}
+
+/** What `unload_local_models` actually released. */
+export interface LocalRuntimeUnload {
+  processes_terminated: number;
+  caches_removed: number;
+  bytes_freed: number;
 }
 
 export interface LocalModelProgressEvent {

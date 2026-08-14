@@ -24,6 +24,7 @@ import type {
   LlmProviderConfig,
   LocalModelInfo,
   LocalModelProgressEvent,
+  LocalRuntimeUnload,
   NotificationStatus,
   PathValidation,
   PipelineDoneEvent,
@@ -114,6 +115,8 @@ export const tauriApi = {
 
   getSettingsPaths: () => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths: () => invoke<PathValidation[]>("validate_paths"),
+  openInFileManager: (path: string) =>
+    invoke<void>("open_in_file_manager", { path }),
 
   detectCloudFolders: () => invoke<CloudFolder[]>("detect_cloud_folders"),
   configureCloudSync: (rootPath: string) =>
@@ -147,6 +150,7 @@ export const tauriApi = {
     invoke<void>("select_local_model", { modelId }),
   acceptLocalModelTerms: (modelId: string) =>
     invoke<void>("accept_local_model_terms", { modelId }),
+  unloadLocalModels: () => invoke<LocalRuntimeUnload>("unload_local_models"),
 } as const;
 
 // ── Events ────────────────────────────────────────────────────────────────

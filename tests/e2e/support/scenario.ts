@@ -158,6 +158,12 @@ export function makeAppConfig(): AppConfig {
       include_risks: false,
       conventional: false,
     },
+    // `SyncTab` reads `sync.cloud_root` without a fallback, so the Sync tab
+    // cannot render at all when the fixture omits it.
+    sync: { cloud_root: null, repo_enabled: false },
+    // `CompileButton` reads this without a fallback, so the dashboard cannot
+    // render at all when the fixture omits it.
+    regeneration: { replace_immediately: false },
   };
 }
 
@@ -378,6 +384,8 @@ export function makeCloudFolders(): CloudFolder[] {
       id: "icloud-drive",
       label: "iCloud Drive",
       path: "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs",
+      dailies_path:
+        "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs/autostand",
       exists: true,
       provider: "iCloud",
     },
@@ -385,6 +393,7 @@ export function makeCloudFolders(): CloudFolder[] {
       id: "onedrive",
       label: "OneDrive",
       path: "/Users/tester/OneDrive",
+      dailies_path: "/Users/tester/OneDrive/autostand",
       exists: false,
       provider: "OneDrive",
     },
@@ -392,6 +401,7 @@ export function makeCloudFolders(): CloudFolder[] {
       id: "syncthing",
       label: "Syncthing",
       path: "/Users/tester/Sync",
+      dailies_path: "/Users/tester/Sync/autostand",
       exists: false,
       provider: "Syncthing",
     },

@@ -28,6 +28,19 @@ export function useValidatePaths() {
   });
 }
 
+/**
+ * Hand a directory to the OS file manager (Finder / Explorer / `xdg-open`).
+ *
+ * A mutation, not a query: it launches an external application, so it may only
+ * ever run from an explicit click.
+ */
+export function useOpenInFileManager() {
+  return useMutation({
+    mutationFn: tauriApi.openInFileManager,
+    onError: (error) => handleInvokeError(error, "Open folder"),
+  });
+}
+
 /** Scan `github_dir` for git repos. Expensive — keep it behind a button. */
 export function useDiscoverRepos() {
   return useMutation({

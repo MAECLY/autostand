@@ -142,6 +142,11 @@ const COMMANDS: CommandCase[] = [
   { command: "discover_repos", call: () => tauriApi.discoverRepos() },
   { command: "get_settings_paths", call: () => tauriApi.getSettingsPaths() },
   { command: "validate_paths", call: () => tauriApi.validatePaths() },
+  {
+    command: "open_in_file_manager",
+    call: () => tauriApi.openInFileManager("/home/tester/Documents/Github"),
+    args: { path: "/home/tester/Documents/Github" },
+  },
   { command: "detect_cloud_folders", call: () => tauriApi.detectCloudFolders() },
   {
     command: "configure_cloud_sync",
@@ -207,6 +212,7 @@ const COMMANDS: CommandCase[] = [
     call: () => tauriApi.acceptLocalModelTerms("gemma-3-1b"),
     args: { modelId: "gemma-3-1b" },
   },
+  { command: "unload_local_models", call: () => tauriApi.unloadLocalModels() },
 ];
 
 beforeEach(() => {
@@ -214,10 +220,10 @@ beforeEach(() => {
 });
 
 describe("tauriApi", () => {
-  it("exposes exactly the 45 documented commands", () => {
-    expect(COMMANDS).toHaveLength(45);
-    expect(Object.keys(tauriApi)).toHaveLength(45);
-    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(45);
+  it("exposes exactly the 47 documented commands", () => {
+    expect(COMMANDS).toHaveLength(47);
+    expect(Object.keys(tauriApi)).toHaveLength(47);
+    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(47);
   });
 
   it.each(COMMANDS)(

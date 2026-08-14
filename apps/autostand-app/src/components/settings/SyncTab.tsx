@@ -24,6 +24,7 @@ import {
 import { Input } from "@autostand/ui/components/input";
 import { Label } from "@autostand/ui/components/label";
 
+import { OpenPathButton } from "@/components/common/OpenPathButton";
 import { useCloudFolders } from "@/hooks/use-cloud-folders";
 import { useConfig } from "@/hooks/use-config";
 import {
@@ -117,27 +118,40 @@ export function SyncTab() {
                       {folder.dailies_path}
                     </p>
                   </div>
-                  {folder.exists && !active ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={configureCloud.isPending}
-                      onClick={() => configureCloud.mutate(folder.path)}
-                    >
-                      <FolderOpen /> Use
-                    </Button>
-                  ) : null}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {folder.exists && !active ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={configureCloud.isPending}
+                        onClick={() => configureCloud.mutate(folder.path)}
+                      >
+                        <FolderOpen /> Use
+                      </Button>
+                    ) : null}
+                    <OpenPathButton
+                      path={active ? folder.dailies_path : folder.path}
+                      label={`Open ${folder.label} in the file manager`}
+                      disabled={!folder.exists}
+                    />
+                  </div>
                 </div>
               );
             })
           )}
 
-          <div className="rounded-lg bg-inset p-3">
-            <p className="text-xs font-medium text-muted-foreground">Standup location</p>
-            <code className="mt-1 block break-all font-mono text-xs">
-              {config.data.dailies_dir || "Not configured"}/YYYY-MM-DD.md
-            </code>
+          <div className="flex items-start justify-between gap-2 rounded-lg bg-inset p-3">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-muted-foreground">Standup location</p>
+              <code className="mt-1 block break-all font-mono text-xs">
+                {config.data.dailies_dir || "Not configured"}/YYYY-MM-DD.md
+              </code>
+            </div>
+            <OpenPathButton
+              path={config.data.dailies_dir}
+              label="Open the standup folder in the file manager"
+            />
           </div>
         </CardContent>
       </Card>

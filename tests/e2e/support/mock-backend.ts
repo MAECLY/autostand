@@ -232,6 +232,8 @@ export function installMockBackend(scenario: Scenario): void {
         return state.settingsPaths;
       case "validate_paths":
         return state.pathValidations;
+      case "open_in_file_manager":
+        return null;
       case "detect_cloud_folders":
         return state.cloudFolders;
       case "configure_cloud_sync":
@@ -285,6 +287,8 @@ export function installMockBackend(scenario: Scenario): void {
       case "select_local_model":
       case "accept_local_model_terms":
         return null;
+      case "unload_local_models":
+        return { processes_terminated: 0, caches_removed: 0, bytes_freed: 0 };
 
       default:
         reject("e2e_unstubbed", `invoke called with unstubbed command: ${command}`);

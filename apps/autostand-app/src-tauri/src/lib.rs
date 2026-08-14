@@ -66,6 +66,8 @@ pub fn run() {
             commands::local_models::delete_local_model,
             commands::local_models::select_local_model,
             commands::local_models::accept_local_model_terms,
+            commands::local_models::unload_local_models,
+            commands::os::open_in_file_manager,
             commands::pipeline::compile_standup,
             commands::pipeline::compile_all,
             commands::pipeline::trigger_run_now,
