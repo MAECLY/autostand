@@ -34,15 +34,17 @@ export function RegenerationDialog({
 
   if (preview === null) return null;
 
-  function resolve(
+  // An arrow const, not a function declaration: a hoisted declaration escapes the
+  // `preview === null` narrowing above, so `preview.token` would not type-check.
+  const resolve = (
     resolution: "keep_current" | "use_candidate" | "merge",
     mergedAuto?: string,
-  ) {
+  ) => {
     apply.mutate(
       { token: preview.token, resolution, mergedAuto },
       { onSuccess: () => onOpenChange(false) },
     );
-  }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
