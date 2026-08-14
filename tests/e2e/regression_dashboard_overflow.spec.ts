@@ -27,7 +27,7 @@ for (const { width, height, label } of VIEWPORTS) {
     await app.start(makeScenario());
 
     await expect(
-      page.getByRole("heading", { name: `Today — ${TODAY_LABEL}` }),
+      page.getByRole("heading", { name: `Today's work — ${TODAY_LABEL}` }),
     ).toBeVisible();
 
     const overflow = await page.evaluate(() => ({
@@ -65,6 +65,47 @@ for (const { width, height, label } of VIEWPORTS) {
     expect(overflow.scrollWidth, "no horizontal page overflow").toBeLessThanOrEqual(
       overflow.innerWidth,
     );
+  });
+}
+
+for (const { width, height, label } of VIEWPORTS) {
+  test(`regression_settings_overflow — filing-date card fits at ${label} (${width}x${height})`, async ({
+    page,
+    app,
+  }) => {
+    // The card is a two-column grid of option tiles carrying full sentences,
+    // which is exactly the shape that pushes a settings tab sideways on a
+    // narrow window. It collapses to one column below `sm`.
+    await page.setViewportSize({ width, height });
+    await app.start(makeScenario(), "/settings");
+    await page.getByRole("tab", { name: "Paths" }).click();
+
+    await expect(
+      page.getByRole("heading", { name: "Filing date" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("radiogroup", { name: "Filing date" }),
+    ).toBeVisible();
+
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    }));
+
+    expect(overflow.scrollWidth, "no horizontal page overflow").toBeLessThanOrEqual(
+      overflow.innerWidth,
+    );
+
+    // Both options stay readable rather than one being clipped away.
+    for (const option of ["Next business day", "Same day"]) {
+      const tile = page.getByRole("radio", { name: new RegExp(option) });
+      const bounds = await tile.boundingBox();
+      expect(bounds, `${option} has no box`).not.toBeNull();
+      expect(
+        bounds!.x + bounds!.width,
+        `${option} right edge within viewport`,
+      ).toBeLessThanOrEqual(width);
+    }
   });
 }
 

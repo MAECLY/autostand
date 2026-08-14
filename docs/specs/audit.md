@@ -79,6 +79,7 @@ pub struct AuditData {
     pub covered_tickets: Vec<String>,
     pub skew: Vec<SkewRecord>,              // { ticket, note_date, commit_days }
     pub ticket_days: HashMap<String, Vec<NaiveDate>>,
+    pub archive_mode: String,               // "next_business_day" | "same_day"
     pub render_mode: String,                // "auto" | "llm" | "det"
     pub render_used: String,                // "llm" | "det" | "llm_fallback"
     pub provider: Option<String>,           // which LLM provider was used
@@ -157,6 +158,7 @@ export interface AuditData {
   covered_tickets: string[];
   skew: SkewRecord[];
   ticket_days: Record<string, string[]>;
+  archive_mode: "next_business_day" | "same_day";
   render_mode: "auto" | "llm" | "det";
   render_used: "llm" | "det" | "llm_fallback";
   provider: string | null;
@@ -197,6 +199,18 @@ export interface AuditSidecar {
 ```
 
 Read the three provenance fields together: `render_used: "llm"` means `provider`/`model` wrote the body; `render_used: "llm_fallback"` means the deterministic renderer wrote it and `provider`/`model` name the attempt that lost (both `null` when no provider was reachable at all); `render_used: "det"` means the LLM was never asked.
+
+### `archive_mode` explains the window
+
+`window` alone cannot be checked for correctness: the same filing date has two
+legitimate ranges depending on `AppConfig.dates.archive_mode`
+(`docs/specs/configuration.md` § Filing date). `archive_mode` records which
+policy produced it, so a range that looks "off by a day" can be told apart from
+a regression without guessing what the config said at render time. It is the
+same value the Terminal panel's step-(a) line carries as its `detail`.
+
+A sidecar written before the policy existed has no `archive_mode` key and reads
+as `"next_business_day"` — the only rule those runs could have followed.
 
 ### Render provenance never enters the standup
 

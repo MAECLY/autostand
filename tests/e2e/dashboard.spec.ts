@@ -8,11 +8,11 @@
 
 import { expect, test } from "./support/fixtures";
 import {
+  FILING_DATE,
   HOST,
+  makeFilingDateStandupFile,
   makeScenario,
-  makeStandupFile,
   OTHER_HOST,
-  TODAY,
   TODAY_LABEL,
 } from "./support/scenario";
 
@@ -23,10 +23,10 @@ test("loads today's standup and renders one card per AUTO block", async ({
   await app.start();
 
   await expect(
-    page.getByRole("heading", { name: `Today — ${TODAY_LABEL}` }),
+    page.getByRole("heading", { name: `Today's work — ${TODAY_LABEL}` }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Daily Standup — August 03, 2026" }),
+    page.getByRole("heading", { name: "Daily Standup — August 04, 2026" }),
   ).toBeVisible();
 
   // Two hosts wrote into today's file, so two AUTO cards, each tagged with its
@@ -43,9 +43,32 @@ test("loads today's standup and renders one card per AUTO block", async ({
   ).toBeVisible();
   await expect(page.getByText("FIF-141 drafted the discovery KB")).toBeVisible();
 
+  // The filing date, not the calendar day. Reading `2026-08-03.md` here is the
+  // original bug: the dashboard would preview yesterday's standup while
+  // "Compile now" wrote a file it never showed.
   await expect(app.callsTo("read_standup_file")).resolves.toEqual([
-    { date: TODAY },
+    { date: FILING_DATE },
   ]);
+});
+
+test("names the work day and the destination file as two different dates @smoke", async ({
+  page,
+  app,
+}) => {
+  await app.start();
+
+  await expect(
+    page.getByRole("heading", { name: `Today's work — ${TODAY_LABEL}` }),
+  ).toBeVisible();
+  // Spelled exactly as it appears on disk, so it can be searched for.
+  await expect(
+    page.getByText(`Filed in ${FILING_DATE}.md`, { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("the next business day's standup"),
+  ).toBeVisible();
+  // And the window that file claims — today's own work.
+  await expect(page.getByText(`Covers ${TODAY_LABEL}.`)).toBeVisible();
 });
 
 test("keeps the MANUAL region visible and labelled as never overwritten", async ({
@@ -69,7 +92,7 @@ test("shows the MANUAL card even when no host filed an AUTO block", async ({
 }) => {
   const scenario = makeScenario();
   scenario.state.standups = {
-    [TODAY]: makeStandupFile({
+    [FILING_DATE]: makeFilingDateStandupFile({
       auto_blocks: [],
       manual_region: "- Reviewed the release checklist",
     }),

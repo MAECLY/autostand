@@ -83,9 +83,24 @@ export function toasts(page: Page): Locator {
   return page.getByRole("region", { name: /Notifications/ });
 }
 
+/** Per-test overrides for {@link AppHarness.start}. */
+export interface StartOptions {
+  /**
+   * Wall clock the page runs against, ISO-8601. Defaults to {@link FIXED_NOW}.
+   *
+   * Only a spec whose subject *is* the calendar should touch this — the filing
+   * date is one, because the rule it follows only differs on a weekend.
+   */
+  now?: string;
+}
+
 export interface AppHarness {
   /** Install the mock backend and open `path`. Call once per test. */
-  start: (scenario?: Scenario, path?: string) => Promise<void>;
+  start: (
+    scenario?: Scenario,
+    path?: string,
+    options?: StartOptions,
+  ) => Promise<void>;
   /** Push a backend event through the mocked event plugin. */
   emit: (name: string, payload: unknown) => Promise<void>;
   pipelineStarted: (payload: PipelineStartedEvent) => Promise<void>;
@@ -124,13 +139,13 @@ export const test = base.extend<{ app: AppHarness }>({
     };
 
     const harness: AppHarness = {
-      async start(scenario = makeScenario(), path = "/") {
+      async start(scenario = makeScenario(), path = "/", options = {}) {
         if (started) throw new Error("app.start() must be called exactly once");
         started = true;
 
         // Freeze `Date` so `todayIso()` and every "x hours ago" label are
         // stable; timers keep running, so React and sonner behave normally.
-        await page.clock.setFixedTime(new Date(FIXED_NOW));
+        await page.clock.setFixedTime(new Date(options.now ?? FIXED_NOW));
         await page.addInitScript({ content: CJS_SHIM });
         await page.addInitScript({ path: MOCKS_CJS_PATH });
         await page.addInitScript(installMockBackend, scenario);

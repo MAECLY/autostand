@@ -38,19 +38,30 @@ pub async fn trigger(source: TriggerSource, app: &AppHandle) -> Result<()> {
 
 - **Lock**: `mkdir + PID + 10min stale` (see [Concurrency](#concurrency)).
 - **git sync**: `git pull --rebase --autostash` on the dailies repo. Failures log a warning but do not abort (the local copy is still usable).
-- **Targets**: `(F_TODAY, F_PREV)` where `F_PREV` is the previous business day from `F_TODAY`.
+- **Targets**: `(F_TODAY, F_PREV)` where `F_PREV` is the file the previous run day wrote.
 
-### 2. `compute_targets(today: Date)` → `(F_TODAY, F_PREV)`
+### 2. `compute_targets(today: Date, mode: ArchiveMode)` → `(F_TODAY, F_PREV)`
 
 ```rust
-pub fn compute_targets(today: NaiveDate) -> (NaiveDate, NaiveDate) {
-    let f_today = next_business_day(today);
-    let f_prev  = previous_business_day(f_today);
+pub fn compute_targets(today: NaiveDate, mode: ArchiveMode) -> (NaiveDate, NaiveDate) {
+    let f_today = mode.filing_date(today);
+    let f_prev  = mode.filing_date(prev_business_day_before(today));
     (f_today, f_prev)
 }
 ```
 
-`F_TODAY` = next business day after today. `F_PREV` = previous business day from `F_TODAY`. (See `docs/specs/standup-file-format.md` for `next_business_day`.)
+Both dates go through `ArchiveMode::filing_date`, so the pair follows whichever
+filing policy `AppConfig.dates.archive_mode` selects.
+
+`F_PREV` is derived from **today**, not from `F_TODAY`. Walking back from the
+*file* lands on Friday during a weekend run and re-opens a day the Friday run
+already closed; walking back from *today* and then filing that day names the
+file the previous run actually wrote.
+
+The two can be equal, and that is meaningful: in `next_business_day` mode
+Friday, Saturday and Sunday all file into the same Monday, so a weekend run is
+still *filling* `F_TODAY` and there is no rolled-over day behind it. Step 4 is
+skipped outright in that case (`compile.sh:544`).
 
 ### 3. `compile_file(F, ctx)` — the core compile for one file
 
@@ -58,7 +69,7 @@ This is the heart of the pipeline. Each sub-step is its own function so it can b
 
 | Sub-step | Function | Output |
 | --- | --- | --- |
-| a | `compute_window(F)` | `(range_start, range_end, dates[])` |
+| a | `compute_window(F, mode, today)` | `(range_start, range_end, dates[])` |
 | b | `gather_git_facts(window, config)` | per-repo git log, file scope, areas |
 | c | `gather_notes(window, dates, github_dir)` | today-*.md/.done.md + now.md |
 | d | `anti_regression_guard(F, host)` | `Skip` if FACTS empty but last run had repos |
@@ -78,18 +89,58 @@ This is the heart of the pipeline. Each sub-step is its own function so it can b
 | r | `write_file(F, host, title, subtitle, clean_body)` | atomic write |
 | s | `persist_hash(F, host, hash)` | only if clean LLM render |
 
-#### (a) `compute_window(F)`
+#### (a) `compute_window(F, mode, today)`
 
 ```rust
-pub fn compute_window(f: NaiveDate) -> Window {
-    let range_end   = previous_business_day(f);     // last work day before F
-    let range_start = previous_business_day(range_end); // the work day before that
-    let dates = business_days_between(range_start, range_end);
-    Window { range_start, range_end, dates }
+pub fn compute_window(f: NaiveDate, mode: ArchiveMode, today: NaiveDate) -> Window {
+    let (range_start, last_claimable) = match mode {
+        ArchiveMode::NextBusinessDay => (prev_business_day_before(f), f - 1.days()),
+        ArchiveMode::SameDay => (prev_business_day_before(f) + 1.days(), f),
+    };
+    let range_end = last_claimable.min(today);   // never claim a day that has not happened
+    Window { range_start, range_end, dates: natural_days_between(range_start, range_end) }
 }
 ```
 
-The window is the **two-business-day** range ending the day before `F`. So if `F = Monday`, the window is the prior Thu–Fri (or earlier if holidays, but autostand doesn't model holidays).
+**The contract, in both modes:** `range_start` is the day *after* the last day
+the previous standup file covered. That is what makes the sequence of standups a
+partition of the calendar — no natural day is claimed twice, and none is
+dropped. Weekend work always lands in some file; the mode only decides which.
+
+- `next_business_day` (default, App Script): `F = Monday` covers Fri–Sun, so the
+  whole weekend accumulates into Monday's standup. Every other weekday covers
+  exactly the previous day.
+- `same_day`: `F = Monday` covers Sat–Mon; every other weekday covers itself.
+
+`range_end` is clamped to `today` (`compile.sh:179`). When the clamp inverts the
+range, `Window::is_empty()` is true and there is nothing to compile —
+`compile.sh:181` returns early on the same condition.
+
+`dates` walks **natural** days, not business days (`compile.sh:192-193`).
+`range_end` is therefore routinely a Saturday or a Sunday, and `git log
+--since/--until` plus the note scan both read the weekend. Filtering weekends
+out of `dates` silently dropped every weekend note.
+
+Holidays are not modelled (autostand does not ship a holiday calendar).
+
+**What the run logs here.** Step (a) is the only place that knows both the file
+being written and the policy that chose it, so it emits one `pipeline-log` line
+carrying both:
+
+```
+filing 2026-08-14.md — window 2026-08-13 → 2026-08-13     [archive_mode=next_business_day]
+```
+
+That line (and the `archive_mode` field of the sidecar, step (q)) is what makes
+"which file did that run write, and why that range" answerable afterwards. An
+empty window logs the skip at `warn` with the same detail.
+
+**What the UI asks for.** The Dashboard never derives the filing date itself; it
+calls `get_filing_target` (`docs/tauri/02-ipc-contracts.md`), which is built out
+of `ArchiveMode::filing_date` + `compute_window` — the same two functions this
+step uses. A UI that computed its own answer could announce a file the pipeline
+never touches, which is how a machine ended up with `2026-08-13.md` and no
+`2026-08-14.md`.
 
 #### (b) `gather_git_facts`
 
@@ -179,6 +230,10 @@ Final redaction pass on `final_body` (in case the LLM reintroduced absolute path
 #### (q) `write_audit`
 
 Write the audit sidecar JSON to `state/audit/<F>-<host>.json` with permissions `0600`, atomic write. See `docs/specs/audit.md`.
+
+The sidecar records `archive_mode` alongside `window`. The same `F` has two
+legitimate ranges depending on the policy, so without it a range cannot be
+checked for correctness after the fact.
 
 #### (r) `write_file`
 
