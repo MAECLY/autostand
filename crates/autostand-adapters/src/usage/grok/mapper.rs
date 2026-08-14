@@ -109,7 +109,7 @@ pub fn resources(
     )
     .with_resets_at(Some(end))
     .with_period_ms(Some((end - start).num_milliseconds()))
-    .derive_pace(now)])
+    .derive_projection(now)])
 }
 
 /// The subscription tier's display name, e.g. `"SuperGrok Heavy"`.

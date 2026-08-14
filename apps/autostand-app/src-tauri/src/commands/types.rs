@@ -588,6 +588,11 @@ pub struct UsageWindow {
     /// window has elapsed to project honestly.
     #[serde(default)]
     pub pace: Option<Pace>,
+    /// The same projection as a countdown: seconds until this window runs dry at
+    /// the observed rate. `None` whenever [`Self::pace`] is, so the pre-flight
+    /// omits the sentence rather than inventing one.
+    #[serde(default)]
+    pub runs_out_in_seconds: Option<f64>,
 }
 
 /// Secret-free provider health returned by Settings IPC commands.

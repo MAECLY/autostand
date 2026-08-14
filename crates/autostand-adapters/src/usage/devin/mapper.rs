@@ -137,7 +137,7 @@ fn quota(
     UsageResource::percent(id, parse::clamp_percent(100.0 - remaining_percent))
         .with_resets_at(reset.and_then(|value| reset_at(value, now)))
         .with_period_ms(Some(period_ms))
-        .derive_pace(now)
+        .derive_projection(now)
 }
 
 /// Devin's `…ResetAtUnix` fields are epoch seconds, and it sends them as JSON

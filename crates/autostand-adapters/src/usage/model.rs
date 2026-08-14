@@ -236,6 +236,11 @@ pub struct UsageResource {
     pub period_duration_ms: Option<i64>,
     pub label: Option<String>,
     pub pace: Option<Pace>,
+    /// Seconds until this window runs dry at the observed rate.
+    ///
+    /// Same projection as [`Self::pace`], stated as a countdown so the pre-flight
+    /// can say "~35 min" without re-deriving the rule at the display edge.
+    pub runs_out_in_seconds: Option<f64>,
 }
 
 impl UsageResource {
@@ -255,6 +260,7 @@ impl UsageResource {
             period_duration_ms: None,
             label: None,
             pace: None,
+            runs_out_in_seconds: None,
         }
     }
 
@@ -340,28 +346,39 @@ impl UsageResource {
             .map(Duration::from_millis)
     }
 
-    /// Derive [`Self::pace`] from the reset time and the window length.
+    /// Derive [`Self::pace`] and [`Self::runs_out_in_seconds`] from the reset
+    /// time and the window length.
     ///
     /// Elapsed time is `period - (resets_at - now)`, so the projection needs
-    /// both a period and a reset — with neither, `pace` stays `None` rather
-    /// than being guessed from a percentage alone.
+    /// both a period and a reset — with neither, both stay `None` rather than
+    /// being guessed from a percentage alone. Both answers come from the same
+    /// elapsed value, so a badge and a countdown can never contradict.
     #[must_use]
-    pub fn derive_pace(mut self, now: DateTime<Utc>) -> Self {
-        self.pace = self.projected_pace(now);
+    pub fn derive_projection(mut self, now: DateTime<Utc>) -> Self {
+        let projection = self.elapsed_at(now).and_then(|(elapsed, period)| {
+            let used = self.used?;
+            let limit = self.limit?;
+            // The countdown rides on `evaluate`'s minimum-elapsed guard: without
+            // it, one request in the first seconds of a five-hour window would
+            // read as "runs out in ~40 seconds".
+            let pace = pace::evaluate(used, limit, elapsed, period)?;
+            Some((pace, pace::seconds_to_run_out(used, limit, elapsed)))
+        });
+        self.pace = projection.map(|(pace, _)| pace);
+        self.runs_out_in_seconds = projection.and_then(|(_, seconds)| seconds);
         self
     }
 
-    fn projected_pace(&self, now: DateTime<Utc>) -> Option<Pace> {
+    /// How much of the window has already gone, paired with the window length.
+    fn elapsed_at(&self, now: DateTime<Utc>) -> Option<(Duration, Duration)> {
         let period = self.period()?;
         let resets_at = self.resets_at?;
-        let used = self.used?;
-        let limit = self.limit?;
         let remaining_secs = (resets_at - now).num_seconds();
         if remaining_secs < 0 {
             return None;
         }
         let elapsed = period.checked_sub(Duration::from_secs(remaining_secs.unsigned_abs()))?;
-        pace::evaluate(used, limit, elapsed, period)
+        Some((elapsed, period))
     }
 }
 
@@ -620,7 +637,7 @@ mod tests {
         let resource = UsageResource::percent("session", Some(10.0))
             .with_period(Some(five_hours))
             .with_resets_at(Some(now() + chrono::Duration::seconds(9_000)))
-            .derive_pace(now());
+            .derive_projection(now());
         assert_eq!(resource.pace, Some(Pace::Ahead));
     }
 
@@ -628,12 +645,12 @@ mod tests {
     fn pace_stays_none_without_a_period_or_reset() {
         let no_period = UsageResource::percent("session", Some(90.0))
             .with_resets_at(Some(now() + chrono::Duration::seconds(60)))
-            .derive_pace(now());
+            .derive_projection(now());
         assert_eq!(no_period.pace, None);
 
         let no_reset = UsageResource::percent("session", Some(90.0))
             .with_period(Some(Duration::from_secs(18_000)))
-            .derive_pace(now());
+            .derive_projection(now());
         assert_eq!(no_reset.pace, None);
     }
 
@@ -643,8 +660,50 @@ mod tests {
         let resource = UsageResource::percent("session", Some(5.0))
             .with_period(Some(Duration::from_secs(18_000)))
             .with_resets_at(Some(now() + chrono::Duration::seconds(18_000)))
-            .derive_pace(now());
+            .derive_projection(now());
         assert_eq!(resource.pace, None);
+    }
+
+    #[test]
+    fn the_countdown_comes_from_the_same_elapsed_time_as_the_pace() {
+        // 88% used one hour into a five-hour window: 12% left at 88%/h is
+        // roughly eight more minutes.
+        let resource = UsageResource::percent("session", Some(88.0))
+            .with_period(Some(Duration::from_secs(18_000)))
+            .with_resets_at(Some(now() + chrono::Duration::seconds(14_400)))
+            .derive_projection(now());
+        assert_eq!(resource.pace, Some(Pace::Behind));
+        let seconds = resource
+            .runs_out_in_seconds
+            .expect("a rate this clear projects");
+        assert!((seconds - 490.9).abs() < 1.0, "got {seconds}");
+    }
+
+    /// The countdown rides on the pace guard: without it, one request in the
+    /// first seconds of a five-hour window reads as "runs out in ~40 seconds".
+    #[test]
+    fn the_countdown_is_absent_wherever_the_pace_is() {
+        let too_early = UsageResource::percent("session", Some(5.0))
+            .with_period(Some(Duration::from_secs(18_000)))
+            .with_resets_at(Some(now() + chrono::Duration::seconds(18_000)))
+            .derive_projection(now());
+        assert_eq!(too_early.runs_out_in_seconds, None);
+
+        let no_period = UsageResource::percent("session", Some(90.0))
+            .with_resets_at(Some(now() + chrono::Duration::seconds(60)))
+            .derive_projection(now());
+        assert_eq!(no_period.runs_out_in_seconds, None);
+    }
+
+    /// An exhausted window is a state, not a countdown.
+    #[test]
+    fn a_spent_window_reports_no_countdown_but_still_reports_a_pace() {
+        let resource = UsageResource::percent("session", Some(100.0))
+            .with_period(Some(Duration::from_secs(18_000)))
+            .with_resets_at(Some(now() + chrono::Duration::seconds(9_000)))
+            .derive_projection(now());
+        assert_eq!(resource.pace, Some(Pace::Behind));
+        assert_eq!(resource.runs_out_in_seconds, None);
     }
 
     #[test]

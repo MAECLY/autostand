@@ -229,7 +229,7 @@ fn push_window(
         UsageResource::percent(id, Some(used_percent))
             .with_period(Some(period))
             .with_resets_at(parse::parse_reset_at(window, now))
-            .derive_pace(now),
+            .derive_projection(now),
     );
 }
 
@@ -267,7 +267,7 @@ fn push_scoped_weekly_limits(
                 .with_period(Some(WEEKLY_PERIOD))
                 .with_resets_at(parse::parse_reset_at(entry, now))
                 .with_label(display_name.map(str::to_string))
-                .derive_pace(now),
+                .derive_projection(now),
         );
     }
 }

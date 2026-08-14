@@ -177,7 +177,7 @@ pub fn map(
                 UsageResource::percent(id, parse::clamp_percent(percent))
                     .with_resets_at(cycle.resets_at)
                     .with_period_ms(Some(cycle.period_ms))
-                    .derive_pace(now),
+                    .derive_projection(now),
             );
         }
     }
@@ -225,7 +225,7 @@ pub fn map_request_based(
     let requests = bounded("requests", UsageUnit::Requests, used, limit)
         .with_resets_at(resets_at)
         .with_period_ms(Some(BILLING_PERIOD_MS))
-        .derive_pace(now);
+        .derive_projection(now);
 
     Ok(ProviderSnapshot::ok(
         PROVIDER_ID,
@@ -331,7 +331,7 @@ fn total_usage(
     Ok(resource
         .with_resets_at(cycle.resets_at)
         .with_period_ms(Some(cycle.period_ms))
-        .derive_pace(now))
+        .derive_projection(now))
 }
 
 /// `onDemand`: spend beyond the plan allowance.

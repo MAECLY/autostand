@@ -241,6 +241,8 @@ export interface UsageWindow {
   period_duration_ms?: number | null;
   label?: string | null;
   pace?: Pace | null;
+  /** Seconds until the window runs dry at the observed rate; `null` wherever `pace` is. */
+  runs_out_in_seconds?: number | null;
 }
 
 export interface ProviderHealth {

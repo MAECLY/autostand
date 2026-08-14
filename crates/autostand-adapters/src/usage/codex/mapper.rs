@@ -208,7 +208,7 @@ fn window_resource(
                     .window
                     .and_then(|window| parse::parse_reset_at(window, now)),
             )
-            .derive_pace(now),
+            .derive_projection(now),
     )
 }
 

@@ -24,6 +24,7 @@ import {
   useProviderHealth,
   useRefreshProviderHealth,
 } from "@/hooks/use-providers";
+import { periodLabel, remainingPercent, windowLabel } from "@/lib/usage";
 import { cn } from "@/lib/utils";
 import type {
   Pace,
@@ -171,49 +172,6 @@ function primaryFigure(window: UsageWindow): string {
   return NO_DATA;
 }
 
-function clampPercent(value: number): number {
-  return Math.min(100, Math.max(0, value));
-}
-
-/**
- * Remaining share of a consumption window, 0–100, or `null` for no bar.
- *
- * Deriving the share from `used`/`limit` is arithmetic over two reported values,
- * not an invented reading — but a balance never gets one, because a saldo has no
- * denominator to fill.
- */
-function remainingPercent(window: UsageWindow): number | null {
-  if (window.kind === "balance") return null;
-  if (window.remaining_percent !== null) {
-    return clampPercent(window.remaining_percent);
-  }
-  if (window.used_percent !== null) {
-    return clampPercent(100 - window.used_percent);
-  }
-  if (
-    typeof window.used === "number" &&
-    typeof window.limit === "number" &&
-    window.limit > 0
-  ) {
-    return clampPercent(100 - (window.used / window.limit) * 100);
-  }
-  return null;
-}
-
-function trimZero(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
-
-/** How long the quota is measured over, e.g. "5 h window". */
-function periodLabel(ms: number | null | undefined): string | null {
-  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return null;
-  const minutes = ms / 60_000;
-  if (minutes < 60) return `${trimZero(minutes)} min window`;
-  const hours = minutes / 60;
-  if (hours < 48) return `${trimZero(hours)} h window`;
-  return `${trimZero(hours / 24)} d window`;
-}
-
 interface TimeNote {
   text: string;
   /** Absolute instant, parked in `title` so the exact time is one hover away. */
@@ -237,15 +195,6 @@ function timeNote(
         : `${past} ${distance} ago`,
     title: parsed.toLocaleString(),
   };
-}
-
-/** The provider's own name for the window wins over the derived one. */
-function windowLabel(window: UsageWindow): string {
-  const label = window.label ?? "";
-  if (label.trim().length > 0) return label;
-  return window.id
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 interface MetaNote {

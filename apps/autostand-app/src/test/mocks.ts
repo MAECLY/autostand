@@ -24,7 +24,9 @@ import type {
   DataSourceConfigs,
   PipelineStatus,
   ProviderConfig,
+  ProviderHealth,
   StandupFileContent,
+  UsageWindow,
 } from "@/lib/types";
 
 // ── invoke ────────────────────────────────────────────────────────────────
@@ -157,6 +159,38 @@ export function makeProviderConfig(
     api_key_ref: null,
     api_base_url: null,
     timeout_secs: 120,
+    ...overrides,
+  };
+}
+
+/**
+ * A quota window that reports nothing.
+ *
+ * The default is deliberately empty: a test that wants a percentage says so,
+ * and one that does not gets the "No data" shape the contract is built around.
+ */
+export function makeUsageWindow(
+  overrides: Partial<UsageWindow> = {},
+): UsageWindow {
+  return {
+    id: "session",
+    used_percent: null,
+    remaining_percent: null,
+    resets_at: null,
+    ...overrides,
+  };
+}
+
+export function makeProviderHealth(
+  overrides: Partial<ProviderHealth> = {},
+): ProviderHealth {
+  return {
+    provider: "claude",
+    availability: "available",
+    source: "provider_reported",
+    windows: [],
+    reason: null,
+    checked_at: "2026-08-13T11:58:00.000Z",
     ...overrides,
   };
 }

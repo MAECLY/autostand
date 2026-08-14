@@ -245,7 +245,7 @@ fn percent_bucket(
         UsageResource::percent(id, Some(used_percent))
             .with_resets_at(resets_at)
             .with_period_ms(Some(MONTH_MS))
-            .derive_pace(now),
+            .derive_projection(now),
     )
 }
 
@@ -286,7 +286,7 @@ fn remaining_of_total(
         UsageResource::percent(id, Some(used_percent))
             .with_resets_at(resets_at)
             .with_period_ms(Some(MONTH_MS))
-            .derive_pace(now),
+            .derive_projection(now),
     )
 }
 

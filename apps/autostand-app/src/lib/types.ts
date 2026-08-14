@@ -289,6 +289,13 @@ export interface UsageWindow {
   /** Provider-supplied human label, e.g. a model-scoped limit name. */
   label?: string | null;
   pace?: Pace | null;
+  /**
+   * Seconds until this window runs dry at the observed rate — the same
+   * projection as {@link UsageWindow.pace}, stated as a countdown. `null`
+   * wherever `pace` is, so the pre-flight omits the sentence rather than
+   * inventing one.
+   */
+  runs_out_in_seconds?: number | null;
 }
 
 export interface ProviderHealth {

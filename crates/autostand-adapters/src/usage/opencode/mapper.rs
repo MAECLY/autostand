@@ -139,7 +139,7 @@ fn window(
     Ok(UsageResource::percent(id, parse::clamp_percent(percent))
         .with_resets_at(resets_at)
         .with_period(Some(period))
-        .derive_pace(now))
+        .derive_projection(now))
 }
 
 #[cfg(test)]

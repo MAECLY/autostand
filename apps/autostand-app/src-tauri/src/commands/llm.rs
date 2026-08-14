@@ -368,6 +368,13 @@ pub fn record_provider_attempts(attempts: &[ProviderAttempt]) {
             cache.remove(&attempt.provider);
             continue;
         }
+        // A skip is a consequence of an earlier observation, not a new one.
+        // Recording it would let a health-driven skip feed itself back as a
+        // weaker inference — `exhausted` degrading to `unavailable` on every
+        // render that passed the provider over.
+        if attempt.status == ProviderAttemptStatus::Skipped {
+            continue;
+        }
         let Some(reason) = attempt.reason.as_deref() else {
             continue;
         };
@@ -471,6 +478,7 @@ fn window_from(resource: &UsageResource) -> UsageWindow {
         period_duration_ms: resource.period_duration_ms,
         label: resource.label.clone(),
         pace: resource.pace,
+        runs_out_in_seconds: resource.runs_out_in_seconds,
     }
 }
 
@@ -705,6 +713,23 @@ pub async fn get_provider_health(app_handle: AppHandle) -> Result<Vec<ProviderHe
                 .unwrap_or_else(|| unknown_health(id, "awaiting_first_refresh"))
         })
         .collect())
+}
+
+/// The last known snapshot for one provider, or `None` when it has never been
+/// probed on this machine.
+///
+/// Same pure cache read as [`get_provider_health`], exposed for the render chain
+/// so a failover decision cannot start a network probe mid-compile. `None` is
+/// the honest answer for a provider nobody has refreshed yet — the caller must
+/// treat it as "no evidence", never as "exhausted".
+pub(crate) fn cached_provider_health(provider: &str) -> Option<ProviderHealth> {
+    let mut guard = health_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard
+        .get_or_insert_with(load_health_cache)
+        .get(provider)
+        .cloned()
 }
 
 /// Refresh one provider, or all providers when `provider` is omitted.
@@ -1612,6 +1637,26 @@ mod tests {
         assert_eq!(health.source, UsageSource::FailureInferred);
         assert!(health.windows.is_empty());
         assert_eq!(health.reason.as_deref(), Some("usage_balance_exhausted"));
+    }
+
+    /// A health-driven skip must not feed itself back as a weaker inference:
+    /// `exhausted` would degrade to `unavailable` on every render that passed
+    /// the provider over.
+    #[test]
+    fn a_skipped_attempt_is_not_recorded_as_an_observation() {
+        record_provider_attempts(&[ProviderAttempt {
+            provider: "gemini".to_string(),
+            channel: None,
+            model: String::new(),
+            status: ProviderAttemptStatus::Skipped,
+            reason: Some("usage_exhausted".to_string()),
+            latency_ms: None,
+        }]);
+        assert!(inferred_health()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get("gemini")
+            .is_none());
     }
 
     /// Listing all six providers meant five rows reading "Usage unavailable",

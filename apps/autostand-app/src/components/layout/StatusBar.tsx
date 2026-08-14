@@ -14,12 +14,20 @@ import { Badge } from "@autostand/ui/components/badge";
 import { Progress } from "@autostand/ui/components/progress";
 import { Separator } from "@autostand/ui/components/separator";
 
-import { useHostSlug } from "@/hooks/use-config";
+import { useConfig, useHostSlug } from "@/hooks/use-config";
 import { usePipelineLog } from "@/hooks/use-pipeline-log";
 import { usePipelineStatus } from "@/hooks/use-pipeline-status";
+import { useProviderHealth } from "@/hooks/use-providers";
 import { useSchedulerStatus } from "@/hooks/use-scheduler";
 import { useUiStore } from "@/lib/store";
 import type { PipelineState } from "@/lib/types";
+import {
+  activeProvider,
+  formatRunOut,
+  healthFor,
+  tightestWindow,
+  windowDescription,
+} from "@/lib/usage";
 import { formatIsoDate, formatRelative } from "@/lib/utils";
 
 type BadgeVariant = "default" | "secondary" | "success" | "warning" | "error";
@@ -36,6 +44,62 @@ const STATE_META: Record<
 };
 
 const RUNNING_STATES: readonly PipelineState[] = ["gathering", "rendering"];
+
+/**
+ * The active provider's tightest quota window, in the width of a chip.
+ *
+ * It lives here because this is the bar the user is looking at when they decide
+ * to compile — quota that only exists inside a Settings tab is quota nobody
+ * checks. Two rules keep it honest:
+ *
+ * 1. **Nothing is better than a placeholder.** No snapshot, or no window with a
+ *    readable share, renders nothing at all. A chip reading "—" or "0%" would be
+ *    a claim about a provider nobody has measured.
+ * 2. **One threshold.** "Low" is `notifications.low_usage_threshold_percent`,
+ *    the same value that grades the Settings rail and fires the notification.
+ */
+function UsageBadge() {
+  const { data: config } = useConfig();
+  const { data: health } = useProviderHealth();
+
+  const provider = activeProvider(config);
+  const tightest = tightestWindow(
+    provider === null ? undefined : healthFor(health, provider),
+  );
+  if (provider === null || tightest === null || config === undefined) return null;
+
+  const remaining = Math.round(tightest.remaining);
+  const threshold = config.notifications.low_usage_threshold_percent;
+  const runsOut = formatRunOut(tightest.window.runs_out_in_seconds);
+  const variant: BadgeVariant =
+    remaining <= 0 ? "error" : remaining <= threshold ? "warning" : "secondary";
+
+  const detail = [
+    `${provider} — ${remaining}% of the ${windowDescription(tightest.window)} left`,
+    runsOut === null ? null : `projected to run out in ${runsOut}`,
+  ]
+    .filter((part) => part !== null)
+    .join(", ");
+
+  return (
+    <>
+      {/* The chip is two glyphs wide; the whole sentence lives in `title` for a
+          hover and in a visually hidden span for a screen reader. `aria-label`
+          on a bare span is not reliably announced, so it is not used here. */}
+      <Badge variant={variant} title={detail}>
+        <span aria-hidden="true" className="capitalize">
+          {provider}
+        </span>
+        <span aria-hidden="true" className="ml-1 font-mono tabular-nums">
+          {remaining}%
+        </span>
+        <span className="sr-only">{detail}</span>
+      </Badge>
+
+      <Separator orientation="vertical" className="h-4" />
+    </>
+  );
+}
 
 export function StatusBar() {
   const { data: pipeline } = usePipelineStatus();
@@ -105,6 +169,8 @@ export function StatusBar() {
       )}
 
       <span className="ml-auto flex shrink-0 items-center gap-3">
+        <UsageBadge />
+
         <span className="font-mono" title="Host slug">
           {hostSlug ?? "—"}
         </span>
