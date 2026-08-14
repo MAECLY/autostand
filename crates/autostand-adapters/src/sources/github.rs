@@ -2,15 +2,19 @@
 //! See `docs/data-sources/02-github.md`.
 
 use std::fmt::Write as _;
-use std::process::Command as StdCommand;
 
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::helpers::{extract_ticket_keys, run_cmd, window_contains};
+use super::helpers::{
+    extract_ticket_keys, find_on_path, log_sweep, run_cmd, run_cmd_visible, window_contains,
+};
 use super::{DataSource, DataSourceConfig, DataSourceError, DateWindow, SourceData};
+
+/// Budget for one `gh` call.
+const GH_TIMEOUT_SECS: u64 = 60;
 
 /// GitHub `gh` CLI data source.
 pub struct GithubDataSource;
@@ -58,10 +62,7 @@ impl DataSource for GithubDataSource {
         "GitHub (gh CLI)"
     }
     fn is_available(&self) -> bool {
-        StdCommand::new("gh")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
+        is_available_sync()
     }
 
     #[allow(clippy::too_many_lines)]
@@ -78,7 +79,7 @@ impl DataSource for GithubDataSource {
             return Ok(SourceData::default());
         }
 
-        let opened = match run_cmd(
+        let opened = match run_cmd_visible(
             "gh",
             &[
                 "search",
@@ -87,7 +88,8 @@ impl DataSource for GithubDataSource {
                 &format!("--owner={org}"),
                 "--json=number,title,createdAt,closedAt,state,repository",
             ],
-            60,
+            GH_TIMEOUT_SECS,
+            "gh search prs (authored)",
         )
         .await
         {
@@ -98,7 +100,7 @@ impl DataSource for GithubDataSource {
             }
         };
 
-        let reviewed = match run_cmd(
+        let reviewed = match run_cmd_visible(
             "gh",
             &[
                 "search",
@@ -107,7 +109,8 @@ impl DataSource for GithubDataSource {
                 &format!("--owner={org}"),
                 "--json=number,title,repository,state,closedAt",
             ],
-            60,
+            GH_TIMEOUT_SECS,
+            "gh search prs (reviewed)",
         )
         .await
         {
@@ -147,6 +150,9 @@ impl DataSource for GithubDataSource {
 
         let mut review_comments: Vec<String> = Vec::new();
         let max_prs = config.gh_max_prs.max(1);
+        // Two API calls per pull request: silent per call (see `run_cmd`), one
+        // summary line for the whole sweep below.
+        let mut comment_calls = 0_usize;
         for pr in reviewed.iter().take(max_prs) {
             let repo = pr
                 .repository
@@ -162,7 +168,8 @@ impl DataSource for GithubDataSource {
                 format!("api /repos/{repo}/issues/{num}/comments"),
             ] {
                 let parts: Vec<&str> = endpoint.split(' ').collect();
-                if let Ok(body) = run_cmd("gh", &parts, 60).await {
+                comment_calls += 1;
+                if let Ok(body) = run_cmd("gh", &parts, GH_TIMEOUT_SECS).await {
                     if let Ok(arr) = serde_json::from_str::<Vec<Value>>(&body) {
                         for c in arr {
                             let user = c
@@ -187,6 +194,16 @@ impl DataSource for GithubDataSource {
                     }
                 }
             }
+        }
+
+        if comment_calls > 0 {
+            log_sweep(
+                "gh read review comments",
+                format!(
+                    "{comment_calls} request(s), {} comment(s)",
+                    review_comments.len()
+                ),
+            );
         }
 
         let mut tickets: Vec<String> = Vec::new();
@@ -264,11 +281,14 @@ impl DataSource for GithubDataSource {
     }
 }
 
+/// Whether the `gh` CLI exists on `PATH`.
+///
+/// Was `gh --version`, spawned synchronously — from `is_available` (a sync trait
+/// method) *and* from inside the async `gather`, where a blocking `output()`
+/// stalled a Tokio worker and never reached the Terminal. The lookup is now a
+/// `PATH` walk; the first real `gh` call reports its own outcome.
 fn is_available_sync() -> bool {
-    StdCommand::new("gh")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
+    find_on_path("gh").is_some()
 }
 
 fn parse_prs(s: &str) -> Vec<PrSummary> {

@@ -17,14 +17,14 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
+use autostand_runlog::proc::{run_process, ProcSpec, StreamPolicy};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-use tokio::process::Command;
 
 use crate::error::AppError;
+use crate::run_log::{Run, RunKind};
 
 /// Feature whose external prerequisites are reported together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,22 +230,23 @@ fn probe_runtime(
 
 /// Ask `gh` whether it holds a github.com login.
 ///
-/// Every byte of output is dropped rather than captured: an authentication
-/// failure prints token and host diagnostics that must not reach a DTO or a log.
+/// The output is captured by the spawner and then dropped on the floor here: an
+/// authentication failure prints token and host diagnostics that must not reach
+/// a DTO or a log. [`StreamPolicy::Silent`] for the same reason it is silent in
+/// `commands::repos` — this runs behind `get_dependency_status` and
+/// `get_repo_sync_status`, both of which the Settings page calls on every
+/// render, so a summary line per probe would be a self-scrolling panel.
 pub(crate) async fn gh_authenticated(gh: &Path) -> bool {
-    let mut command = Command::new(gh);
-    command
-        .args(["auth", "status", "--hostname", "github.com"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GH_PROMPT_DISABLED", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    matches!(
-        tokio::time::timeout(PROBE_TIMEOUT, command.status()).await,
-        Ok(Ok(status)) if status.success()
+    let probe = run_process(
+        ProcSpec::new(gh, RunKind::DependencyCheck.step())
+            .args(["auth", "status", "--hostname", "github.com"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GH_PROMPT_DISABLED", "1")
+            .timeout(PROBE_TIMEOUT)
+            .stream(StreamPolicy::Silent),
     )
+    .await;
+    probe.is_ok_and(|output| output.success)
 }
 
 // ── Package managers ──────────────────────────────────────────────────────
@@ -726,29 +727,36 @@ fn unknown_dependency(id: &str) -> AppError {
     AppError::NotFound(format!("unknown dependency: {id}"))
 }
 
-/// Install one Homebrew package, discarding every byte it prints.
+/// Install one Homebrew package, streaming its progress to the Terminal panel.
 ///
-/// Homebrew echoes download URLs, cache paths and occasionally credentials from
-/// the environment, none of which may reach a DTO, a toast or a log line. A
-/// failure therefore reports only that it failed and where to look.
+/// [`StreamPolicy::Lines`] is the one place in the app where a child's stdout is
+/// echoed. It earns it: a cold install downloads a bottle for minutes, and a
+/// panel that shows nothing for three minutes is indistinguishable from a hang.
+/// Homebrew's *stdout* is progress text; its **stderr is still never logged**
+/// (the spawner drops it unconditionally), and no byte of either ever reaches a
+/// DTO, a toast or an `AppError` — a failure still reports only that it failed
+/// and where to look.
 async fn homebrew_install(package: &str) -> Result<(), AppError> {
     let brew = find_program(PackageManager::Homebrew.program(), None)
         .ok_or_else(|| AppError::NotFound("Homebrew is not installed".into()))?;
-    let mut command = Command::new(brew);
-    command
-        .arg("install")
-        .arg(package)
-        .env("HOMEBREW_NO_AUTO_UPDATE", "1")
-        .env("HOMEBREW_NO_ANALYTICS", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let status = tokio::time::timeout(INSTALL_TIMEOUT, command.status())
-        .await
-        .map_err(|_| AppError::Io("the install command timed out".into()))?
-        .map_err(|err| AppError::Io(format!("could not start Homebrew: {err}")))?;
-    if status.success() {
+    let output = run_process(
+        ProcSpec::new(brew, RunKind::DependencyRemediation.step())
+            .arg("install")
+            .arg(package)
+            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+            .env("HOMEBREW_NO_ANALYTICS", "1")
+            .timeout(INSTALL_TIMEOUT)
+            .stream(StreamPolicy::Lines)
+            .label("brew install"),
+    )
+    .await
+    .map_err(|err| match err {
+        autostand_runlog::proc::ProcError::Timeout { .. } => {
+            AppError::Io("the install command timed out".into())
+        }
+        _ => AppError::Io("could not start Homebrew".into()),
+    })?;
+    if output.success {
         Ok(())
     } else {
         Err(AppError::Io(
@@ -782,6 +790,22 @@ pub async fn run_dependency_remediation(
     app_handle: AppHandle,
     dependency_id: String,
 ) -> Result<RemediationOutcome, AppError> {
+    let run = Run::open(&app_handle, RunKind::DependencyRemediation);
+    let outcome = run.scope(remediate(&app_handle, dependency_id)).await;
+    // The run's own closing line repeats the outcome the toast will show; it is
+    // already secret-free by `RemediationOutcome`'s contract.
+    let message = outcome
+        .as_ref()
+        .map_or_else(|_| String::new(), |result| result.message.clone());
+    run.settle(outcome, &message)
+}
+
+/// The remediation itself, already inside the run's log scope.
+async fn remediate(
+    app_handle: &AppHandle,
+    dependency_id: String,
+) -> Result<RemediationOutcome, AppError> {
+    let app_handle = app_handle.clone();
     let current = dependency_by_id(&app_handle, &dependency_id).await?;
     let Some(remediation) = current.remediation.clone() else {
         return Ok(RemediationOutcome {
@@ -1290,5 +1314,32 @@ mod tests {
             keys,
             ["dependency", "dependency_id", "message", "performed"]
         );
+    }
+
+    // -- terminal visibility ------------------------------------------------
+
+    /// `gh auth status` runs behind the requirement checklist and the Repo Sync
+    /// card, both of which the Settings page refreshes on every render. A
+    /// summary line per probe would make the panel scroll on its own — and the
+    /// probe's own output is a credential diagnostic that may never be logged.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_gh_login_probe_is_silent_in_the_terminal() {
+        let sink = std::sync::Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+
+        // `/usr/bin/true` and `/bin/false` stand in for an authenticated and an
+        // unauthenticated `gh`: the probe only reads the exit status.
+        let (authenticated, refused) = autostand_runlog::scoped(as_ref, async {
+            (
+                super::gh_authenticated(Path::new("/usr/bin/true")).await,
+                super::gh_authenticated(Path::new("/usr/bin/false")).await,
+            )
+        })
+        .await;
+
+        assert!(authenticated);
+        assert!(!refused);
+        assert!(sink.lines().is_empty(), "{:?}", sink.messages());
     }
 }

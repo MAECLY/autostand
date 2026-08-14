@@ -100,7 +100,12 @@ struct LastRun {
 /// [`crate::pipeline_runner::trigger`] when the persisted cron says one is due.
 /// Returns immediately; the task lives as long as the app.
 pub fn spawn(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
+    // Both spawns below are wrapped in `autostand_runlog::inherit`. There is no
+    // sink to inherit *here* (the supervisor starts before any run exists), but
+    // the wrapper is what makes the pattern uniform: a tick that later opens its
+    // own `Run` must not be the one place where someone has to remember the
+    // rule. See `crates/autostand-runlog/src/lib.rs` § the `tokio::spawn` trap.
+    tauri::async_runtime::spawn(autostand_runlog::inherit(async move {
         info!(
             interval_secs = TICK_SECONDS,
             "scheduler: in-process runtime started"
@@ -114,17 +119,17 @@ pub fn spawn(app: AppHandle) {
             // Each tick is its own task so a panic anywhere below (pipeline,
             // adapter, plugin) comes back as a join error instead of unwinding
             // the supervisor and silently stopping the scheduler forever.
-            let handle = tauri::async_runtime::spawn({
+            let handle = tauri::async_runtime::spawn(autostand_runlog::inherit({
                 let app = app.clone();
                 async move { tick(&app).await }
-            });
+            }));
             match handle.await {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => warn!(error = %err, "scheduler: tick failed"),
                 Err(err) => warn!(error = %err, "scheduler: tick task did not complete"),
             }
         }
-    });
+    }));
 }
 
 /// Report the scheduler state: enablement, source, cron, next run, last run.
@@ -132,10 +137,10 @@ pub fn spawn(app: AppHandle) {
 /// # Errors
 ///
 /// Returns [`AppError::Config`] when the config store cannot be read.
-pub fn status(app: &AppHandle) -> Result<SchedulerStatus, AppError> {
+pub async fn status(app: &AppHandle) -> Result<SchedulerStatus, AppError> {
     let config = crate::commands::load_config(app)?;
     let last = read_last_run(&crate::commands::state_dir());
-    let source = resolve_source(install::detect(), config.scheduler.enabled);
+    let source = resolve_source(install::detect().await, config.scheduler.enabled);
     Ok(build_status(&config.scheduler, last, Utc::now(), source))
 }
 
@@ -153,13 +158,13 @@ pub fn status(app: &AppHandle) -> Result<SchedulerStatus, AppError> {
 /// *install* is not an error: the cron is persisted either way and the
 /// in-process runtime still honours it, so refusing to save the user's schedule
 /// because `launchctl` was unhappy would be the worse outcome.
-pub fn set_cron(app: &AppHandle, cron: &str) -> Result<(), AppError> {
+pub async fn set_cron(app: &AppHandle, cron: &str) -> Result<(), AppError> {
     let normalized = validate_cron(cron)?;
     let mut config = crate::commands::load_config(app)?;
     config.scheduler.cron.clone_from(&normalized);
     let enabled = config.scheduler.enabled;
     crate::commands::save_config(app, &config)?;
-    sync_system_unit(&normalized, enabled);
+    sync_system_unit(&normalized, enabled).await;
     Ok(())
 }
 
@@ -167,12 +172,12 @@ pub fn set_cron(app: &AppHandle, cron: &str) -> Result<(), AppError> {
 ///
 /// This is separate from a generic config write because installing/removing a
 /// launchd, systemd, or Task Scheduler job is an explicit scheduler action.
-pub fn set_enabled(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
+pub async fn set_enabled(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
     let mut config = crate::commands::load_config(app)?;
     let normalized = validate_cron(&config.scheduler.cron)?;
     config.scheduler.enabled = enabled;
     crate::commands::save_config(app, &config)?;
-    sync_system_unit(&normalized, enabled);
+    sync_system_unit(&normalized, enabled).await;
     Ok(())
 }
 
@@ -181,9 +186,9 @@ pub fn set_enabled(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
 /// Best effort by design — see [`set_cron`]. An expression the unit formats
 /// cannot express is logged loudly rather than swallowed: the user needs to
 /// know their schedule only applies while the app is open.
-fn sync_system_unit(cron: &str, enabled: bool) {
+async fn sync_system_unit(cron: &str, enabled: bool) {
     if !enabled {
-        if let Err(err) = install::uninstall() {
+        if let Err(err) = install::uninstall().await {
             info!(error = %err, "scheduler: no system unit to remove");
         }
         return;
@@ -195,7 +200,7 @@ fn sync_system_unit(cron: &str, enabled: bool) {
             return;
         }
     };
-    match install::install(cron, &exe) {
+    match install::install(cron, &exe).await {
         Ok(kind) => info!(source = kind.wire_label(), %cron, "scheduler: system unit installed"),
         Err(err) => warn!(
             error = %err,
@@ -284,7 +289,7 @@ async fn tick(app: &AppHandle) -> Result<(), AppError> {
         Ok(next) => {
             let payload = SchedulerTick {
                 next_run_at: iso(next),
-                source: resolve_source(install::detect(), schedule.enabled),
+                source: resolve_source(install::detect().await, schedule.enabled),
             };
             if let Err(err) = app.emit("scheduler-tick", payload) {
                 warn!(error = %err, "scheduler: could not emit scheduler-tick");

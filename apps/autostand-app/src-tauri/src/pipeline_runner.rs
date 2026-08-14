@@ -48,6 +48,7 @@ use crate::commands::types::{
 use crate::error::AppError;
 use crate::gather::{self, Gathered};
 use crate::render::{self, LlmRenderOutcome, PromptInputs, ProviderAttempt, RenderedBody};
+use crate::run_log::{Run, RunKind};
 use crate::state::{AppState, PipelineStateKind};
 
 /// Date format used by every `date` argument and DTO field in the IPC contract.
@@ -1123,18 +1124,41 @@ pub async fn trigger(
     source: TriggerSource,
     only_date: Option<NaiveDate>,
 ) -> Result<Vec<CompileResult>, AppError> {
+    // The run is what installs the sink every `git`, `gh` and provider CLI in
+    // the pipeline logs into — the gather tasks re-install it with `inherit`.
+    // Opening it *here* rather than inside `run` keeps `trigger_headless` (which
+    // has no window and no sink) on exactly the same code path.
+    //
+    // The double-clear this used to cause is resolved in the frontend:
+    // `run-started` is now the single owner of "a run opened → clear the buffer
+    // and open the panel", and the `pipeline-started` handler no longer clears.
+    let run_log = Run::open(app, RunKind::Compile);
+    let outcome = run_log
+        .scope(compile_and_notify(app, state, source, only_date))
+        .await;
+    let dates = outcome.as_ref().map_or(0, Vec::len);
+    run_log.settle(outcome, &format!("{dates} standup file(s) compiled"))
+}
+
+/// [`trigger`]'s body, already inside the run's log scope.
+async fn compile_and_notify(
+    app: &AppHandle,
+    state: &AppState,
+    source: TriggerSource,
+    only_date: Option<NaiveDate>,
+) -> Result<Vec<CompileResult>, AppError> {
     let outcome = run(Some(app), state, source, only_date).await;
     if let Ok(config) = crate::commands::load_config(app) {
         for notification in crate::commands::llm::scheduled_low_usage_notifications(&config).await {
             if let Err(err) =
-                crate::notifications::notify_gui(app, &config.notifications, &notification)
+                crate::notifications::notify_gui(app, &config.notifications, &notification).await
             {
                 tracing::warn!(error = %err, "could not deliver low-usage notification");
             }
         }
         if let Some(notification) = crate::notifications::compile_notification(outcome.as_deref()) {
             if let Err(err) =
-                crate::notifications::notify_gui(app, &config.notifications, &notification)
+                crate::notifications::notify_gui(app, &config.notifications, &notification).await
             {
                 tracing::warn!(error = %err, "could not deliver system notification");
             }
@@ -1158,14 +1182,14 @@ pub async fn trigger_headless(
     if let Ok(config) = load_config_from_disk(dirs::data_dir().as_deref()) {
         for notification in crate::commands::llm::scheduled_low_usage_notifications(&config).await {
             if let Err(err) =
-                crate::notifications::notify_headless(&config.notifications, &notification)
+                crate::notifications::notify_headless(&config.notifications, &notification).await
             {
                 tracing::warn!(error = %err, "could not deliver headless low-usage notification");
             }
         }
         if let Some(notification) = crate::notifications::compile_notification(outcome.as_deref()) {
             if let Err(err) =
-                crate::notifications::notify_headless(&config.notifications, &notification)
+                crate::notifications::notify_headless(&config.notifications, &notification).await
             {
                 tracing::warn!(error = %err, "could not deliver headless system notification");
             }
@@ -1190,11 +1214,13 @@ async fn run(
     let primary_str = primary.format(DATE_FORMAT).to_string();
 
     // 1. Lock. Fails fast; the guard releases on every exit path.
-    let _guard = lock::acquire(&env.state_dir.join(LOCK_SUBDIR)).map_err(|err| {
-        let message = format!("another compile is already running ({err})");
-        fail(app, state, &primary_str, Step::Window, "lock", &message);
-        AppError::Lock(message)
-    })?;
+    let _guard = lock::acquire(&env.state_dir.join(LOCK_SUBDIR))
+        .await
+        .map_err(|err| {
+            let message = format!("another compile is already running ({err})");
+            fail(app, state, &primary_str, Step::Window, "lock", &message);
+            AppError::Lock(message)
+        })?;
 
     // 2. Announce, then sync the dailies repo when the user explicitly enabled
     // Repo Sync and both authenticated CLI prerequisites remain available.
@@ -1586,9 +1612,11 @@ pub async fn compile_one(
             let delivered = match app {
                 Some(app) => {
                     crate::notifications::notify_gui(app, &env.config.notifications, &notification)
+                        .await
                 }
                 None => {
                     crate::notifications::notify_headless(&env.config.notifications, &notification)
+                        .await
                 }
             };
             if let Err(err) = delivered {
@@ -1881,8 +1909,17 @@ async fn render_body(
 ///
 /// Takes no lock and writes nothing — it is a read-only view of what a compile
 /// of `date` would see right now, which is exactly what the Debug page wants.
+/// Read-only, but still an action that shells out to `git` and `gh` for every
+/// enabled source, so it opens its own run rather than spawning into silence.
 #[tracing::instrument(skip_all, fields(date = %date))]
 pub async fn preview(app: &AppHandle, date: NaiveDate) -> Result<GatherPreview, AppError> {
+    let run_log = Run::open(app, RunKind::GatherPreview);
+    let outcome = run_log.scope(preview_inner(app, date)).await;
+    run_log.settle(outcome, "gather preview ready")
+}
+
+/// [`preview`]'s body, already inside the run's log scope.
+async fn preview_inner(app: &AppHandle, date: NaiveDate) -> Result<GatherPreview, AppError> {
     let env = RunEnv::load(Some(app))?;
     let window = dates::compute_window(date);
     let gathered = gather::gather_all(

@@ -10,13 +10,14 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use autostand_runlog::proc::{run_process, ProcSpec, StreamPolicy};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-use tokio::process::Command;
 
 use crate::commands::dependencies::find_program;
 use crate::commands::{load_config, save_config};
 use crate::error::AppError;
+use crate::run_log::{Run, RunKind};
 
 const CLOUD_CHILD: &str = "autostand";
 const DEFAULT_REPO_NAME: &str = "autostand-dailies";
@@ -92,48 +93,87 @@ impl RepoTools {
         }
     }
 
+    /// Run one repository command through the workspace's single spawner.
+    ///
+    /// `label` is the display name shown in the Terminal: the program plus its
+    /// subcommand, never `dir` (the dailies path) and never `repo_name`.
+    /// `stream` is the caller's call — a Repo Sync *setup* step is an action the
+    /// user is watching, while the status probes behind the Settings card run on
+    /// every render and must stay silent.
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &self,
         program: &Path,
         args: &[&OsStr],
         cwd: Option<&Path>,
         timeout: Duration,
+        step: &'static str,
+        label: &'static str,
+        stream: StreamPolicy,
     ) -> Result<Output, AppError> {
-        let mut command = Command::new(program);
-        command
+        let mut spec = ProcSpec::new(program, step)
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
-            .kill_on_drop(true);
+            .timeout(timeout)
+            .stream(stream)
+            .label(label);
         if let Some(dir) = cwd {
-            command.current_dir(dir);
+            spec = spec.cwd(dir);
         }
-        let result = tokio::time::timeout(timeout, command.output())
+        let result = run_process(spec)
             .await
-            .map_err(|_| AppError::Git("repository command timed out".into()))?
-            .map_err(|err| AppError::Git(format!("could not start repository command: {err}")))?;
+            .map_err(|err| map_spawn_error(&err))?;
         Ok(Output {
-            success: result.status.success(),
-            stdout: String::from_utf8_lossy(&result.stdout).trim().to_string(),
+            success: result.success,
+            stdout: result.stdout_trimmed().to_string(),
         })
     }
 
-    async fn git(&self, dir: &Path, args: &[&str]) -> Result<Output, AppError> {
+    async fn git(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        visibility: Visibility,
+    ) -> Result<Output, AppError> {
         let program = self
             .git
             .as_deref()
             .ok_or_else(|| AppError::Git("git is not installed".into()))?;
-        let args = args.iter().map(OsStr::new).collect::<Vec<_>>();
-        self.run(program, &args, Some(dir), COMMAND_TIMEOUT).await
+        let owned = args.iter().map(OsStr::new).collect::<Vec<_>>();
+        self.run(
+            program,
+            &owned,
+            Some(dir),
+            COMMAND_TIMEOUT,
+            visibility.step(),
+            "git",
+            visibility.stream(),
+        )
+        .await
     }
 
-    async fn gh(&self, dir: Option<&Path>, args: &[&str]) -> Result<Output, AppError> {
+    async fn gh(
+        &self,
+        dir: Option<&Path>,
+        args: &[&str],
+        visibility: Visibility,
+    ) -> Result<Output, AppError> {
         let program = self
             .gh
             .as_deref()
             .ok_or_else(|| AppError::Git("GitHub CLI is not installed".into()))?;
-        let args = args.iter().map(OsStr::new).collect::<Vec<_>>();
-        self.run(program, &args, dir, SETUP_TIMEOUT).await
+        let owned = args.iter().map(OsStr::new).collect::<Vec<_>>();
+        self.run(
+            program,
+            &owned,
+            dir,
+            SETUP_TIMEOUT,
+            visibility.step(),
+            "gh",
+            visibility.stream(),
+        )
+        .await
     }
 
     async fn gh_with_path_arg(&self, dir: &Path, repo_name: &str) -> Result<Output, AppError> {
@@ -152,7 +192,57 @@ impl RepoTools {
             OsStr::new("--remote"),
             OsStr::new("origin"),
         ];
-        self.run(program, &args, Some(dir), SETUP_TIMEOUT).await
+        self.run(
+            program,
+            &args,
+            Some(dir),
+            SETUP_TIMEOUT,
+            RunKind::RepoSetup.step(),
+            "gh repo create",
+            StreamPolicy::Summary,
+        )
+        .await
+    }
+}
+
+/// Whether a repository command belongs in the Terminal.
+///
+/// The distinction is not cosmetic: `get_repo_sync_status` runs four of these on
+/// every Settings render, and a card that repaints must not scroll the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Visibility {
+    /// A step of the setup the user asked for.
+    Action,
+    /// A read-only probe behind a status card.
+    Probe,
+}
+
+impl Visibility {
+    const fn stream(self) -> StreamPolicy {
+        match self {
+            Self::Action => StreamPolicy::Summary,
+            Self::Probe => StreamPolicy::Silent,
+        }
+    }
+
+    fn step(self) -> &'static str {
+        match self {
+            Self::Action => RunKind::RepoSetup.step(),
+            Self::Probe => RunKind::RepoSync.step(),
+        }
+    }
+}
+
+/// Map a spawner failure onto the Repo Sync error vocabulary.
+///
+/// Neither branch carries the program's path: `ProcError` already reduces it to
+/// a display name, and this message reaches a toast.
+fn map_spawn_error(error: &autostand_runlog::proc::ProcError) -> AppError {
+    match error {
+        autostand_runlog::proc::ProcError::Timeout { .. } => {
+            AppError::Git("repository command timed out".into())
+        }
+        _ => AppError::Git("could not start repository command".into()),
     }
 }
 
@@ -350,7 +440,7 @@ async fn gh_authenticated(tools: &RepoTools) -> bool {
 
 async fn origin_exists(tools: &RepoTools, dir: &Path) -> bool {
     tools
-        .git(dir, &["remote", "get-url", "origin"])
+        .git(dir, &["remote", "get-url", "origin"], Visibility::Probe)
         .await
         .is_ok_and(|output| output.success && !output.stdout.is_empty())
 }
@@ -360,6 +450,7 @@ async fn repo_view(tools: &RepoTools, dir: &Path) -> Option<GhRepoView> {
         .gh(
             Some(dir),
             &["repo", "view", "--json", "nameWithOwner,isPrivate"],
+            Visibility::Probe,
         )
         .await
         .ok()?;
@@ -428,19 +519,23 @@ async fn repo_status_for(config: &super::types::AppConfig, tools: &RepoTools) ->
 
 async fn ensure_local_identity(tools: &RepoTools, dir: &Path) -> Result<(), AppError> {
     let has_name = tools
-        .git(dir, &["config", "--get", "user.name"])
+        .git(dir, &["config", "--get", "user.name"], Visibility::Action)
         .await?
         .success;
     let has_email = tools
-        .git(dir, &["config", "--get", "user.email"])
+        .git(dir, &["config", "--get", "user.email"], Visibility::Action)
         .await?
         .success;
     if has_name && has_email {
         return Ok(());
     }
 
-    let login = tools.gh(None, &["api", "user", "--jq", ".login"]).await?;
-    let id = tools.gh(None, &["api", "user", "--jq", ".id"]).await?;
+    let login = tools
+        .gh(None, &["api", "user", "--jq", ".login"], Visibility::Action)
+        .await?;
+    let id = tools
+        .gh(None, &["api", "user", "--jq", ".id"], Visibility::Action)
+        .await?;
     let safe_login = !login.stdout.is_empty()
         && login
             .stdout
@@ -454,7 +549,11 @@ async fn ensure_local_identity(tools: &RepoTools, dir: &Path) -> Result<(), AppE
     }
     if !has_name
         && !tools
-            .git(dir, &["config", "user.name", &login.stdout])
+            .git(
+                dir,
+                &["config", "user.name", &login.stdout],
+                Visibility::Action,
+            )
             .await?
             .success
     {
@@ -463,7 +562,7 @@ async fn ensure_local_identity(tools: &RepoTools, dir: &Path) -> Result<(), AppE
     if !has_email {
         let email = format!("{}+{}@users.noreply.github.com", id.stdout, login.stdout);
         if !tools
-            .git(dir, &["config", "user.email", &email])
+            .git(dir, &["config", "user.email", &email], Visibility::Action)
             .await?
             .success
         {
@@ -477,14 +576,20 @@ async fn initialize_repo(tools: &RepoTools, dir: &Path) -> Result<(), AppError> 
     if crate::git_ops::is_git_repo(dir) {
         return Ok(());
     }
-    let init = tools.git(dir, &["init", "--quiet"]).await?;
+    let init = tools
+        .git(dir, &["init", "--quiet"], Visibility::Action)
+        .await?;
     if !init.success {
         return Err(AppError::Git(
             "could not initialize the local repository".into(),
         ));
     }
     let branch = tools
-        .git(dir, &["symbolic-ref", "HEAD", "refs/heads/main"])
+        .git(
+            dir,
+            &["symbolic-ref", "HEAD", "refs/heads/main"],
+            Visibility::Action,
+        )
         .await?;
     if !branch.success {
         return Err(AppError::Git("could not select the main branch".into()));
@@ -494,13 +599,15 @@ async fn initialize_repo(tools: &RepoTools, dir: &Path) -> Result<(), AppError> 
 
 async fn initial_attributes_commit(tools: &RepoTools, dir: &Path) -> Result<(), AppError> {
     let has_head = tools
-        .git(dir, &["rev-parse", "--verify", "HEAD"])
+        .git(dir, &["rev-parse", "--verify", "HEAD"], Visibility::Action)
         .await?
         .success;
     if has_head {
         return Ok(());
     }
-    let add = tools.git(dir, &["add", "--", ".gitattributes"]).await?;
+    let add = tools
+        .git(dir, &["add", "--", ".gitattributes"], Visibility::Action)
+        .await?;
     if !add.success {
         return Err(AppError::Git(
             "could not stage repository safeguards".into(),
@@ -518,6 +625,7 @@ async fn initial_attributes_commit(tools: &RepoTools, dir: &Path) -> Result<(), 
                 "--",
                 ".gitattributes",
             ],
+            Visibility::Action,
         )
         .await?;
     if !commit.success {
@@ -585,6 +693,17 @@ pub async fn setup_repo_sync(
     app_handle: AppHandle,
     repo_name: Option<String>,
 ) -> Result<RepoSyncStatus, AppError> {
+    let run = Run::open(&app_handle, RunKind::RepoSetup);
+    let outcome = run.scope(run_setup(&app_handle, repo_name)).await;
+    run.settle(outcome, "Repo Sync is ready")
+}
+
+/// The setup itself, already inside the run's log scope.
+async fn run_setup(
+    app_handle: &AppHandle,
+    repo_name: Option<String>,
+) -> Result<RepoSyncStatus, AppError> {
+    let app_handle = app_handle.clone();
     let mut config = load_config(&app_handle)?;
     let tools = RepoTools::detect(None);
     if tools.git.is_none() || tools.gh.is_none() || !gh_authenticated(&tools).await {
@@ -637,7 +756,11 @@ pub async fn setup_repo_sync(
     // A failed initial push is recoverable: the regular pipeline retries it.
     // Never include stderr here; Git helpers may receive credential diagnostics.
     let _push = tools
-        .git(&dir, &["push", "--set-upstream", "origin", "HEAD"])
+        .git(
+            &dir,
+            &["push", "--set-upstream", "origin", "HEAD"],
+            Visibility::Action,
+        )
         .await?;
     config.sync.repo_enabled = true;
     save_config(&app_handle, &config)?;
@@ -649,7 +772,7 @@ mod tests {
     use super::{
         dailies_path, detected_cloud_folders, macos_cloud_folders, prepare_cloud_root,
         repo_status_for, should_run_repo_sync, valid_repo_name, CloudFolder, RepoSyncStatus,
-        RepoTools, CLOUD_CHILD,
+        RepoTools, Visibility, CLOUD_CHILD,
     };
     use crate::commands::types::{AppConfig, SyncConfig};
     use std::ffi::OsStr;
@@ -802,13 +925,67 @@ mod tests {
             },
             ..AppConfig::default()
         };
-        let status = repo_status_for(&config, &tools).await;
+        let sink = std::sync::Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+        let status =
+            autostand_runlog::scoped(as_ref, async { repo_status_for(&config, &tools).await })
+                .await;
         assert!(status.can_setup);
         assert!(status.configured);
         assert!(status.enabled);
         assert_eq!(status.repository.as_deref(), Some("owner/dailies"));
         assert_eq!(status.private, Some(true));
         assert_eq!(status.repo_path, repo.to_string_lossy());
+        // Settings re-reads this card on every render; four `git`/`gh` lines per
+        // repaint would turn the panel into a treadmill.
+        assert!(
+            sink.lines().is_empty(),
+            "a status probe must stay out of the Terminal: {:?}",
+            sink.messages()
+        );
+    }
+
+    /// Setup is an action the user is watching, so its steps must be visible —
+    /// with the display name only, never the dailies path the argv carries.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_setup_step_is_visible_without_its_working_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin = temp.path().join("bin");
+        let repo = temp.path().join("private-dailies");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&repo).expect("repo");
+        let git = bin.join("git");
+        std::fs::write(&git, "#!/bin/sh\nexit 0\n").expect("fake git");
+        let mut permissions = std::fs::metadata(&git).expect("metadata").permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&git, permissions).expect("chmod");
+
+        let tools = RepoTools::detect(Some(bin.as_os_str()));
+        let sink = std::sync::Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+        autostand_runlog::scoped(as_ref, async {
+            tools
+                .git(&repo, &["init", "--quiet"], Visibility::Action)
+                .await
+                .expect("git runs");
+        })
+        .await;
+
+        let rendered = sink
+            .lines()
+            .iter()
+            .map(|line| format!("{} {}", line.step, line.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("repo_setup"), "{rendered}");
+        assert!(rendered.contains("git"), "{rendered}");
+        assert!(
+            !rendered.contains("private-dailies"),
+            "the working directory leaked: {rendered}"
+        );
     }
 
     /// The requirement checklist names the missing tool and carries the command

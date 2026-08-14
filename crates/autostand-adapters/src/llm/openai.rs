@@ -144,7 +144,7 @@ impl OpenAiAdapter {
                 searched: vec!["codex".into()],
             })?;
         let start = Instant::now();
-        let out = helpers::run_cli(&cmd, &["--version"], "", 15, &[]).await?;
+        let out = helpers::run_cli_probe(&cmd, &["--version"], 15).await?;
         Ok(TestResult {
             ok: true,
             message: out,

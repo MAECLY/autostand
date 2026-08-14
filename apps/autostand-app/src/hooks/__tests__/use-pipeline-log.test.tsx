@@ -86,7 +86,7 @@ describe("usePipelineLog", () => {
     events.unmount();
   });
 
-  it("clears the shared buffer when pipeline-started arrives", async () => {
+  it("clears the shared buffer when run-started arrives", async () => {
     const { wrapper } = setup();
     const { result, unmount } = renderHook(() => useSharedLog(), { wrapper });
     await waitFor(() => expect(subscribedEventNames()).toContain("pipeline-log"));
@@ -97,13 +97,43 @@ describe("usePipelineLog", () => {
     expect(result.current.lines).toHaveLength(1);
 
     act(() => {
+      emitTauriEvent("run-started", {
+        run_id: "compile-1",
+        kind: "compile",
+        title: "Compile standup",
+        date: FIXTURE_DATE,
+        host: FIXTURE_HOST,
+        pipeline: true,
+      });
+    });
+    expect(result.current.lines).toHaveLength(0);
+    unmount();
+  });
+
+  /// The compile opens a run *and* announces itself, in that order. Clearing on
+  /// both events would wipe the run header and every line emitted in between.
+  it("keeps the buffer when pipeline-started follows run-started", async () => {
+    const { wrapper } = setup();
+    const { result, unmount } = renderHook(() => useSharedLog(), { wrapper });
+    await waitFor(() => expect(subscribedEventNames()).toContain("pipeline-log"));
+
+    act(() => {
+      emitTauriEvent("run-started", {
+        run_id: "compile-2",
+        kind: "compile",
+        title: "Compile standup",
+        date: FIXTURE_DATE,
+        host: FIXTURE_HOST,
+        pipeline: true,
+      });
+      emitTauriEvent("pipeline-log", makeLine(0));
       emitTauriEvent("pipeline-started", {
         date: FIXTURE_DATE,
         host: FIXTURE_HOST,
         trigger: "manual",
       });
     });
-    expect(result.current.lines).toHaveLength(0);
+    expect(result.current.lines).toHaveLength(1);
     unmount();
   });
 

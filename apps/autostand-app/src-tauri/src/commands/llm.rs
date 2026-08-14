@@ -29,6 +29,7 @@ use crate::commands::types::{
 };
 use crate::error::AppError;
 use crate::render::{ProviderAttempt, ProviderAttemptStatus};
+use crate::run_log::{Run, RunKind};
 
 /// Provider descriptor used by `list_llm_providers`.
 struct ProviderDef {
@@ -261,6 +262,30 @@ pub async fn test_llm_provider(
     provider: String,
     mode: String,
 ) -> Result<TestProviderResult, AppError> {
+    let run = Run::open(&app_handle, RunKind::ProviderTest);
+    let outcome = run.scope(probe_provider(&app_handle, provider, mode)).await;
+    // The probe reports failure *inside* an `Ok` result, so the run's own
+    // outcome comes from `TestProviderResult`, not from the `Result`. The
+    // message is `probe_failure`'s, which is already free of stderr and bodies.
+    let message = outcome
+        .as_ref()
+        .map_or_else(|_| String::new(), |result| result.message.clone());
+    match outcome {
+        Ok(result) if !result.ok => {
+            run.finish_err(message);
+            Ok(result)
+        }
+        other => run.settle(other, &message),
+    }
+}
+
+/// The probe itself, already inside the run's log scope.
+async fn probe_provider(
+    app_handle: &AppHandle,
+    provider: String,
+    mode: String,
+) -> Result<TestProviderResult, AppError> {
+    let app_handle = app_handle.clone();
     if binary_for(&provider).is_none() {
         return Err(AppError::Invalid(format!("unknown provider: {provider}")));
     }
@@ -688,6 +713,18 @@ pub async fn refresh_provider_health(
     app_handle: AppHandle,
     provider: Option<String>,
 ) -> Result<Vec<ProviderHealth>, AppError> {
+    let run = Run::open(&app_handle, RunKind::ProviderHealth);
+    let outcome = run.scope(probe_health(&app_handle, provider)).await;
+    let checked = outcome.as_ref().map_or(0, Vec::len);
+    run.settle(outcome, &format!("{checked} provider(s) checked"))
+}
+
+/// The health sweep itself, already inside the run's log scope.
+async fn probe_health(
+    app_handle: &AppHandle,
+    provider: Option<String>,
+) -> Result<Vec<ProviderHealth>, AppError> {
+    let app_handle = app_handle.clone();
     if provider
         .as_deref()
         .is_some_and(|id| binary_for(id).is_none())
@@ -719,7 +756,12 @@ pub async fn refresh_provider_health(
     for (index, id) in ids.iter().enumerate() {
         let config = config.clone();
         let id = id.clone();
-        probes.spawn(async move { (index, provider_health(&config, &id, &ctx).await) });
+        // `JoinSet::spawn` is `tokio::spawn` underneath, so the run's sink does
+        // not cross it. Without `inherit` every keychain read and every CLI
+        // probe below logs into the null sink.
+        probes.spawn(autostand_runlog::inherit(async move {
+            (index, provider_health(&config, &id, &ctx).await)
+        }));
     }
     let mut snapshots: Vec<Option<ProviderHealth>> = vec![None; ids.len()];
     while let Some(joined) = probes.join_next().await {
@@ -748,6 +790,7 @@ pub async fn refresh_provider_health(
     for notification in low_usage_notifications(&config, &health) {
         if let Err(err) =
             crate::notifications::notify_gui(&app_handle, &config.notifications, &notification)
+                .await
         {
             tracing::warn!(error = %err, "could not deliver low-usage notification");
         }
@@ -794,10 +837,26 @@ pub async fn get_api_key_status(
 
 /// Detect a provider's CLI binary on PATH and probe `--version`.
 #[tauri::command]
-pub async fn detect_cli(
-    _app_handle: AppHandle,
-    provider: String,
-) -> Result<CliDetection, AppError> {
+pub async fn detect_cli(app_handle: AppHandle, provider: String) -> Result<CliDetection, AppError> {
+    let run = Run::open(&app_handle, RunKind::CliDetect);
+    let outcome = run.scope(detect_one(provider)).await;
+    // "found" / "not found", never the resolved path: it routinely sits under
+    // the user's home directory.
+    let message = outcome.as_ref().map_or_else(
+        |_| String::new(),
+        |detection| {
+            if detection.found {
+                "CLI found".to_string()
+            } else {
+                "CLI not found".to_string()
+            }
+        },
+    );
+    run.settle(outcome, &message)
+}
+
+/// The detection itself, already inside the run's log scope.
+async fn detect_one(provider: String) -> Result<CliDetection, AppError> {
     let binary = binary_for(&provider)
         .ok_or_else(|| AppError::Invalid(format!("unknown provider: {provider}")))?;
     let info = autostand_adapters::llm::detect_cli_binary(binary)

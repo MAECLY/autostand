@@ -20,6 +20,14 @@
 
 use std::time::Duration;
 
+use autostand_runlog::proc::{run_process, ProcSpec, StreamPolicy};
+
+/// The system tool that answers a keychain query.
+const SECURITY_BINARY: &str = "/usr/bin/security";
+
+/// Step this lookup would be filed under — it never is; see [`run_security`].
+const KEYCHAIN_STEP: &str = "provider_health";
+
 /// Whether this pass is allowed to read a secret from the keychain.
 ///
 /// Derived from `ProbeContext::is_manual`, never chosen ad hoc by a provider.
@@ -185,25 +193,26 @@ enum SecurityResult {
     Failed,
 }
 
+/// Run `/usr/bin/security` and classify its exit status.
+///
+/// [`StreamPolicy::Silent`] is not a preference here, it is the invariant: this
+/// child's **stdout is the credential**. It still goes through the workspace's
+/// single spawner so the timeout/kill policy stays in one place — the spawner
+/// simply logs nothing at all for it. The keychain read is also an internal step
+/// of a provider-health probe, which reports its own outcome.
 async fn run_security(args: &[String]) -> SecurityResult {
-    let command = tokio::process::Command::new("/usr/bin/security")
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        // stderr is dropped rather than captured: it can echo the item's
-        // attributes, and nothing here may reach a log.
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
+    let output = run_process(
+        ProcSpec::new(SECURITY_BINARY, KEYCHAIN_STEP)
+            .args(args)
+            .timeout(LOOKUP_TIMEOUT)
+            .stream(StreamPolicy::Silent),
+    )
+    .await;
 
-    match tokio::time::timeout(LOOKUP_TIMEOUT, command).await {
-        Ok(Ok(output)) if output.status.success() => {
-            SecurityResult::Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-        }
-        Ok(Ok(output)) if output.status.code() == Some(ITEM_NOT_FOUND_EXIT) => {
-            SecurityResult::NotFound
-        }
-        Ok(Ok(_) | Err(_)) | Err(_) => SecurityResult::Failed,
+    match output {
+        Ok(output) if output.success => SecurityResult::Ok(output.stdout),
+        Ok(output) if output.code == Some(ITEM_NOT_FOUND_EXIT) => SecurityResult::NotFound,
+        Ok(_) | Err(_) => SecurityResult::Failed,
     }
 }
 
@@ -247,6 +256,24 @@ mod tests {
         let exists =
             generic_password_exists("autostand-test-service-that-does-not-exist-12345", None).await;
         assert!(matches!(exists, Some(false) | None), "{exists:?}");
+    }
+
+    /// This child's stdout is a credential, so it is the one spawn that must
+    /// produce no Terminal line at all — not even "it ran".
+    #[tokio::test]
+    async fn a_keychain_lookup_writes_nothing_to_the_terminal() {
+        let sink = std::sync::Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+        autostand_runlog::scoped(as_ref, async {
+            let _ = read_generic_password(
+                "autostand-test-service-that-does-not-exist-12345",
+                None,
+                KeychainAccess::Allowed,
+            )
+            .await;
+        })
+        .await;
+        assert!(sink.lines().is_empty(), "{:?}", sink.messages());
     }
 
     #[test]

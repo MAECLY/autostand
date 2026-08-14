@@ -126,19 +126,19 @@ pub async fn preview_gather(
 /// Get the scheduler status (next/last run, source, cron).
 #[tauri::command]
 pub async fn get_scheduler_status(app_handle: AppHandle) -> Result<SchedulerStatus, AppError> {
-    crate::scheduler_runtime::status(&app_handle)
+    crate::scheduler_runtime::status(&app_handle).await
 }
 
 /// Persist a cron schedule and reschedule the runtime.
 #[tauri::command]
 pub async fn set_scheduler_schedule(app_handle: AppHandle, cron: String) -> Result<(), AppError> {
-    crate::scheduler_runtime::set_cron(&app_handle, &cron)
+    crate::scheduler_runtime::set_cron(&app_handle, &cron).await
 }
 
 /// Enable or disable scheduled runs and reconcile the platform scheduler.
 #[tauri::command]
 pub async fn set_scheduler_enabled(app_handle: AppHandle, enabled: bool) -> Result<(), AppError> {
-    crate::scheduler_runtime::set_enabled(&app_handle, enabled)
+    crate::scheduler_runtime::set_enabled(&app_handle, enabled).await
 }
 
 /// Payload for `pipeline-started`.

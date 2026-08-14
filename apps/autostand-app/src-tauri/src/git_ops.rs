@@ -26,7 +26,9 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tokio::process::Command;
+use autostand_runlog::proc::{run_process, ProcError, ProcSpec};
+
+use crate::run_log::RunKind;
 
 /// Upper bound on a single `git` invocation.
 ///
@@ -417,6 +419,13 @@ struct GitOutput {
 ///
 /// A timeout is surfaced as an unsuccessful [`GitOutput`] rather than an error so
 /// every caller's existing "non-zero exit ⇒ warn and carry on" branch handles it.
+///
+/// The spawn goes through the workspace's single spawner, so the Terminal shows
+/// `git pull` / `git commit` / `git push` with an exit code and a duration. What
+/// it never shows is the argv: every call site here passes the dailies directory
+/// and the standup file names, and one of them passes the commit message.
+/// `git <subcommand>` is safe to display because every caller's first argument is
+/// a literal in this file.
 async fn run_git<I, S>(dir: &Path, args: I) -> Result<GitOutput, GitError>
 where
     I: IntoIterator<Item = S>,
@@ -431,32 +440,33 @@ where
         .map(|arg| arg.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    let mut cmd = Command::new("git");
-    cmd.args(&args)
-        .current_dir(dir)
+    let spec = ProcSpec::new("git", RunKind::RepoSync.step())
+        .args(&args)
+        .cwd(dir)
         // An unattended run must never block on a credential prompt.
         .env("GIT_TERMINAL_PROMPT", "0")
-        // If the caller's future is cancelled, do not leak the subprocess.
-        .kill_on_drop(true);
+        .timeout(GIT_TIMEOUT)
+        .label(format!("git {command}"));
 
-    match tokio::time::timeout(GIT_TIMEOUT, cmd.output()).await {
-        Ok(Ok(out)) => Ok(GitOutput {
-            success: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+    match run_process(spec).await {
+        Ok(out) => Ok(GitOutput {
+            success: out.success,
+            stdout: out.stdout_trimmed().to_owned(),
+            stderr: out.stderr_trimmed().to_owned(),
         }),
-        Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-            Err(GitError::GitMissing { command })
-        }
-        Ok(Err(err)) => Err(GitError::Spawn {
+        Err(ProcError::Spawn {
+            kind: std::io::ErrorKind::NotFound,
+            ..
+        }) => Err(GitError::GitMissing { command }),
+        Err(ProcError::Spawn { kind, .. } | ProcError::Io { kind, .. }) => Err(GitError::Spawn {
             command,
             dir: dir.to_path_buf(),
-            source: err,
+            source: std::io::Error::from(kind),
         }),
-        Err(_elapsed) => Ok(GitOutput {
+        Err(ProcError::Timeout { secs, .. }) => Ok(GitOutput {
             success: false,
             stdout: String::new(),
-            stderr: format!("`git {command}` timed out after {}s", GIT_TIMEOUT.as_secs()),
+            stderr: format!("`git {command}` timed out after {secs}s"),
         }),
     }
 }
@@ -467,9 +477,15 @@ mod tests {
         commit_push, ensure_gitattributes, is_git_repo, sync_pull, CommitOutcome, GitError,
     };
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     /// Run `git <args>` in `dir`, asserting success, and return trimmed stdout.
+    ///
+    /// A synchronous fixture, not an action: it seeds a throwaway repository
+    /// before the code under test runs, has no run to log into, and is the one
+    /// shape of direct spawn `crates/autostand-runlog/tests/single_spawner.rs`
+    /// deliberately does not scan.
     fn git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .args(args)
@@ -776,5 +792,58 @@ mod tests {
         sync_pull(dir.path())
             .await
             .expect("pull failure is a warning");
+    }
+
+    // -- terminal visibility ------------------------------------------------
+
+    /// Committing is the flagship action of a compile, so it must be visible —
+    /// and it is also the call whose argv carries the dailies path, the file
+    /// names and the commit message, so *only* the subcommand may be shown.
+    #[tokio::test]
+    async fn commit_push_reaches_the_terminal_without_leaking_its_argv() {
+        let dir = repo();
+        let standup = write(dir.path(), "2026-08-03.md", "# standup\n");
+        let sink = Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+
+        let outcome = autostand_runlog::scoped(as_ref, async {
+            commit_push(dir.path(), &[standup]).await.expect("commit")
+        })
+        .await;
+        assert!(outcome.committed);
+
+        let lines = sink.lines();
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                format!(
+                    "{} {} {}",
+                    line.step,
+                    line.message,
+                    line.detail.clone().unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("git add"), "{rendered}");
+        assert!(rendered.contains("git commit"), "{rendered}");
+        assert!(rendered.contains("git push"), "{rendered}");
+        assert!(
+            lines.iter().all(|line| line.step == "repo_sync"),
+            "every git line belongs to the repo_sync step: {rendered}"
+        );
+
+        let leaked = dir.path().to_string_lossy().to_string();
+        assert!(!rendered.contains(&leaked), "repo path leaked: {rendered}");
+        assert!(
+            !rendered.contains("2026-08-03"),
+            "the commit message and file name leaked: {rendered}"
+        );
+        // The push fails (there is no remote) and git says so loudly on stderr.
+        assert!(
+            !rendered.contains("origin"),
+            "git stderr reached the panel: {rendered}"
+        );
     }
 }

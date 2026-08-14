@@ -35,12 +35,23 @@
 //! `docs/architecture/04-state-machine.md` § Scheduler source.
 
 use std::path::Path;
-use std::process::Command;
 
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+use autostand_runlog::proc::{run_process, ProcSpec, StreamPolicy};
 use chrono::{Datelike, Duration, TimeZone, Timelike, Utc};
 use thiserror::Error;
 
 use crate::cron;
+
+/// Step every scheduler-unit spawn is filed under, matching
+/// `RunKind::SchedulerUnit` in the app crate.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const UNIT_STEP: &str = "scheduler_unit";
+
+/// A `launchctl`/`systemctl`/`schtasks` call that has not answered in this long
+/// is stuck. Previously unbounded, which could wedge the Settings page.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const UNIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 // ── identity ──────────────────────────────────────────────────────────────
 
@@ -704,23 +715,41 @@ fn remove_unit(path: &Path) -> Result<(), InstallError> {
 }
 
 /// Run a command, turning a non-zero exit into an [`InstallError::Command`].
+///
+/// The spawn goes through the workspace's single spawner, so installing a
+/// scheduled job shows up in the Terminal as `launchctl`/`systemctl`/`schtasks`
+/// with its exit code — never its argv, which carries the plist path.
+/// [`InstallError::Command`] keeps `args` and the stderr for `tracing`; the app
+/// crate is responsible for not putting that error's text on screen.
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn run(program: &str, args: &[&str]) -> Result<(), InstallError> {
+async fn run(program: &str, args: &[&str]) -> Result<(), InstallError> {
+    run_with(program, args, StreamPolicy::Summary).await
+}
+
+/// [`run`], with the caller choosing how loud the spawn is.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+async fn run_with(program: &str, args: &[&str], stream: StreamPolicy) -> Result<(), InstallError> {
     let fail = |reason: String| InstallError::Command {
         program: program.to_string(),
         args: args.join(" "),
         reason,
     };
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|err| fail(err.to_string()))?;
-    if output.status.success() {
+    let output = run_process(
+        ProcSpec::new(program, UNIT_STEP)
+            .args(args)
+            .timeout(UNIT_TIMEOUT)
+            .stream(stream),
+    )
+    .await
+    .map_err(|err| fail(err.to_string()))?;
+    if output.success {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stderr = output.stderr_trimmed().to_string();
     Err(fail(if stderr.is_empty() {
-        format!("exit {}", output.status)
+        output
+            .code
+            .map_or_else(|| "terminated".to_string(), |code| format!("exit {code}"))
     } else {
         stderr
     }))
@@ -728,9 +757,13 @@ fn run(program: &str, args: &[&str]) -> Result<(), InstallError> {
 
 /// Run a command whose failure is expected and harmless (an unload that finds
 /// nothing loaded), logging rather than propagating.
+///
+/// [`StreamPolicy::Silent`]: every install runs one of these `bootout`/`disable`
+/// calls first, and it fails on a machine where nothing was loaded yet. A red
+/// "exited 3" line in front of a successful install would read as a failure.
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn run_best_effort(program: &str, args: &[&str]) {
-    if let Err(err) = run(program, args) {
+async fn run_best_effort(program: &str, args: &[&str]) {
+    if let Err(err) = run_with(program, args, StreamPolicy::Silent).await {
         tracing::debug!(error = %err, "scheduler: best-effort command failed");
     }
 }
@@ -764,8 +797,13 @@ fn current_uid() -> Result<u32, InstallError> {
 ///
 /// Read-only and cheap: it never installs anything, so
 /// `get_scheduler_status` may call it freely.
+///
+/// `async` without an `await` on purpose: the Windows implementation has to ask
+/// `schtasks`, and one signature across the three platforms keeps the callers
+/// free of `cfg`.
 #[cfg(target_os = "macos")]
-pub fn detect() -> SchedulerKind {
+#[allow(clippy::unused_async)]
+pub async fn detect() -> SchedulerKind {
     if agent_path().is_ok_and(|path| path.is_file()) {
         SchedulerKind::Launchd
     } else {
@@ -786,7 +824,7 @@ pub fn detect() -> SchedulerKind {
 /// [`InstallError::Sandboxed`] from a test binary, plus any translation,
 /// filesystem or `launchctl` failure.
 #[cfg(target_os = "macos")]
-pub fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallError> {
+pub async fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallError> {
     guard()?;
     let contents = launchd_plist(cron_expr, exe)?;
     let path = agent_path()?;
@@ -795,12 +833,14 @@ pub fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallErro
     run_best_effort(
         "launchctl",
         &["bootout", &format!("{domain}/{LAUNCHD_LABEL}")],
-    );
+    )
+    .await;
     write_unit(&path, &contents)?;
     run(
         "launchctl",
         &["bootstrap", &domain, &path.to_string_lossy()],
-    )?;
+    )
+    .await?;
     Ok(SchedulerKind::Launchd)
 }
 
@@ -810,14 +850,15 @@ pub fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallErro
 ///
 /// [`InstallError::Sandboxed`] from a test binary, or a filesystem failure.
 #[cfg(target_os = "macos")]
-pub fn uninstall() -> Result<(), InstallError> {
+pub async fn uninstall() -> Result<(), InstallError> {
     guard()?;
     let path = agent_path()?;
     if let Ok(uid) = current_uid() {
         run_best_effort(
             "launchctl",
             &["bootout", &format!("gui/{uid}/{LAUNCHD_LABEL}")],
-        );
+        )
+        .await;
     }
     remove_unit(&path)
 }
@@ -849,7 +890,8 @@ fn units_dir() -> Result<std::path::PathBuf, InstallError> {
 /// unit file alone only means "written", while the symlink is what
 /// `systemctl --user enable` creates and is what actually arms the timer.
 #[cfg(target_os = "linux")]
-pub fn detect() -> SchedulerKind {
+#[allow(clippy::unused_async)]
+pub async fn detect() -> SchedulerKind {
     let Ok(dir) = units_dir() else {
         return SchedulerKind::None;
     };
@@ -871,7 +913,7 @@ pub fn detect() -> SchedulerKind {
 /// [`InstallError::Sandboxed`] from a test binary, plus any translation,
 /// filesystem or `systemctl` failure.
 #[cfg(target_os = "linux")]
-pub fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallError> {
+pub async fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallError> {
     guard()?;
     let service = systemd_service(exe);
     let timer = systemd_timer(cron_expr)?;
@@ -879,7 +921,7 @@ pub fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallErro
 
     write_unit(&dir.join(format!("{SYSTEMD_STEM}.service")), &service)?;
     write_unit(&dir.join(format!("{SYSTEMD_STEM}.timer")), &timer)?;
-    run("systemctl", &["--user", "daemon-reload"])?;
+    run("systemctl", &["--user", "daemon-reload"]).await?;
     run(
         "systemctl",
         &[
@@ -888,7 +930,8 @@ pub fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallErro
             "--now",
             &format!("{SYSTEMD_STEM}.timer"),
         ],
-    )?;
+    )
+    .await?;
     Ok(SchedulerKind::Systemd)
 }
 
@@ -898,7 +941,7 @@ pub fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallErro
 ///
 /// [`InstallError::Sandboxed`] from a test binary, or a filesystem failure.
 #[cfg(target_os = "linux")]
-pub fn uninstall() -> Result<(), InstallError> {
+pub async fn uninstall() -> Result<(), InstallError> {
     guard()?;
     let dir = units_dir()?;
     run_best_effort(
@@ -909,10 +952,11 @@ pub fn uninstall() -> Result<(), InstallError> {
             "--now",
             &format!("{SYSTEMD_STEM}.timer"),
         ],
-    );
+    )
+    .await;
     remove_unit(&dir.join(format!("{SYSTEMD_STEM}.timer")))?;
     remove_unit(&dir.join(format!("{SYSTEMD_STEM}.service")))?;
-    run_best_effort("systemctl", &["--user", "daemon-reload"]);
+    run_best_effort("systemctl", &["--user", "daemon-reload"]).await;
     Ok(())
 }
 
@@ -939,13 +983,20 @@ pub fn unit_contents(cron_expr: &str, exe: &Path) -> Result<String, InstallError
 ///
 /// Task Scheduler keeps its store outside the user's home, so this asks
 /// `schtasks` instead of looking for a file. The query is read-only.
+/// [`StreamPolicy::Silent`]: `get_scheduler_status` calls this on every Settings
+/// render *and* the in-process tick calls it once a minute, so a summary line
+/// per query would fill the panel with a background probe nobody asked for.
 #[cfg(windows)]
-pub fn detect() -> SchedulerKind {
-    let queried = Command::new("schtasks")
-        .args(["/Query", "/TN", TASK_NAME])
-        .output();
+pub async fn detect() -> SchedulerKind {
+    let queried = run_process(
+        ProcSpec::new("schtasks", UNIT_STEP)
+            .args(["/Query", "/TN", TASK_NAME])
+            .timeout(UNIT_TIMEOUT)
+            .stream(StreamPolicy::Silent),
+    )
+    .await;
     match queried {
-        Ok(output) if output.status.success() => SchedulerKind::TaskScheduler,
+        Ok(output) if output.success => SchedulerKind::TaskScheduler,
         _ => SchedulerKind::None,
     }
 }
@@ -957,11 +1008,11 @@ pub fn detect() -> SchedulerKind {
 /// [`InstallError::Sandboxed`] from a test binary, plus any translation or
 /// `schtasks` failure.
 #[cfg(windows)]
-pub fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallError> {
+pub async fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallError> {
     guard()?;
     let args = schtasks_args(cron_expr, exe)?;
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-    run("schtasks", &borrowed)?;
+    run("schtasks", &borrowed).await?;
     Ok(SchedulerKind::TaskScheduler)
 }
 
@@ -971,9 +1022,9 @@ pub fn install(cron_expr: &str, exe: &Path) -> Result<SchedulerKind, InstallErro
 ///
 /// [`InstallError::Sandboxed`] from a test binary, or a `schtasks` failure.
 #[cfg(windows)]
-pub fn uninstall() -> Result<(), InstallError> {
+pub async fn uninstall() -> Result<(), InstallError> {
     guard()?;
-    run("schtasks", &["/Delete", "/F", "/TN", TASK_NAME])
+    run("schtasks", &["/Delete", "/F", "/TN", TASK_NAME]).await
 }
 
 /// The `schtasks` command line [`install`] runs.
@@ -990,7 +1041,8 @@ pub fn unit_contents(cron_expr: &str, exe: &Path) -> Result<String, InstallError
 
 /// No user-scoped scheduler is known here.
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-pub fn detect() -> SchedulerKind {
+#[allow(clippy::unused_async)]
+pub async fn detect() -> SchedulerKind {
     SchedulerKind::None
 }
 
@@ -1000,7 +1052,8 @@ pub fn detect() -> SchedulerKind {
 ///
 /// Always.
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-pub fn install(_cron_expr: &str, _exe: &Path) -> Result<SchedulerKind, InstallError> {
+#[allow(clippy::unused_async)]
+pub async fn install(_cron_expr: &str, _exe: &Path) -> Result<SchedulerKind, InstallError> {
     Err(InstallError::UnsupportedPlatform)
 }
 
@@ -1010,7 +1063,8 @@ pub fn install(_cron_expr: &str, _exe: &Path) -> Result<SchedulerKind, InstallEr
 ///
 /// Always.
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-pub fn uninstall() -> Result<(), InstallError> {
+#[allow(clippy::unused_async)]
+pub async fn uninstall() -> Result<(), InstallError> {
     Err(InstallError::UnsupportedPlatform)
 }
 
@@ -1367,16 +1421,16 @@ mod tests {
         assert!(!may_touch_scheduled_jobs());
     }
 
-    #[test]
-    fn install_and_uninstall_refuse_from_a_test_binary() {
+    #[tokio::test]
+    async fn install_and_uninstall_refuse_from_a_test_binary() {
         // The point of the whole module: running the suite must not add a
         // LaunchAgent to the developer's login items.
         assert!(matches!(
-            install(HOURLY_WEEKDAYS, &exe()),
+            install(HOURLY_WEEKDAYS, &exe()).await,
             Err(InstallError::Sandboxed | InstallError::UnsupportedPlatform)
         ));
         assert!(matches!(
-            uninstall(),
+            uninstall().await,
             Err(InstallError::Sandboxed | InstallError::UnsupportedPlatform)
         ));
     }
@@ -1400,11 +1454,11 @@ mod tests {
 
     // ── detection ─────────────────────────────────────────────────────────
 
-    #[test]
-    fn detect_is_read_only_and_never_reports_the_in_process_tick() {
+    #[tokio::test]
+    async fn detect_is_read_only_and_never_reports_the_in_process_tick() {
         // Whatever this machine has, detection must not invent `InProcess` — the
         // app decides that from its own runtime, not from the OS.
-        let kind = detect();
+        let kind = detect().await;
         assert_ne!(kind, SchedulerKind::InProcess);
         assert!(matches!(
             kind,
@@ -1413,6 +1467,51 @@ mod tests {
                 | SchedulerKind::TaskScheduler
                 | SchedulerKind::None
         ));
+    }
+
+    // ── terminal visibility ───────────────────────────────────────────────
+
+    /// Installing a scheduled job is an explicit user action, so it belongs in
+    /// the Terminal — under the program's name, never the plist path its argv
+    /// carries.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_unit_command_reports_itself_without_its_arguments() {
+        let sink = std::sync::Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+        autostand_runlog::scoped(as_ref, async {
+            super::run("echo", &["/Users/someone/Library/LaunchAgents/x.plist"])
+                .await
+                .expect("echo runs");
+        })
+        .await;
+
+        let rendered = sink
+            .lines()
+            .iter()
+            .map(|line| format!("{} {}", line.step, line.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("scheduler_unit"), "{rendered}");
+        assert!(rendered.contains("echo"), "{rendered}");
+        assert!(
+            !rendered.contains("LaunchAgents"),
+            "the unit path leaked: {rendered}"
+        );
+    }
+
+    /// The `bootout`/`disable` that precedes every install fails on a machine
+    /// where nothing was loaded yet; a red line there would read as a failure.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_best_effort_command_stays_silent() {
+        let sink = std::sync::Arc::new(autostand_runlog::RecordingSink::new());
+        let as_ref: autostand_runlog::SinkRef = sink.clone();
+        autostand_runlog::scoped(as_ref, async {
+            super::run_best_effort("false", &[]).await;
+        })
+        .await;
+        assert!(sink.lines().is_empty(), "{:?}", sink.messages());
     }
 
     #[test]

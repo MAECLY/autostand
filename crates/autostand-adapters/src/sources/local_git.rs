@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
-use super::helpers::{extract_ticket_keys, run_cmd, scan_repos};
+use super::helpers::{extract_ticket_keys, log_sweep, run_cmd, scan_repos};
 use super::{DataSource, DataSourceConfig, DataSourceError, DateWindow, SourceData};
 
 /// Timeout applied to every `git` invocation this source makes.
@@ -68,6 +68,18 @@ impl DataSource for LocalGitDataSource {
         let filter = AuthorFilter::resolve(&config.authors).await?;
         let spec = ScanSpec::new(&repos, window, &config.git_refs);
         let scan = spec.scan_commits(&filter).await;
+        // One `git log` per repository ran silently (see `helpers::run_cmd`);
+        // this is the line that puts the sweep in the Terminal. Repository names
+        // are deliberately absent: only counts are safe to display.
+        log_sweep(
+            "local-git scanned repositories",
+            format!(
+                "{} repo(s), {} with commits, {} failed",
+                repos.len(),
+                scan.sections.len(),
+                scan.errors.len()
+            ),
+        );
 
         if scan.sections.is_empty() {
             return spec.explain_empty_scan(&filter, &scan.errors).await;
