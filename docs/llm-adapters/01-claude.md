@@ -30,9 +30,38 @@ Discovery runs `<path> --version` to populate `CliInfo.version`.
 
 ## CLI auth
 
-Claude CLI manages its own auth, stored at `~/.claude/.credentials.json` (OAuth token from `claude login` or an `ANTHROPIC_API_KEY` env var). autostand does **not** read, write, or manage this file. If the CLI is authenticated, CLI-mode rendering just works.
+Claude CLI manages its own auth. On macOS the live session lives in the keychain item `Claude Code-credentials`; older installs and non-macOS hosts use `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR/.credentials.json`). autostand **reads** these, **read-only**, and never writes, refreshes, rotates, or deletes them — see [Usage reporting](#usage-reporting). If the CLI is authenticated, CLI-mode rendering just works.
 
-Claude Code exposes usage interactively and to its own statusline, but Autostand does not alter the user's statusline configuration or scrape interactive output. Settings therefore reports Claude usage as `unknown` unless an actual render provides a safe classified availability failure. An inferred exhausted/auth/rate-limit state never includes a fabricated percentage or reset time.
+## Usage reporting
+
+> **Policy change.** This section supersedes the previous stance that Claude usage is reported as `unknown`. See [`../specs/provider-usage.md`](../specs/provider-usage.md) for the full contract and the decisions behind it.
+
+Autostand still does not alter the user's statusline configuration and does not scrape interactive output. Instead, `autostand-adapters::usage::claude` reads the credential Claude Code already stored and calls Anthropic's own usage endpoint:
+
+```
+GET https://api.anthropic.com/api/oauth/usage
+Authorization: Bearer <accessToken>
+Accept: application/json
+Content-Type: application/json
+anthropic-beta: oauth-2025-04-20
+User-Agent: claude-code/<CLAUDE_CODE_VERSION>
+```
+
+No `anthropic-version` header — the vendor's own client omits it here. `CLAUDE_CODE_VERSION` is a single constant in `usage/claude/client.rs`, so the identity is bumped in one place.
+
+**Credential order** (read-only; the keychain always beats the file, and the loop advances to the next candidate only on an expiry-class rejection):
+
+1. macOS keychain, service `Claude Code-credentials` — plus `Claude Code-credentials-<sha256(CLAUDE_CONFIG_DIR)[..8]>` first when `CLAUDE_CONFIG_DIR` is set. Per service: the current user's item (`-a $USER`), then the legacy service-only item. A keychain read happens only on a **manual** refresh, so a background pass never raises a macOS dialog.
+2. `$CLAUDE_CONFIG_DIR/.credentials.json`, else `~/.claude/.credentials.json`. Plain or hex-encoded JSON.
+3. `CLAUDE_CODE_OAUTH_TOKEN` — **last**. A `claude setup-token` value can run inference but cannot read subscription limits, so it reports `usage_requires_cli_login` rather than shadowing a real login.
+
+**Windows reported:** `five_hour` → `session` (5h), `seven_day` → `weekly` (7d), `seven_day_sonnet` → `sonnet` (7d), one row per `limits[]` entry with `kind == "weekly_scoped"` labelled from `scope.model.display_name`, and `extra_usage` in USD (a monthly cap makes it a meter; without one it is an open-ended balance). The plan string (`"Max 20x"`) comes from the credential's `subscriptionType` plus the `\d+x` multiplier in `rateLimitTier`.
+
+**Scope gate.** Reading usage requires the `user:profile` scope. A login without it is not an error: availability stays normal with the notice `Re-login for live usage`, because inference still works and only the meters are missing.
+
+**429 cooldown.** `Retry-After` (integer seconds or HTTP date; 5 minutes when absent) starts a cooldown during which the endpoint is **not called at all** — including on a manual refresh. The last good reading is served with `stale: true` and a notice. The cooldown is keyed by `sha256(accessToken)`, so signing into a different account starts clean.
+
+**Read-only consequence.** An expired token surfaces as `auth_required`; autostand never calls Anthropic's refresh endpoint. Running `claude` once clears it. As before, an inferred exhausted/auth/rate-limit state never includes a fabricated percentage or reset time — a field the provider did not send is `None`, never `0%`.
 
 ## API mode
 
