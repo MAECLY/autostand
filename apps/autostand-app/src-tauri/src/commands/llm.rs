@@ -586,11 +586,120 @@ pub(crate) async fn scheduled_low_usage_notifications(
     low_usage_notifications(config, &health)
 }
 
-/// Read health for all providers. Exact percentages are returned only when an
-/// official programmatic contract supplies them.
+/// Disk-backed snapshot of the last probe per provider.
+const HEALTH_CACHE_FILE: &str = "provider-health.json";
+
+/// Bump to discard snapshots this version can no longer read, rather than migrate them.
+const HEALTH_CACHE_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HealthCacheFile {
+    version: u32,
+    entries: Vec<ProviderHealth>,
+}
+
+fn health_cache() -> &'static Mutex<Option<HashMap<String, ProviderHealth>>> {
+    static CACHE: OnceLock<Mutex<Option<HashMap<String, ProviderHealth>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn health_cache_path() -> std::path::PathBuf {
+    super::state_dir().join(HEALTH_CACHE_FILE)
+}
+
+/// Read the persisted snapshots, or an empty map when absent or unreadable.
+///
+/// A corrupt or superseded cache is never an error: usage is advisory, and a
+/// failed read simply means the next refresh repopulates it.
+fn load_health_cache() -> HashMap<String, ProviderHealth> {
+    let Ok(bytes) = std::fs::read(health_cache_path()) else {
+        return HashMap::new();
+    };
+    let Ok(file) = serde_json::from_slice::<HealthCacheFile>(&bytes) else {
+        return HashMap::new();
+    };
+    if file.version != HEALTH_CACHE_VERSION {
+        return HashMap::new();
+    }
+    file.entries
+        .into_iter()
+        .map(|entry| (entry.provider.clone(), entry))
+        .collect()
+}
+
+/// Persist snapshots with the same temp + fsync + rename used for notification history.
+fn persist_health_cache(entries: &HashMap<String, ProviderHealth>) {
+    let path = health_cache_path();
+    let Some(parent) = path.parent() else { return };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let mut entries: Vec<ProviderHealth> = entries.values().cloned().collect();
+    entries.sort_by(|a, b| a.provider.cmp(&b.provider));
+    let file = HealthCacheFile {
+        version: HEALTH_CACHE_VERSION,
+        entries,
+    };
+    let Ok(bytes) = serde_json::to_vec(&file) else {
+        return;
+    };
+    let mut name = path.file_name().map_or_else(
+        || std::ffi::OsString::from(HEALTH_CACHE_FILE),
+        std::ffi::OsStr::to_os_string,
+    );
+    name.push(format!(".{}.tmp", std::process::id()));
+    let temp = path.with_file_name(name);
+    if std::fs::write(&temp, &bytes).is_ok() {
+        let _ = std::fs::rename(&temp, &path);
+    }
+}
+
+/// Providers worth listing and probing: those the user actually participates with.
+///
+/// Listing all six meant five rows reading "Usage unavailable" — and each cost a
+/// probe. Order follows `PROVIDERS` so the section is stable across refreshes.
+fn health_targets(config: &AppConfig) -> Vec<&'static str> {
+    let configured: Vec<&'static str> = PROVIDERS
+        .iter()
+        .map(|definition| definition.id)
+        .filter(|id| provider_is_configured(config, id))
+        .collect();
+    if configured.is_empty() {
+        // A user who has configured nothing still deserves to see the provider
+        // a render would actually reach for.
+        return PROVIDERS
+            .iter()
+            .map(|definition| definition.id)
+            .filter(|id| *id == config.llm.preferred_provider)
+            .collect();
+    }
+    configured
+}
+
+/// Read the last known health for every configured provider.
+///
+/// This is a pure cache read: it never probes a provider, never spawns a
+/// process and never raises a notification. Probing lives in
+/// [`refresh_provider_health`], which the UI calls explicitly. The two used to
+/// be the same function, so merely opening Settings ran six sequential probes —
+/// one of them an 8-second process spawn — and delivered low-usage
+/// notifications as a side effect of a render.
 #[tauri::command]
 pub async fn get_provider_health(app_handle: AppHandle) -> Result<Vec<ProviderHealth>, AppError> {
-    refresh_provider_health(app_handle, None).await
+    let config = crate::commands::load_config(&app_handle)?;
+    let mut guard = health_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cached = guard.get_or_insert_with(load_health_cache);
+    Ok(health_targets(&config)
+        .into_iter()
+        .map(|id| {
+            cached
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| unknown_health(id, "awaiting_first_refresh"))
+        })
+        .collect())
 }
 
 /// Refresh one provider, or all providers when `provider` is omitted.
@@ -609,14 +718,48 @@ pub async fn refresh_provider_health(
         )));
     }
     let config = crate::commands::load_config(&app_handle)?;
-    let ids: Vec<&str> = provider.as_deref().map_or_else(
-        || PROVIDERS.iter().map(|definition| definition.id).collect(),
-        |id| vec![id],
+    let ids: Vec<String> = provider.as_deref().map_or_else(
+        || {
+            health_targets(&config)
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        },
+        |id| vec![id.to_string()],
     );
-    let mut health = Vec::with_capacity(ids.len());
-    for id in ids {
-        health.push(provider_health(&config, id).await);
+
+    // Probe concurrently. Sequentially, one slow provider delayed every other —
+    // and the Codex probe alone is allowed eight seconds.
+    let mut probes = tokio::task::JoinSet::new();
+    for (index, id) in ids.iter().enumerate() {
+        let config = config.clone();
+        let id = id.clone();
+        probes.spawn(async move { (index, provider_health(&config, &id).await) });
     }
+    let mut probed: Vec<Option<ProviderHealth>> = vec![None; ids.len()];
+    while let Some(joined) = probes.join_next().await {
+        match joined {
+            Ok((index, health)) => probed[index] = Some(health),
+            Err(err) => tracing::warn!(error = %err, "provider health probe panicked"),
+        }
+    }
+    let health: Vec<ProviderHealth> = ids
+        .iter()
+        .zip(probed)
+        .map(|(id, result)| result.unwrap_or_else(|| unknown_health(id, "probe_failed")))
+        .collect();
+
+    {
+        let mut guard = health_cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cached = guard.get_or_insert_with(load_health_cache);
+        for entry in &health {
+            cached.insert(entry.provider.clone(), entry.clone());
+        }
+        persist_health_cache(cached);
+    }
+
     for notification in low_usage_notifications(&config, &health) {
         if let Err(err) =
             crate::notifications::notify_gui(&app_handle, &config.notifications, &notification)
@@ -879,7 +1022,7 @@ pub async fn list_provider_models(
 #[cfg(test)]
 mod tests {
     use super::{
-        api_base_for, binary_for, env_var_for, inferred_health, is_local_only,
+        api_base_for, binary_for, env_var_for, health_targets, inferred_health, is_local_only,
         low_usage_notifications, parse_codex_health, parse_gemini_models, parse_ollama_models,
         parse_openai_models, probe_failure, probe_mode, provider_is_configured,
         record_provider_attempts, stored_entry, AdapterMode, AppConfig, LlmError, ProviderConfig,
@@ -1247,5 +1390,51 @@ mod tests {
         assert_eq!(health.source, UsageSource::FailureInferred);
         assert!(health.windows.is_empty());
         assert_eq!(health.reason.as_deref(), Some("usage_balance_exhausted"));
+    }
+
+    /// Listing all six providers meant five rows reading "Usage unavailable",
+    /// and each one still cost a probe.
+    #[test]
+    fn health_targets_are_limited_to_configured_providers() {
+        let mut config = AppConfig::default();
+        config.llm.preferred_provider = "openai".to_string();
+        config.llm.provider_order = vec!["openai".to_string(), "claude".to_string()];
+        config.llm.providers = Vec::new();
+
+        let targets = health_targets(&config);
+        assert!(targets.contains(&"openai"));
+        assert!(targets.contains(&"claude"));
+        assert!(!targets.contains(&"gemini"));
+        assert!(!targets.contains(&"ollama"));
+    }
+
+    /// Targets follow `PROVIDERS` order, so the section does not reshuffle
+    /// between refreshes.
+    #[test]
+    fn health_targets_follow_the_catalogue_order() {
+        let mut config = AppConfig::default();
+        config.llm.preferred_provider = "grok".to_string();
+        config.llm.provider_order = vec!["openai".to_string(), "claude".to_string()];
+        config.llm.providers = Vec::new();
+
+        let targets = health_targets(&config);
+        let catalogue: Vec<&str> = PROVIDERS
+            .iter()
+            .map(|definition| definition.id)
+            .filter(|id| targets.contains(id))
+            .collect();
+        assert_eq!(targets, catalogue);
+    }
+
+    /// A user who has configured nothing still sees the provider a render would
+    /// reach for, rather than an empty section.
+    #[test]
+    fn health_targets_fall_back_to_the_preferred_provider() {
+        let mut config = AppConfig::default();
+        config.llm.preferred_provider = "gemini".to_string();
+        config.llm.provider_order = Vec::new();
+        config.llm.providers = Vec::new();
+
+        assert_eq!(health_targets(&config), vec!["gemini"]);
     }
 }

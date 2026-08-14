@@ -7,6 +7,7 @@ import { StatusBar } from "@/components/layout/StatusBar";
 import { TopBar } from "@/components/layout/TopBar";
 import { TerminalPanel } from "@/components/standup/TerminalPanel";
 import { usePipelineEvents } from "@/hooks/use-pipeline-status";
+import { useProviderHealthEvents } from "@/hooks/use-providers";
 import { applyTheme, useUiStore } from "@/lib/store";
 
 export const Route = createRootRoute({
@@ -15,6 +16,7 @@ export const Route = createRootRoute({
 
 function RootLayout() {
   usePipelineEvents();
+  useProviderHealthEvents();
   useAppliedTheme();
   const panel = useUiStore((s) => s.terminalPanel);
   const panelHeight = useUiStore((s) => s.terminalPanelHeight);
