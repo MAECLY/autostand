@@ -36,6 +36,7 @@ import {
   TabsTrigger,
 } from "@autostand/ui/components/tabs";
 
+import { AdvancedTab } from "@/components/settings/AdvancedTab";
 import { CommitScanCard } from "@/components/settings/CommitScanCard";
 import { DataSourceToggle } from "@/components/settings/DataSourceToggle";
 import { FormatTab } from "@/components/settings/FormatTab";
@@ -481,6 +482,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   scheduler: "Scheduler",
   notifications: "Notifications",
   "local-models": "Local AI",
+  advanced: "Advanced",
 };
 
 function SettingsPage() {
@@ -562,6 +564,10 @@ function SettingsPage() {
           >
             <LocalModelsTab />
           </Section>
+        </TabsContent>
+
+        <TabsContent value="advanced">
+          <AdvancedTab />
         </TabsContent>
       </Tabs>
     </div>
