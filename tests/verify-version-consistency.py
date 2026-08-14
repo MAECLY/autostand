@@ -51,6 +51,8 @@ MEMBER_CARGO_TOMLS = [
     Path("crates/autostand-core/Cargo.toml"),
     Path("crates/autostand-adapters/Cargo.toml"),
     Path("crates/autostand-scheduler/Cargo.toml"),
+    Path("crates/autostand-runlog/Cargo.toml"),
+    Path("crates/autostand-local-llm/Cargo.toml"),
     Path("apps/autostand-app/src-tauri/Cargo.toml"),
 ]
 
