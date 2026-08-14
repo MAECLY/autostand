@@ -10,12 +10,14 @@ vi.mock("sonner", () => ({
 import { toast } from "sonner";
 
 import { auditSidecarsKey } from "@/hooks/use-audit";
+import { pushPipelineLog, usePipelineLog } from "@/hooks/use-pipeline-log";
 import {
   pipelineStatusKey,
   usePipelineEvents,
   usePipelineStatus,
 } from "@/hooks/use-pipeline-status";
 import { standupKey } from "@/hooks/use-standup";
+import { useUiStore } from "@/lib/store";
 import type { PipelineStatus } from "@/lib/types";
 import {
   FIXTURE_DATE,
@@ -37,6 +39,8 @@ const PIPELINE_EVENTS = [
   "pipeline-log",
   "pipeline-progress",
   "pipeline-started",
+  "run-finished",
+  "run-started",
   "scheduler-tick",
 ];
 
@@ -244,6 +248,102 @@ describe("usePipelineEvents", () => {
     expect(vi.mocked(toast.error)).toHaveBeenCalledWith("render_llm — llm", {
       description: "claude exited 1",
     });
+
+    unmount();
+  });
+
+  it("opens the terminal panel for every run, not just for a compile", async () => {
+    const { unmount } = await mountEvents();
+    const log = renderHook(() => usePipelineLog());
+    useUiStore.getState().setTerminalPanel("closed");
+    act(() => {
+      pushPipelineLog({
+        date: FIXTURE_DATE,
+        host: FIXTURE_HOST,
+        step: "gather",
+        level: "info",
+        message: "line from the previous run",
+        detail: null,
+      });
+    });
+    expect(log.result.current.lines).toHaveLength(1);
+
+    act(() => {
+      emitTauriEvent("run-started", {
+        run_id: "provider_test-1",
+        kind: "provider_test",
+        title: "Test provider",
+        date: FIXTURE_DATE,
+        host: FIXTURE_HOST,
+        pipeline: false,
+      });
+    });
+
+    expect(useUiStore.getState().terminalPanel).toBe("open");
+    expect(log.result.current.lines).toEqual([]);
+
+    log.unmount();
+    unmount();
+  });
+
+  it("lets a compile-family run drive the progress bar and settle it", async () => {
+    const { status, unmount } = await mountEvents();
+
+    act(() => {
+      emitTauriEvent("run-started", {
+        run_id: "regenerate-1",
+        kind: "regenerate",
+        title: "Regenerate standup",
+        date: FIXTURE_DATE,
+        host: FIXTURE_HOST,
+        pipeline: true,
+      });
+    });
+    expect(status()).toMatchObject({
+      state: "gathering",
+      current_date: FIXTURE_DATE,
+      current_host: FIXTURE_HOST,
+      percent: 0,
+    });
+
+    act(() => {
+      emitTauriEvent("run-finished", {
+        run_id: "regenerate-1",
+        kind: "regenerate",
+        ok: true,
+        message: "candidate ready for review",
+        duration_ms: 4200,
+        pipeline: true,
+      });
+    });
+    // Regression guard: without this the "Compile now" button stays disabled
+    // forever, because `gathering` is one of its busy states.
+    expect(status()).toMatchObject({ state: "done", percent: 100, error: null });
+
+    unmount();
+  });
+
+  it("keeps a non-pipeline run out of the pipeline status", async () => {
+    const { status, unmount } = await mountEvents();
+
+    act(() => {
+      emitTauriEvent("pipeline-progress", {
+        date: FIXTURE_DATE,
+        host: FIXTURE_HOST,
+        step: "render_llm",
+        percent: 70,
+      });
+      emitTauriEvent("run-finished", {
+        run_id: "provider_test-1",
+        kind: "provider_test",
+        ok: false,
+        message: "llm: provider timed out",
+        duration_ms: 900,
+        pipeline: false,
+      });
+    });
+
+    expect(status()).toMatchObject({ state: "rendering", percent: 70 });
 
     unmount();
   });

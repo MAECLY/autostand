@@ -17,6 +17,7 @@ Ports the `~/Sync/Github_Dailies` Bash/Python "App Script" to a desktop app with
 - `crates/autostand-core` — domain model, file format, business rules (anti-backdating, accumulate, scrub, redact, deterministic renderer).
 - `crates/autostand-adapters` — `LlmAdapter` trait + 5 providers (Claude, Ollama, OpenAI/Codex, Gemini, Grok) × CLI+API; `DataSource` trait + 8 sources.
 - `crates/autostand-scheduler` — cron, triggers, locks, self-heal.
+- `crates/autostand-runlog` — neutral run-log sink (task-local) + `proc`, the **only** process spawner in the workspace. No `tauri` dependency, so domain crates can log into the Terminal panel.
 - `apps/autostand-app/` — Tauri v2 app (Rust `src-tauri/` + React/Vite `src/`).
 - `brand/` — logo SVG variants, typography, palette.
 - `docs/` — full project documentation (47 files, see `docs/README.md`).
@@ -56,6 +57,8 @@ pnpm --filter autostand-app update @autostand/ui
 - **Commits**: conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `test:`). No coauthor trailers. No `--no-verify`.
 - **Tests**: unit tests in `#[cfg(test)] mod tests { ... }` inside each Rust module; integration in `tests/integration/`; E2E in `tests/e2e/` via Playwright. Hermetic temp HOME for pipeline tests.
 - **Secrets**: NEVER hardcode API keys, tokens, passwords. API keys go in OS keychain (`keyring` crate), never in config JSON, never logged. Secrets redaction runs pre-LLM and pre-write.
+- **Processes**: never call `std::process::Command` / `tokio::process::Command` directly. Use `autostand_runlog::proc::run_process` (or `run_process_piped` for a line-protocol child) so every spawn is visible in the Terminal and the privacy policy stays in one file. Argv, cwd, env, stdin, stdout and stderr are never logged; give `ProcSpec::label` a safe display name.
+- **Runs**: every action that starts work opens a `run_log::Run` and closes it with `Run::settle`. Wrap anything handed to `tokio::spawn` in `autostand_runlog::inherit` — task-locals are not inherited, and an unwrapped task disappears from the Terminal.
 - **Docs**: all design decisions documented in `docs/`. Update docs alongside code.
 
 ## AI providers (5)

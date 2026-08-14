@@ -1,5 +1,5 @@
 /**
- * Typed wrappers over the 28 Tauri IPC commands and the 6 backend events.
+ * Typed wrappers over the 28 Tauri IPC commands and the 8 backend events.
  *
  * This is the only module in the app allowed to import from
  * `@tauri-apps/api` — everything else goes through `tauriApi` and the
@@ -43,6 +43,8 @@ import type {
   RegenerationResolution,
   RemediationOutcome,
   RepoSyncStatus,
+  RunFinishedEvent,
+  RunStartedEvent,
   SchedulerStatus,
   SchedulerTickEvent,
   SettingsPaths,
@@ -186,6 +188,15 @@ export const onPipelineDone = eventHelper<PipelineDoneEvent>("pipeline-done");
 
 export const onPipelineError =
   eventHelper<PipelineErrorEvent>("pipeline-error");
+
+/**
+ * `run-started` / `run-finished` bracket every action that starts work — a
+ * compile, a repo sync, a provider test, a model download. The lines in between
+ * arrive on `pipeline-log`, which is why the terminal viewer needed no change.
+ */
+export const onRunStarted = eventHelper<RunStartedEvent>("run-started");
+
+export const onRunFinished = eventHelper<RunFinishedEvent>("run-finished");
 
 export const onSchedulerTick =
   eventHelper<SchedulerTickEvent>("scheduler-tick");

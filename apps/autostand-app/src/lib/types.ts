@@ -750,3 +750,49 @@ export interface SchedulerTickEvent {
   next_run_at: string;
   source: SchedulerSource;
 }
+
+/**
+ * Every action that starts work. Mirrors `RunKind` in `src-tauri/src/run_log.rs`
+ * — the wire values are that enum's `snake_case` serde names.
+ */
+export type RunKind =
+  | "compile"
+  | "regenerate"
+  | "gather_preview"
+  | "repo_sync"
+  | "repo_setup"
+  | "repo_discovery"
+  | "cloud_sync"
+  | "provider_test"
+  | "provider_health"
+  | "cli_detect"
+  | "model_download"
+  | "model_delete"
+  | "local_runtime"
+  | "dependency_check"
+  | "dependency_remediation"
+  | "scheduler_unit"
+  | "notification";
+
+/** `run-started` — a run opened; the terminal panel clears and opens. */
+export interface RunStartedEvent {
+  /** Correlates with the matching `run-finished`. */
+  run_id: string;
+  kind: RunKind;
+  /** English header for the panel. */
+  title: string;
+  date: string;
+  host: string;
+  /** Whether this run owns `PipelineStatus` (compile-family runs only). */
+  pipeline: boolean;
+}
+
+/** `run-finished` — the run closed, exactly once per `run-started`. */
+export interface RunFinishedEvent {
+  run_id: string;
+  kind: RunKind;
+  ok: boolean;
+  message: string;
+  duration_ms: number;
+  pipeline: boolean;
+}

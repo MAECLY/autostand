@@ -14,6 +14,7 @@ pub mod git_ops;
 pub mod notifications;
 pub mod pipeline_runner;
 pub mod render;
+pub mod run_log;
 pub mod scheduler_runtime;
 pub mod state;
 

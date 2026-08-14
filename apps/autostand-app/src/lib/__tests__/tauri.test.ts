@@ -30,6 +30,8 @@ import {
   onPipelineLog,
   onPipelineProgress,
   onPipelineStarted,
+  onRunFinished,
+  onRunStarted,
   onSchedulerTick,
   tauriApi,
 } from "@/lib/tauri";
@@ -317,11 +319,13 @@ describe("event helpers", () => {
     { name: "pipeline-log", subscribe: onPipelineLog },
     { name: "pipeline-done", subscribe: onPipelineDone },
     { name: "pipeline-error", subscribe: onPipelineError },
+    { name: "run-started", subscribe: onRunStarted },
+    { name: "run-finished", subscribe: onRunFinished },
     { name: "scheduler-tick", subscribe: onSchedulerTick },
   ];
 
-  it("covers all 6 backend events", () => {
-    expect(EVENTS).toHaveLength(6);
+  it("covers all 8 backend events", () => {
+    expect(EVENTS).toHaveLength(8);
   });
 
   it.each(EVENTS)(

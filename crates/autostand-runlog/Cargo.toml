@@ -1,0 +1,25 @@
+[package]
+name = "autostand-runlog"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Terminal-routed run log and the single process spawner for autostand"
+readme = "README.md"
+keywords = ["logging", "subprocess", "observability", "standup"]
+categories = ["development-tools", "command-line-utilities"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = "3"
