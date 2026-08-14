@@ -53,6 +53,12 @@ import {
   useTestProvider,
 } from "@/hooks/use-providers";
 import { toAppError } from "@/lib/error";
+import {
+  SETTINGS_TABS,
+  isSettingsTab,
+  useUiStore,
+  type SettingsTab,
+} from "@/lib/store";
 import type {
   AppConfig,
   LlmProviderConfig,
@@ -448,7 +454,28 @@ function PathsTab() {
 
 // ── Page ──────────────────────────────────────────────────────────────────
 
+/**
+ * Labels for the tab ids owned by the store. A `Record` keyed by
+ * {@link SettingsTab} makes a forgotten label a type error, so the strip and
+ * the remembered tab cannot drift apart.
+ */
+const TAB_LABELS: Record<SettingsTab, string> = {
+  providers: "Providers",
+  "data-sources": "Data Sources",
+  format: "Standup Format",
+  paths: "Paths",
+  sync: "Sync",
+  scheduler: "Scheduler",
+  notifications: "Notifications",
+  "local-models": "Local AI",
+};
+
 function SettingsPage() {
+  // The route unmounts on every navigation away, so the open tab lives in the
+  // UI store instead of Radix's internal state.
+  const settingsTab = useUiStore((state) => state.settingsTab);
+  const setSettingsTab = useUiStore((state) => state.setSettingsTab);
+
   return (
     <div className="flex min-h-0 flex-col gap-6 p-6">
       <header className="min-w-0">
@@ -458,16 +485,18 @@ function SettingsPage() {
         </p>
       </header>
 
-      <Tabs defaultValue="providers">
+      <Tabs
+        value={settingsTab}
+        onValueChange={(value) => {
+          if (isSettingsTab(value)) setSettingsTab(value);
+        }}
+      >
         <TabsList>
-          <TabsTrigger value="providers">Providers</TabsTrigger>
-          <TabsTrigger value="data-sources">Data Sources</TabsTrigger>
-          <TabsTrigger value="format">Standup Format</TabsTrigger>
-          <TabsTrigger value="paths">Paths</TabsTrigger>
-          <TabsTrigger value="sync">Sync</TabsTrigger>
-          <TabsTrigger value="scheduler">Scheduler</TabsTrigger>
-          <TabsTrigger value="notifications">Notifications</TabsTrigger>
-          <TabsTrigger value="local-models">Local AI</TabsTrigger>
+          {SETTINGS_TABS.map((tab) => (
+            <TabsTrigger key={tab} value={tab}>
+              {TAB_LABELS[tab]}
+            </TabsTrigger>
+          ))}
         </TabsList>
 
         <TabsContent value="providers">

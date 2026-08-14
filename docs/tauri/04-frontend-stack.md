@@ -113,7 +113,7 @@ apps/autostand-app/src/
 │   ├── tauri.ts               # invoke wrappers + typed event helpers (only file allowed to call invoke)
 │   ├── types.ts               # shared TS types (mirror Rust serde types)
 │   ├── error.ts               # AppError guards + toast mapping
-│   ├── store.ts               # Zustand UI state (theme, sidebar, selected date)
+│   ├── store.ts               # Zustand UI state (theme, sidebar, selected date, history view, open Settings tab, terminal panel)
 │   └── utils.ts
 ├── test/                      # vitest setup, Tauri mocks, renderWithProviders
 └── styles/
@@ -395,12 +395,18 @@ The app's home route. Shows today's standup preview + a single "Compile now" but
 
 ### Settings (`routes/settings.tsx`)
 
-Tabbed configuration UI. Tabs:
+Tabbed configuration UI. Tabs, in strip order:
 
-1. **Providers** — one `ProviderCard` per LLM provider (`claude`, `ollama`, `openai`, `gemini`, `grok`). Each card shows CLI detect status (`detect_cli`), API key status (`get_api_key_status`), mode dropdown (`CliFirst`/`ApiFallback`/`CliOnly`/`ApiOnly`), model Select from `list_provider_models` (free-text "Custom…" / empty-probe fallback), "Test" button (calls `test_llm_provider` and shows latency). "Store key" opens a dialog that calls `store_api_key`.
+1. **Providers** — one `ProviderCard` per LLM provider (`claude`, `ollama`, `openai`, `gemini`, `grok`). Each card shows CLI detect status (`detect_cli`), API key status (`get_api_key_status`), mode dropdown (`CliFirst`/`ApiFallback`/`CliOnly`/`ApiOnly`), model Select from `list_provider_models` (free-text "Custom…" / empty-probe fallback), "Test" button (calls `test_llm_provider` and shows latency). "Store key" opens a dialog that calls `store_api_key`. Cards are ordered by `llm.provider_order` (reorder = fallback priority) and the sidebar shows `ProviderUsage`.
 2. **Data Sources** — `DataSourceToggle` list bound to `list_data_sources` + `toggle_data_source`. `local_git` is always on (disabled toggle).
-3. **Paths** — `PathInput` for `github_dir`, `dailies_dir`; `validate_paths` runs on blur and shows green/red badges. "Discover repos" button calls `discover_repos` and renders a `RepoInfo` table.
-4. **Scheduler** — cron editor bound to `set_scheduler_schedule`; shows `get_scheduler_status` (source: launchd/systemd/task-scheduler/in-process; next run; last run).
+3. **Standup Format** — `FormatTab`: preset, verbosity and the per-section switches of `config.format`.
+4. **Paths** — `PathInput` for `github_dir`, `dailies_dir`; `validate_paths` runs on blur and shows green/red badges. "Discover repos" button calls `discover_repos` and renders a `RepoInfo` table.
+5. **Sync** — `SyncTab`: cloud folder from `detect_cloud_folders` + `configure_cloud_sync`, and the git mirror from `get_repo_sync_status` + `setup_repo_sync`.
+6. **Scheduler** — `SchedulerForm` bound to `set_scheduler_schedule`; shows `get_scheduler_status` (source: launchd/systemd/task-scheduler/in-process; next run; last run).
+7. **Notifications** — `NotificationsTab`: OS permission via `get_notification_status` / `request_notification_permission`, per-event switches on `config.notifications`, and `send_test_notification`.
+8. **Local AI** — `LocalModelsTab`: `list_local_models` plus download / cancel / delete / select of the bundled GGUF model used as the offline fallback provider.
+
+Tab ids live in `SETTINGS_TABS` (`lib/store.ts`), which also types the labels record the strip renders from. The open tab is `useUiStore.settingsTab`, not Radix's internal state: TanStack Router unmounts the route on every navigation away, so a `defaultValue` would drop the user back on Providers each time they come back.
 
 ### History (`routes/history.tsx`)
 
