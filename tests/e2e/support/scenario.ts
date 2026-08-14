@@ -111,6 +111,10 @@ export function makeAppConfig(): AppConfig {
     render_mode: "Auto",
     llm: {
       preferred_provider: "claude",
+      fallback_enabled: true,
+      provider_order: ["claude", "ollama"],
+      fallback_policy: { retry_rate_limits: true, max_retry_after_secs: 30 },
+      local_runtime_policy: "on_demand",
       providers: [
         {
           id: "claude",
@@ -164,8 +168,18 @@ export function makeAppConfig(): AppConfig {
     // `SyncTab` reads `sync.cloud_root` without a fallback, so the Sync tab
     // cannot render at all when the fixture omits it.
     sync: { cloud_root: null, repo_enabled: false },
-    // `CompileButton` reads this without a fallback, so the dashboard cannot
-    // render at all when the fixture omits it.
+    // `CompileButton` reads both of these without a fallback, so the dashboard
+    // cannot render at all when the fixture omits either.
+    notifications: {
+      enabled: true,
+      low_usage: true,
+      low_usage_threshold_percent: 20,
+      provider_exhausted: true,
+      provider_fallback: true,
+      local_model_downloads: true,
+      standup_complete: true,
+      standup_failed: true,
+    },
     regeneration: { replace_immediately: false },
   };
 }
@@ -342,6 +356,7 @@ export function makeAuditData(overrides: Partial<AuditData> = {}): AuditData {
     provider: "claude",
     model: "claude-sonnet-4",
     fellback: false,
+    provider_attempts: [],
     hash: "sha256:deadbeef",
     accumulated_count: 0,
     ...overrides,
