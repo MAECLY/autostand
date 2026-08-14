@@ -10,6 +10,7 @@
 
 import { useState, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Save } from "lucide-react";
 
 import {
@@ -35,6 +36,7 @@ import {
   TabsTrigger,
 } from "@autostand/ui/components/tabs";
 
+import { CommitScanCard } from "@/components/settings/CommitScanCard";
 import { DataSourceToggle } from "@/components/settings/DataSourceToggle";
 import { FormatTab } from "@/components/settings/FormatTab";
 import { LocalModelsTab } from "@/components/settings/LocalModelsTab";
@@ -44,9 +46,11 @@ import { ProviderCard } from "@/components/settings/ProviderCard";
 import { ProviderUsage } from "@/components/settings/ProviderUsage";
 import { RepoTable } from "@/components/settings/RepoTable";
 import { SchedulerForm } from "@/components/settings/SchedulerForm";
+import { StandupReadinessAlert } from "@/components/settings/StandupReadinessAlert";
 import { SyncTab } from "@/components/settings/SyncTab";
 import { useConfig, useSetConfig } from "@/hooks/use-config";
 import { useDataSources } from "@/hooks/use-data-sources";
+import { standupReadinessKey } from "@/hooks/use-readiness";
 import {
   useLlmProviders,
   useStoreApiKey,
@@ -367,6 +371,7 @@ interface PathDraft {
 function PathsTab() {
   const config = useConfig();
   const setConfig = useSetConfig();
+  const queryClient = useQueryClient();
   // `null` means "no local edit yet", so the fields track the loaded config
   // until the user types — no effect needed to resync after a save.
   const [draft, setDraft] = useState<PathDraft | null>(null);
@@ -396,8 +401,14 @@ function PathsTab() {
     if (!dirty) return;
     setConfig.mutate(
       { ...current, ...value },
-      // Drop the draft so the inputs follow the reloaded config again.
-      { onSuccess: () => setDraft(null) },
+      {
+        onSuccess: () => {
+          // Drop the draft so the inputs follow the reloaded config again.
+          setDraft(null);
+          // `github_dir` is one of the three inputs the readiness probe reads.
+          void queryClient.invalidateQueries({ queryKey: standupReadinessKey });
+        },
+      },
     );
   }
 
@@ -443,6 +454,8 @@ function PathsTab() {
         </div>
       </Section>
 
+      <CommitScanCard />
+
       <Card>
         <CardContent className="pt-6">
           <RepoTable />
@@ -484,6 +497,11 @@ function SettingsPage() {
           Providers, data sources, paths, cloud sync and the compile schedule.
         </p>
       </header>
+
+      {/* Above the tab strip on purpose: a cold-start install is missing the
+          inputs Local Git needs, and that has to be visible from whichever tab
+          the store reopened, not only from Paths. */}
+      <StandupReadinessAlert onFix={() => setSettingsTab("paths")} />
 
       <Tabs
         value={settingsTab}
