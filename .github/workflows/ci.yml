@@ -5,6 +5,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The heavy suites are opt-in. Playwright downloads a browser and boots a Vite
+  # server; the live matrix spends real API quota against real provider keys.
+  # Neither belongs on every push -- run them from the Actions tab when a change
+  # actually warrants it.
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Also run the Playwright E2E suite"
+        type: boolean
+        default: false
+      run_live:
+        description: "Also run the live provider x preset matrix (spends API quota)"
+        type: boolean
+        default: false
 
 # Read-only: CI never publishes anything. Releases live in release.yml.
 permissions:
@@ -171,6 +185,7 @@ jobs:
 
   e2e:
     name: E2E (Playwright)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_e2e
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -244,6 +259,7 @@ jobs:
 
   live-e2e:
     name: Live provider × preset
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
