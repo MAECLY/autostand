@@ -245,11 +245,50 @@ export type ProviderAvailability =
   | "unavailable"
   | "unknown";
 
+/** Whether a resource fills a meter (`consumption`) or drains (`balance`). */
+export type ResourceKind = "consumption" | "balance";
+
+/** Unit the raw scalars on a {@link UsageWindow} are expressed in. */
+export type UsageUnit =
+  | "percent"
+  | "usd"
+  | "credits"
+  | "requests"
+  | "tokens"
+  | "count";
+
+/** Burn-rate projection for a quota window. Mirrors `autostand_core::pace::Pace`. */
+export type Pace = "ahead" | "on_track" | "behind";
+
+/**
+ * One provider-defined quota window.
+ *
+ * Every field beyond the original four is optional: the backend marks them
+ * `#[serde(default)]` so snapshots cached by an older build still load, and
+ * existing consumers keep compiling untouched.
+ *
+ * `null`/absent means the provider did not report the field. It never means
+ * zero — rendering a missing percentage as `0%` is the one thing this contract
+ * exists to prevent.
+ */
 export interface UsageWindow {
   id: string;
   used_percent: number | null;
   remaining_percent: number | null;
   resets_at: string | null;
+  kind?: ResourceKind | null;
+  unit?: UsageUnit | null;
+  /** Raw consumed amount, in `unit`. */
+  used?: number | null;
+  /** Raw cap, in `unit`. */
+  limit?: number | null;
+  /** Raw remaining amount, in `unit`, for `balance` resources. */
+  available?: number | null;
+  /** Window length in milliseconds. */
+  period_duration_ms?: number | null;
+  /** Provider-supplied human label, e.g. a model-scoped limit name. */
+  label?: string | null;
+  pace?: Pace | null;
 }
 
 export interface ProviderHealth {
@@ -259,6 +298,12 @@ export interface ProviderHealth {
   windows: UsageWindow[];
   reason: string | null;
   checked_at: string;
+  /** Subscription tier as the provider names it (`"Max 20x"`, `"Pro 20x"`). */
+  plan?: string | null;
+  /** True when this snapshot was served from cache after a failed refresh. */
+  stale?: boolean;
+  /** Non-fatal notice shown beside the provider name. */
+  notice?: string | null;
 }
 
 export type LocalModelStatus =

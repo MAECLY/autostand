@@ -16,6 +16,10 @@
 
 use serde::{Deserialize, Serialize};
 
+// Re-exported rather than redefined: the burn-rate vocabulary already lives in
+// the domain crate, and two copies would drift.
+pub use autostand_core::pace::Pace;
+
 use crate::notifications::NotificationConfig;
 
 // ── AppConfig + nested config ─────────────────────────────────────────────
@@ -510,8 +514,45 @@ pub enum ProviderAvailability {
     Unknown,
 }
 
+/// What a quota resource measures.
+///
+/// A meter and a countdown are not the same shape: `Consumption` fills up
+/// toward a limit, `Balance` drains toward zero. Keeping them apart stops the
+/// UI from rendering "821 credits left" as if it were "821% used".
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    /// Fills a meter: `used` of `limit`.
+    Consumption,
+    /// Counts down: `available` remaining.
+    Balance,
+}
+
+/// Unit the raw scalars on a [`UsageWindow`] are expressed in.
+///
+/// The window carries the unit and the UI formats at the display edge, so no
+/// consumer has to re-parse a pre-formatted string to learn what a number means.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageUnit {
+    Percent,
+    Usd,
+    Credits,
+    Requests,
+    Tokens,
+    Count,
+}
+
 /// One provider-defined quota window such as Codex's five-hour or weekly limit.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// Every field added after the original three-field shape is `#[serde(default)]`
+/// so a snapshot cached by an older build still deserializes instead of
+/// discarding the whole cache file.
+///
+/// A field the provider did not send stays `None`. Nothing here is ever
+/// defaulted to `0` — "no data" and "zero" are different facts and the UI says
+/// so.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct UsageWindow {
     /// Stable provider-defined label (`five_hour`, `weekly`, ...).
     pub id: String,
@@ -521,10 +562,40 @@ pub struct UsageWindow {
     pub remaining_percent: Option<f64>,
     /// RFC 3339 reset timestamp, when supplied by the provider.
     pub resets_at: Option<String>,
+
+    /// Whether this window fills a meter or drains a balance.
+    #[serde(default)]
+    pub kind: Option<ResourceKind>,
+    /// Unit of [`Self::used`], [`Self::limit`] and [`Self::available`].
+    #[serde(default)]
+    pub unit: Option<UsageUnit>,
+    /// Raw consumed amount in [`Self::unit`].
+    #[serde(default)]
+    pub used: Option<f64>,
+    /// Raw cap in [`Self::unit`], when the provider states one.
+    #[serde(default)]
+    pub limit: Option<f64>,
+    /// Raw remaining amount in [`Self::unit`], for `Balance` resources.
+    #[serde(default)]
+    pub available: Option<f64>,
+    /// Window length in milliseconds, when the provider reports the period.
+    #[serde(default)]
+    pub period_duration_ms: Option<i64>,
+    /// Human label when the provider names the window itself (e.g. a model-scoped limit).
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Burn-rate projection for this window; `None` when too little of the
+    /// window has elapsed to project honestly.
+    #[serde(default)]
+    pub pace: Option<Pace>,
 }
 
 /// Secret-free provider health returned by Settings IPC commands.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// Nothing on this struct ever carries a token, a response header or a response
+/// body: [`Self::reason`] is a fixed vocabulary of lowercase codes and
+/// [`Self::notice`] is app-authored copy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProviderHealth {
     pub provider: String,
     pub availability: ProviderAvailability,
@@ -535,6 +606,18 @@ pub struct ProviderHealth {
     pub reason: Option<String>,
     /// RFC 3339 observation timestamp.
     pub checked_at: String,
+
+    /// Subscription tier as the provider names it (`"Max 20x"`, `"Pro 20x"`),
+    /// which is the context a bare percentage lacks.
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// True when this snapshot was served from cache after a failed refresh.
+    #[serde(default)]
+    pub stale: bool,
+    /// Non-fatal notice shown beside the provider name. Never fatal: the
+    /// provider still works, only the meters are degraded.
+    #[serde(default)]
+    pub notice: Option<String>,
 }
 
 // ── Compile + pipeline ───────────────────────────────────────────────────
