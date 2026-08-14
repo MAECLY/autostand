@@ -169,8 +169,12 @@ jobs:
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_SERVER=OFF \
             -DLLAMA_CURL=OFF
+          # llama-completion, NOT llama-cli: tools/CMakeLists.txt only adds the
+          # cli subdirectory under `if (LLAMA_BUILD_SERVER)`, which is OFF here,
+          # so that target does not exist and the build fails with no project.
+          # It is also the binary the sidecar prefers at runtime.
           cmake --build "$RUNNER_TEMP/llama-build" --config Release \
-            --target llama-cli --parallel 2
+            --target llama-completion --parallel 2
           cargo build --release --target "${{ matrix.target }}" \
             -p autostand-local-llm
 
@@ -180,9 +184,13 @@ jobs:
           mkdir -p "$binary_dir"
           cp "target/${{ matrix.target }}/release/autostand-local-llm${extension}" \
             "$binary_dir/autostand-local-llm-${{ matrix.target }}${extension}"
-          llama_cli="$(find "$RUNNER_TEMP/llama-build" -type f -name "llama-cli${extension}" | head -1)"
-          test -n "$llama_cli"
-          cp "$llama_cli" "$binary_dir/llama-cli-${{ matrix.target }}${extension}"
+          # The NAME is load-bearing, not cosmetic: the sidecar decides whether to
+          # pass --log-disable from the binary's file stem, and llama-completion
+          # writes generated tokens through that same channel. Shipping it under
+          # the name llama-cli would silence the model and produce empty standups.
+          llama_bin="$(find "$RUNNER_TEMP/llama-build" -type f -name "llama-completion${extension}" | head -1)"
+          test -n "$llama_bin"
+          cp "$llama_bin" "$binary_dir/llama-completion-${{ matrix.target }}${extension}"
 
       - uses: tauri-apps/tauri-action@v0
         env:

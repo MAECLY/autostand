@@ -46,7 +46,7 @@ Before generation, the adapter applies the catalog model's Gemma or Qwen chat te
 
 Runtime lookup expects `autostand-local-llm` plus either llama.cpp's `llama-completion` or the bundled `llama-cli` beside the application executable or on `PATH`. A configured `ProviderConfig.cli_path` may override only the sidecar path; the provider never falls back to an HTTP API.
 
-Release builds use `tauri.release.conf.json`: the release workflow compiles the Rust sidecar for the exact target, builds the pinned llama.cpp `llama-cli`, copies both into Tauri's target-suffixed `binaries/` layout, and enables them as `externalBin` entries. Ordinary source/development runs do not invoke that release-only build step; place both binaries as siblings (or put the sidecar on `PATH` and set `AUTOSTAND_LLAMA_CLI`).
+Release builds use `tauri.release.conf.json`: the release workflow compiles the Rust sidecar for the exact target, builds the pinned llama.cpp `llama-completion`, copies both into Tauri's target-suffixed `binaries/` layout, and enables them as `externalBin` entries. It is `llama-completion` and not `llama-cli` for two reasons: upstream only adds the `cli` subdirectory under `LLAMA_BUILD_SERVER`, which the release build turns off, so that target does not exist; and the sidecar decides whether to pass `--log-disable` from the binary's file stem, so shipping the completion program under the other name would silence the very output it writes. Ordinary source/development runs do not invoke that release-only build step; place both binaries as siblings (or put the sidecar on `PATH` and set `AUTOSTAND_LLAMA_CLI`).
 
 ## Requirements checklist
 

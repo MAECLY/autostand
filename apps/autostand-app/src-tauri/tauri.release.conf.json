@@ -3,7 +3,7 @@
   "bundle": {
     "externalBin": [
       "binaries/autostand-local-llm",
-      "binaries/llama-cli"
+      "binaries/llama-completion"
     ],
     "targets": [
       "dmg",
