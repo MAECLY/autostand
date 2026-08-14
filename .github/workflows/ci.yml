@@ -5,6 +5,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The heavy suites are opt-in. Playwright downloads a browser and boots a Vite
+  # server; the live matrix spends real API quota against real provider keys.
+  # Neither belongs on every push -- run them from the Actions tab when a change
+  # actually warrants it.
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Also run the Playwright E2E suite"
+        type: boolean
+        default: false
+      run_live:
+        description: "Also run the live provider x preset matrix (spends API quota)"
+        type: boolean
+        default: false
 
 # Read-only: CI never publishes anything. Releases live in release.yml.
 permissions:
@@ -20,10 +34,14 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  rust:
-    name: Rust (fmt, clippy, test, audit)
+  # Split from the test job so the two compiles run side by side rather than in
+  # sequence. They do duplicate dependency compilation and each keeps its own
+  # rust-cache entry -- Swatinem/rust-cache keys per job -- which is the price of
+  # the wall-clock win. Worth it here because a cold Tauri build is minutes.
+  rust-lint:
+    name: Rust (fmt, clippy)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -72,11 +90,53 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  rust-test:
+    name: Rust (test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same system dependencies as rust-lint; see that job for why each one is
+      # here and why libssl-dev and libxdo-dev deliberately are not. GitHub
+      # Actions does not support YAML anchors, so the step is repeated verbatim.
+      - name: Install Tauri v2 Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            wget \
+            file \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: cargo test
         run: cargo test --workspace
 
-      # cargo-audit is installed into ~/.cargo/bin, which Swatinem/rust-cache
-      # restores and saves, so this is a near no-op once the cache is warm.
+  # No workspace compile and no system dependencies: `cargo audit` reads
+  # Cargo.lock and queries the advisory database. Only cargo-audit itself is
+  # built, and rust-cache keeps that build across runs.
+  rust-audit:
+    name: Rust (audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version '^0.22'
 
@@ -115,34 +175,40 @@ jobs:
           cache: pnpm
 
       # apps/autostand-app depends on @autostand/ui, which lives in the PRIVATE
-      # repo MAECLY/autostand-ui and is installed straight from git. The built-in
-      # GITHUB_TOKEN is scoped to THIS repository and cannot clone another one,
-      # so a token with read access to autostand-ui has to be supplied as a
-      # repository secret named AUTOSTAND_UI_TOKEN -- a fine-grained PAT with
-      # Contents: Read on MAECLY/autostand-ui, or a GitHub App installation
-      # token. This is a real new operational cost of the three-repo split; see
-      # docs/dev/04-ci-cd.md. Without the secret `pnpm install` fails inside git
-      # with a bare authentication error, so the step checks first and says what
-      # is missing.
+      # repo MAECLY/autostand-ui. pnpm-lock.yaml pins it over SSH
+      # (git+ssh://git@github.com/MAECLY/autostand-ui.git), and the built-in
+      # GITHUB_TOKEN is scoped to THIS repository and cannot read another one.
       #
-      # The rewrite covers all three spellings on purpose: pnpm pinned the
-      # dependency as `git@github.com:MAECLY/autostand-ui.git` (private repos
-      # resolve over SSH, not to a codeload tarball), and a future re-resolve
-      # could emit `ssh://` or `https://` instead.
+      # The credential is a READ-ONLY DEPLOY KEY on autostand-ui, stored here as
+      # AUTOSTAND_UI_DEPLOY_KEY. Deliberately not a PAT: a deploy key is scoped
+      # to one repository, carries no write access, is not tied to a person's
+      # account, and is revoked from that repo's Deploy keys page the moment it
+      # is not wanted.
       - name: Authenticate to MAECLY/autostand-ui
         env:
-          AUTOSTAND_UI_TOKEN: ${{ secrets.AUTOSTAND_UI_TOKEN }}
+          AUTOSTAND_UI_DEPLOY_KEY: ${{ secrets.AUTOSTAND_UI_DEPLOY_KEY }}
         run: |
-          if [ -z "$AUTOSTAND_UI_TOKEN" ]; then
-            echo "::error::secret AUTOSTAND_UI_TOKEN is not set. @autostand/ui is a private git dependency and GITHUB_TOKEN cannot read another repository. Create a fine-grained PAT with Contents: Read on MAECLY/autostand-ui and add it as a repository secret named AUTOSTAND_UI_TOKEN."
+          if [ -z "$AUTOSTAND_UI_DEPLOY_KEY" ]; then
+            echo "::error::secret AUTOSTAND_UI_DEPLOY_KEY is not set. @autostand/ui is a private git dependency pinned over SSH, and GITHUB_TOKEN cannot read another repository. Add a read-only deploy key for MAECLY/autostand-ui as a repository secret named AUTOSTAND_UI_DEPLOY_KEY."
             exit 1
           fi
-          rewrite="https://x-access-token:$AUTOSTAND_UI_TOKEN@github.com/"
-          # --add, not plain set: insteadOf is multi-valued and a second plain
-          # `git config` would replace the first rather than append to it.
-          git config --global --add url."$rewrite".insteadOf "git@github.com:"
-          git config --global --add url."$rewrite".insteadOf "ssh://git@github.com/"
-          git config --global --add url."$rewrite".insteadOf "https://github.com/"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUTOSTAND_UI_DEPLOY_KEY" > ~/.ssh/autostand_ui
+          chmod 600 ~/.ssh/autostand_ui
+          # Trust on first use is the usual CI compromise; pinning the host key
+          # instead would break every run the day GitHub rotates it.
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # IdentitiesOnly: a runner carrying any other agent identity would
+          # otherwise offer that one first and be refused before this key is tried.
+          {
+            echo "Host github.com"
+            echo "  HostName github.com"
+            echo "  User git"
+            echo "  IdentityFile ~/.ssh/autostand_ui"
+            echo "  IdentitiesOnly yes"
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -165,6 +231,7 @@ jobs:
 
   e2e:
     name: E2E (Playwright)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_e2e
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -177,21 +244,41 @@ jobs:
           node-version: "22"
           cache: pnpm
 
-      # Same private-dependency problem as the frontend job; see the comment there.
+      # apps/autostand-app depends on @autostand/ui, which lives in the PRIVATE
+      # repo MAECLY/autostand-ui. pnpm-lock.yaml pins it over SSH
+      # (git+ssh://git@github.com/MAECLY/autostand-ui.git), and the built-in
+      # GITHUB_TOKEN is scoped to THIS repository and cannot read another one.
+      #
+      # The credential is a READ-ONLY DEPLOY KEY on autostand-ui, stored here as
+      # AUTOSTAND_UI_DEPLOY_KEY. Deliberately not a PAT: a deploy key is scoped
+      # to one repository, carries no write access, is not tied to a person's
+      # account, and is revoked from that repo's Deploy keys page the moment it
+      # is not wanted.
       - name: Authenticate to MAECLY/autostand-ui
         env:
-          AUTOSTAND_UI_TOKEN: ${{ secrets.AUTOSTAND_UI_TOKEN }}
+          AUTOSTAND_UI_DEPLOY_KEY: ${{ secrets.AUTOSTAND_UI_DEPLOY_KEY }}
         run: |
-          if [ -z "$AUTOSTAND_UI_TOKEN" ]; then
-            echo "::error::secret AUTOSTAND_UI_TOKEN is not set. @autostand/ui is a private git dependency and GITHUB_TOKEN cannot read another repository. Create a fine-grained PAT with Contents: Read on MAECLY/autostand-ui and add it as a repository secret named AUTOSTAND_UI_TOKEN."
+          if [ -z "$AUTOSTAND_UI_DEPLOY_KEY" ]; then
+            echo "::error::secret AUTOSTAND_UI_DEPLOY_KEY is not set. @autostand/ui is a private git dependency pinned over SSH, and GITHUB_TOKEN cannot read another repository. Add a read-only deploy key for MAECLY/autostand-ui as a repository secret named AUTOSTAND_UI_DEPLOY_KEY."
             exit 1
           fi
-          rewrite="https://x-access-token:$AUTOSTAND_UI_TOKEN@github.com/"
-          # --add, not plain set: insteadOf is multi-valued and a second plain
-          # `git config` would replace the first rather than append to it.
-          git config --global --add url."$rewrite".insteadOf "git@github.com:"
-          git config --global --add url."$rewrite".insteadOf "ssh://git@github.com/"
-          git config --global --add url."$rewrite".insteadOf "https://github.com/"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUTOSTAND_UI_DEPLOY_KEY" > ~/.ssh/autostand_ui
+          chmod 600 ~/.ssh/autostand_ui
+          # Trust on first use is the usual CI compromise; pinning the host key
+          # instead would break every run the day GitHub rotates it.
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # IdentitiesOnly: a runner carrying any other agent identity would
+          # otherwise offer that one first and be refused before this key is tried.
+          {
+            echo "Host github.com"
+            echo "  HostName github.com"
+            echo "  User git"
+            echo "  IdentityFile ~/.ssh/autostand_ui"
+            echo "  IdentitiesOnly yes"
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -218,6 +305,7 @@ jobs:
 
   live-e2e:
     name: Live provider × preset
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

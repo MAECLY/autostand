@@ -228,8 +228,7 @@ async fn run_official_headless(
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_millis())
     ));
     std::fs::write(&path, prompt).map_err(|err| LlmError::CliExitError {
         code: -1,

@@ -21,6 +21,8 @@ import type {
   PipelineErrorEvent,
   PipelineProgressEvent,
   PipelineStartedEvent,
+  RunFinishedEvent,
+  RunStartedEvent,
 } from "../../../apps/autostand-app/src/lib/types";
 import type { BackendState, Scenario } from "./scenario";
 
@@ -90,6 +92,77 @@ export function installMockBackend(scenario: Scenario): void {
 
   function findProvider(id: string) {
     return state.providers.find((provider) => provider.id === id);
+  }
+
+  // ── filing dates ────────────────────────────────────────────────────────
+  //
+  // A working copy of `autostand_core::dates`, because `get_filing_target` is
+  // the one command whose *answer* the dashboard renders as a fact rather than
+  // passing through. A lookup table would let a spec assert a target the rule
+  // never produces, so the mock derives it the same way the backend does.
+  // Everything is UTC: the Playwright config pins the browser to it.
+
+  const DAY_MS = 86_400_000;
+
+  function parseIso(iso: string): Date {
+    const [year, month, day] = iso.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day));
+  }
+
+  function toIso(date: Date): string {
+    return date.toISOString().slice(0, 10);
+  }
+
+  function addDays(date: Date, days: number): Date {
+    return new Date(date.getTime() + days * DAY_MS);
+  }
+
+  function isWeekend(date: Date): boolean {
+    const weekday = date.getUTCDay();
+    return weekday === 0 || weekday === 6;
+  }
+
+  /** Fri +3, Sat +2, Sun +1, otherwise +1. */
+  function nextBusinessDay(date: Date): Date {
+    const weekday = date.getUTCDay();
+    if (weekday === 5) return addDays(date, 3);
+    if (weekday === 6) return addDays(date, 2);
+    return addDays(date, 1);
+  }
+
+  /** The latest weekday strictly before `date`. */
+  function prevBusinessDayBefore(date: Date): Date {
+    let cursor = addDays(date, -1);
+    while (isWeekend(cursor)) cursor = addDays(cursor, -1);
+    return cursor;
+  }
+
+  function filingDateFor(workDay: Date, mode: AppConfig["dates"]["archive_mode"]): Date {
+    if (mode === "next_business_day") return nextBusinessDay(workDay);
+    return isWeekend(workDay) ? nextBusinessDay(workDay) : workDay;
+  }
+
+  function makeFilingTarget(workDayIso: string) {
+    const mode = state.config.dates?.archive_mode ?? "next_business_day";
+    const workDay = parseIso(workDayIso);
+    const filing = filingDateFor(workDay, mode);
+    const today = parseIso(toIso(new Date()));
+
+    const start =
+      mode === "next_business_day"
+        ? prevBusinessDayBefore(filing)
+        : addDays(prevBusinessDayBefore(filing), 1);
+    const lastClaimable =
+      mode === "next_business_day" ? addDays(filing, -1) : filing;
+    const end = lastClaimable.getTime() < today.getTime() ? lastClaimable : today;
+
+    return {
+      work_day: toIso(workDay),
+      filing_date: toIso(filing),
+      archive_mode: mode,
+      window: { range_start: toIso(start), range_end: toIso(end) },
+      window_empty: end.getTime() < start.getTime(),
+    };
   }
 
   function dispatch(command: string, args: Record<string, unknown>): unknown {
@@ -211,6 +284,12 @@ export function installMockBackend(scenario: Scenario): void {
 
       case "get_pipeline_status":
         return state.pipelineStatus;
+      case "get_filing_target":
+        return makeFilingTarget(
+          args.date === null || args.date === undefined
+            ? toIso(new Date())
+            : String(args.date),
+        );
       case "preview_gather":
         return state.gatherPreview;
 
@@ -408,6 +487,34 @@ export function installMockBackend(scenario: Scenario): void {
         current_date: failure.date,
         step: failure.step,
         error: failure.message,
+      };
+    } else if (name === "run-started") {
+      // A regeneration never emits `pipeline-started`/`pipeline-done` — it calls
+      // `compile_one` directly — so its own bracket is what opens and closes the
+      // status. `pipeline: false` runs (a provider test, a model download) must
+      // leave the dashboard's progress bar alone, the same rule the frontend
+      // applies in `usePipelineEvents`.
+      const started = payload as RunStartedEvent;
+      if (!started.pipeline) return;
+      state.pipelineStatus = {
+        ...status,
+        state: "gathering",
+        current_date: started.date,
+        current_host: started.host,
+        step: null,
+        percent: 0,
+        error: null,
+      };
+    } else if (name === "run-finished") {
+      const finished = payload as RunFinishedEvent;
+      if (!finished.pipeline) return;
+      state.pipelineStatus = {
+        ...status,
+        state: finished.ok ? "done" : "error",
+        step: null,
+        percent: 100,
+        last_run_at: new Date().toISOString(),
+        error: finished.ok ? null : finished.message,
       };
     }
   }

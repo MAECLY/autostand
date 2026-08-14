@@ -33,11 +33,31 @@ stateDiagram-v2
 | `Absent` | File does not exist on disk. | First successful `compile_file(F)`. |
 | `Skeleton` | File created with title + `## AUTO` + `## MANUAL` headers. | First host's AUTO block written. |
 | `Partial` | At least one expected host's AUTO is populated; others empty. | All expected hosts populated. |
-| `Complete` | All hosts in the expected set have non-empty AUTO. | Day rolls over (`next_business_day` advances). |
-| `Frozen` | `F < next_business_day(TODAY)` at start of run. | — (terminal). |
+| `Complete` | All hosts in the expected set have non-empty AUTO. | Day rolls over (the filing date advances). |
+| `Frozen` | `F < ArchiveMode::filing_date(TODAY)` at start of run. | — (terminal). |
 
 "Expected hosts" is the configured set of machine slugs that share the `dailies/`
 repo. A single-machine setup has exactly one expected host.
+
+### Which `F` is "today's file"
+
+The file being written is **not** the calendar date. It is
+`ArchiveMode::filing_date(TODAY)`, where the policy comes from
+`AppConfig.dates.archive_mode`:
+
+| Policy | `F` for work done on `D` | Weekend |
+| --- | --- | --- |
+| `next_business_day` (default, App Script) | `next_business_day(D)` | Fri, Sat and Sun all file into Monday |
+| `same_day` | `D` itself | Sat and Sun file into Monday |
+
+Under the default policy, a Thursday's run writes `<Friday>.md`. Anything in the
+UI or in this document that says "today's standup" means that file, not
+`TODAY.md` — conflating the two is what produced a machine holding
+`2026-08-13.md` with no `2026-08-14.md`.
+
+The rollover in the diagram above therefore fires when the *filing date*
+advances, which under `next_business_day` happens once at the end of Friday and
+covers the whole weekend at once.
 
 ---
 
@@ -266,7 +286,12 @@ stateDiagram-v2
 | `Locked` | `mkdir` lock + PID. | — |
 | `Synced` | `git pull --rebase --autostash`. | Pull conflict → `Failed`, abort run, leave repo for manual fix. |
 | `CompilingToday` | `compile_file(F_TODAY)` full pipeline. | Any step error → `Failed`. |
-| `CompilingPrev` | `compile_file(F_PREV)` if not frozen. | Any step error → `Failed`. |
+| `CompilingPrev` | `compile_file(F_PREV)` if not frozen **and** `F_PREV != F_TODAY`. | Any step error → `Failed`. |
+
+`F_PREV == F_TODAY` is legal rather than degenerate: under `next_business_day` a
+weekend run is still filling Monday's file, and there is no rolled-over day
+behind it. `CompilingPrev` is skipped entirely in that case — see
+`docs/specs/pipeline.md` § 2.
 | `Committing` | `git add` + `git commit` (no coauthor). | Conflict markers in any staged file → `Failed`, skip commit. |
 | `Pushed` | `git push`. | Non-fast-forward → `Failed` (next run re-syncs). |
 | `Complete` | Release lock. | — |

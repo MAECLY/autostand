@@ -4,15 +4,7 @@
  */
 
 import { Link } from "@tanstack/react-router";
-import {
-  Bug,
-  Check,
-  History,
-  LayoutDashboard,
-  Settings,
-  ShieldCheck,
-  type LucideIcon,
-} from "lucide-react";
+import { Check } from "lucide-react";
 
 import {
   Tooltip,
@@ -21,23 +13,9 @@ import {
   TooltipTrigger,
 } from "@autostand/ui/components/tooltip";
 
+import { visibleNavItems } from "@/lib/nav";
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
-
-interface NavItem {
-  /** Must stay a literal union so TanStack Router can type-check the link. */
-  readonly to: "/" | "/history" | "/audit" | "/debug" | "/settings";
-  readonly label: string;
-  readonly icon: LucideIcon;
-}
-
-const NAV_ITEMS: readonly NavItem[] = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/history", label: "History", icon: History },
-  { to: "/audit", label: "Audit", icon: ShieldCheck },
-  { to: "/debug", label: "Debug", icon: Bug },
-  { to: "/settings", label: "Settings", icon: Settings },
-];
 
 const ITEM_BASE =
   "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -46,6 +24,9 @@ const ITEM_ACTIVE = "bg-muted text-primary hover:text-primary";
 
 export function Sidebar() {
   const collapsed = useUiStore((state) => state.sidebarCollapsed);
+  const showAuditNav = useUiStore((state) => state.showAuditNav);
+  const showDebugNav = useUiStore((state) => state.showDebugNav);
+  const items = visibleNavItems({ showAuditNav, showDebugNav });
 
   return (
     <aside
@@ -80,7 +61,7 @@ export function Sidebar() {
           aria-label="Main"
           className={cn("flex flex-1 flex-col gap-1 py-3", collapsed ? "px-2" : "px-3")}
         >
-          {NAV_ITEMS.map((item) => {
+          {items.map((item) => {
             const link = (
               <Link
                 key={item.to}

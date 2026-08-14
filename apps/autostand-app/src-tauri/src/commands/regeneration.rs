@@ -18,7 +18,8 @@ use autostand_scheduler::lock;
 use autostand_scheduler::triggers::TriggerSource;
 
 use super::types::{
-    CompileStatus, RegenerationApplied, RegenerationPreview, RegenerationResolution, RenderUsed,
+    AppConfig, CompileStatus, RegenerationApplied, RegenerationPreview, RegenerationResolution,
+    RenderUsed,
 };
 use crate::error::AppError;
 use crate::pipeline_runner::{CompilePurpose, RunEnv};
@@ -74,8 +75,10 @@ pub async fn preview_regeneration(
     app_handle: AppHandle,
     date: Option<String>,
 ) -> Result<RegenerationPreview, AppError> {
-    let date = resolve_date(date.as_deref())?;
+    // Config first: with no explicit date, the default target depends on the
+    // configured filing policy, so the env has to exist before the date does.
     let env = RunEnv::load(Some(&app_handle))?;
+    let date = resolve_date(date.as_deref(), &env.config)?;
     let run = Run::open_for(
         &app_handle,
         RunKind::Regenerate,
@@ -217,7 +220,7 @@ async fn apply_resolution(
     let pending = read_pending(&env.state_dir, &token)?;
     validate_pending(&pending, &env)?;
 
-    let date = resolve_date(Some(&pending.date))?;
+    let date = resolve_date(Some(&pending.date), &env.config)?;
     let file_path = env.file_path(date);
     let current_bytes = read_or_empty(&file_path)?;
 
@@ -249,7 +252,7 @@ async fn apply_resolution(
     validate_auto_body(&selected)?;
     let selected = autostand_core::redact::redact(selected.trim());
     std::fs::create_dir_all(&env.dailies_dir)?;
-    apply_auto(&file_path, &env.host, date, &selected)?;
+    apply_auto(&file_path, &env.host, date, &selected, &env.config)?;
 
     if let Some(audit_json) = pending.audit_json.as_deref() {
         if let Err(error) = persist_resolved_audit(
@@ -304,16 +307,18 @@ async fn apply_resolution(
     })
 }
 
-fn resolve_date(value: Option<&str>) -> Result<NaiveDate, AppError> {
+fn resolve_date(value: Option<&str>, config: &AppConfig) -> Result<NaiveDate, AppError> {
     match value {
         Some(value) => NaiveDate::parse_from_str(value, DATE_FORMAT)
             .map_err(|error| AppError::Invalid(format!("invalid date '{value}': {error}"))),
-        None => Ok(
-            crate::pipeline_runner::targets(Local::now().date_naive(), None)
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| Local::now().date_naive()),
-        ),
+        None => Ok(crate::pipeline_runner::targets(
+            Local::now().date_naive(),
+            None,
+            config.dates.archive_mode,
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| Local::now().date_naive())),
     }
 }
 
@@ -448,8 +453,16 @@ fn validate_auto_body(body: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn apply_auto(path: &Path, host: &str, date: NaiveDate, body: &str) -> Result<(), AppError> {
-    let window = autostand_core::dates::compute_window(date);
+fn apply_auto(
+    path: &Path,
+    host: &str,
+    date: NaiveDate,
+    body: &str,
+    config: &AppConfig,
+) -> Result<(), AppError> {
+    // Same window the compile that produced this candidate used, so applying a
+    // merge never rewrites the header with a different range.
+    let window = crate::pipeline_runner::window_for(config, date, Local::now().date_naive());
     autostand_core::fileops::set_auto(
         path,
         host,
@@ -550,6 +563,7 @@ fn restrict_dir(_path: &Path) -> Result<(), AppError> {
 mod tests {
     use super::{
         apply_auto, auto_body, digest, ensure_base_unchanged, validate_auto_body, validate_token,
+        AppConfig,
     };
     use chrono::NaiveDate;
 
@@ -646,7 +660,7 @@ mod tests {
         std::fs::write(&path, original).unwrap();
         let date = NaiveDate::from_ymd_opt(2026, 8, 14).unwrap();
 
-        apply_auto(&path, "mine", date, "- new mine").unwrap();
+        apply_auto(&path, "mine", date, "- new mine", &AppConfig::default()).unwrap();
 
         let result = std::fs::read_to_string(path).unwrap();
         assert!(result.contains("- new mine"));

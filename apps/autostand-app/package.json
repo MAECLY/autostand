@@ -10,9 +10,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint .",
-    "typecheck": "pnpm routes && tsc --noEmit",
+    "typecheck": "pnpm routes && tsc --noEmit && pnpm typecheck:e2e",
     "test": "vitest run --passWithNoTests",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "typecheck:e2e": "tsc --noEmit -p ../../tests/e2e/tsconfig.json"
   },
   "dependencies": {
     "@autostand/ui": "github:MAECLY/autostand-ui#main",

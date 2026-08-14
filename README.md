@@ -67,6 +67,35 @@ pnpm build:web              # the app's web bundle (Vite), the only web surface 
 pnpm build                  # production desktop bundles (tauri build)
 ```
 
+## Blocked by Gatekeeper on macOS?
+
+Released builds are **unsigned**: the codesigning secrets in `release.yml` are
+not configured, so `tauri-action` produces an unsigned bundle. macOS therefore
+quarantines the download and Gatekeeper refuses to launch it, usually reporting
+that the app *"is damaged and can't be opened"* — which is misleading. The
+download is intact; it simply carries no Developer ID signature.
+
+To clear the quarantine flag:
+
+1. Open **Terminal** — press `Cmd + Space`, type `Terminal`, press Enter.
+2. Run:
+
+   ```bash
+   xattr -rd com.apple.quarantine /Applications/autostand.app
+   ```
+
+3. Launch autostand normally.
+
+There is also a GUI path: try to open the app once, then go to **System
+Settings → Privacy & Security** and choose **Open Anyway**. Right-click → Open
+no longer works for this case on recent macOS.
+
+Run this only on a build you fetched from
+[this repository's releases](https://github.com/MAECLY/autostand/releases).
+Stripping the quarantine flag is exactly the check that protects you from a
+tampered download, so it is worth knowing what you are turning off. Once the
+Developer ID secrets are set, notarized builds launch without any of this.
+
 ## Test and lint
 
 ```bash

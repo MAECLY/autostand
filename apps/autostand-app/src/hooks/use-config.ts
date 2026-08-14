@@ -8,6 +8,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { filingTargetKey } from "@/hooks/use-filing-target";
 import { handleInvokeError } from "@/lib/error";
 import { tauriApi } from "@/lib/tauri";
 import type { AppConfig } from "@/lib/types";
@@ -27,9 +28,16 @@ export function useSetConfig() {
 
   return useMutation({
     mutationFn: (config: AppConfig) => tauriApi.setConfig(config),
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success("Settings saved");
-      return queryClient.invalidateQueries({ queryKey: configKey });
+      // `get_filing_target` is computed from `dates.archive_mode` inside the
+      // backend, so React Query cannot see that this write changed its answer.
+      // Without this the Dashboard keeps announcing the file the previous
+      // policy produced — while "Compile now" writes the new one.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: configKey }),
+        queryClient.invalidateQueries({ queryKey: filingTargetKey }),
+      ]);
     },
     onError: (error) => handleInvokeError(error, "Save settings"),
   });

@@ -93,7 +93,7 @@ tree are the synthetic fixtures in `core::redact`'s own tests.
 
 ## F4 — Wiring
 
-- [x] `compute_window(F)` — two-business-day window + date list (`core::dates`)
+- [x] `compute_window(F, mode, today)` — filing-mode window + natural-day list (`core::dates`)
 - [x] `compute_provenance` — FORBIDDEN / COVERED / SKEW (`core::provenance`)
 - [x] Gather orchestration over the enabled data sources, with the 2700s TTL cache (`app::gather`)
 - [x] `anti_regression_guard` — skip when FACTS are empty but the last run had repos
@@ -103,6 +103,11 @@ tree are the synthetic fixtures in `core::redact`'s own tests.
 - [x] `trigger` / `self_heal` / `commit_push` / `git_sync_pull` with the run lock (`app::pipeline_runner`)
 - [x] In-process scheduler runtime emitting `scheduler-tick`, persisted cron
 - [x] `compile_standup`, `compile_all`, `trigger_run_now`, `preview_gather`, `test_llm_provider` backed by real code
+- [x] Filing-date policy (`AppConfig.dates.archive_mode`): Settings → Paths picks it, `get_filing_target`
+      is the one place the UI learns which file a day of work lands in, and the Dashboard names the work
+      day and the destination file separately. The Terminal's step-(a) line and the audit sidecar both
+      record the policy a run used. Regression table for the App Script's rule in
+      `crates/autostand-core/tests/regression_app_script_dates.rs`.
 - [x] `pipeline-done` and `scheduler-tick` events actually emitted
 - [x] End-to-end integration tests over a real temp git repo (`tests/pipeline_e2e.rs`)
 - [x] System scheduler installation (launchd / systemd / Task Scheduler) — **closed in F6**, not F4.

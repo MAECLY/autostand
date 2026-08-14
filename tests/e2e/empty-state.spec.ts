@@ -5,10 +5,13 @@
  * writes the file. That is the normal state every morning, so the dashboard has
  * to tell the user what to do next — and keep telling `not_found` apart from a
  * genuine read failure, which is not something a "Compile now" button fixes.
+ *
+ * The date in the empty state is the **filing** date: the file that does not
+ * exist yet is the one a compile would create, not the calendar day.
  */
 
 import { expect, test } from "./support/fixtures";
-import { makeScenario, TODAY_LABEL } from "./support/scenario";
+import { FILING_DATE_LABEL, makeScenario } from "./support/scenario";
 
 test("shows the informative empty state for a date with no standup file", async ({
   page,
@@ -19,15 +22,16 @@ test("shows the informative empty state for a date with no standup file", async 
   await app.start(scenario);
 
   await expect(
-    page.getByRole("heading", { name: `No standup filed for ${TODAY_LABEL}` }),
+    page.getByRole("heading", { name: `No standup filed for ${FILING_DATE_LABEL}` }),
   ).toBeVisible();
   await expect(
-    page.getByText("Compiling gathers commits, notes and enrichment"),
+    page.getByText("Use Compile now to gather commits, notes and enrichment"),
   ).toBeVisible();
 
-  // The empty state offers the fix, and the shell around it is intact — this is
+  // The empty state names the fix and the header owns it — one "Compile now" on
+  // the page, never a second copy — and the shell around it is intact: this is
   // an empty day, not a broken app.
-  await expect(page.getByRole("button", { name: "Compile now" })).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Compile now" })).toHaveCount(1);
   await expect(
     page.getByRole("heading", { name: "Could not read today's standup" }),
   ).toHaveCount(0);
@@ -54,7 +58,7 @@ test("distinguishes a real read failure from an empty day", async ({
     page.getByText("permission denied reading the dailies directory"),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: `No standup filed for ${TODAY_LABEL}` }),
+    page.getByRole("heading", { name: `No standup filed for ${FILING_DATE_LABEL}` }),
   ).toHaveCount(0);
 });
 

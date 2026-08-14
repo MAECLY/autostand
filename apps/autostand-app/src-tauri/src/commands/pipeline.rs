@@ -14,7 +14,9 @@ use tauri::{AppHandle, State};
 
 use autostand_scheduler::triggers::TriggerSource;
 
-use crate::commands::types::{CompileResult, GatherPreview, LastTrigger, SchedulerStatus};
+use crate::commands::types::{
+    CompileResult, FilingTarget, GatherPreview, LastTrigger, SchedulerStatus,
+};
 use crate::error::AppError;
 use crate::pipeline_runner;
 use crate::state::AppState;
@@ -100,6 +102,31 @@ pub async fn trigger_run_now(
         pipeline_runner::trigger(&app_handle, state.inner(), TriggerSource::Manual, None).await?;
     let today = Local::now().date_naive();
     Ok(first_result(results, today, fallback_host))
+}
+
+/// Resolve which standup file a day of work is filed into.
+///
+/// `date` is a **work day** (default: today), not a filing date — the whole
+/// point of the command is to turn one into the other under the configured
+/// policy. Read-only and lock-free.
+///
+/// The dashboard calls this instead of doing the arithmetic itself: the
+/// filing rule is what decides which file gets written, and a UI that computed
+/// its own answer could label a file the pipeline never touches. That mismatch
+/// is precisely how a machine ended up with a `2026-08-13.md` and no
+/// `2026-08-14.md`.
+#[tauri::command]
+pub async fn get_filing_target(
+    app_handle: AppHandle,
+    date: Option<String>,
+) -> Result<FilingTarget, AppError> {
+    let work_day = resolve_date(date.as_deref())?;
+    let config = super::load_config(&app_handle)?;
+    Ok(pipeline_runner::filing_target(
+        &config,
+        work_day,
+        Local::now().date_naive(),
+    ))
 }
 
 /// Get the current pipeline status snapshot.
@@ -195,6 +222,9 @@ mod tests {
         assert_eq!(resolve_date(None).unwrap(), Local::now().date_naive());
     }
 
+    /// Every `date`-taking command routes through [`resolve_date`] —
+    /// `compile_standup`, `preview_gather` and `get_filing_target` — so this
+    /// table is the rejection contract for all of them.
     #[test]
     fn rejects_malformed_dates() {
         for bad in [

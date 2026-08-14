@@ -112,11 +112,14 @@ export function ManualEditor({ date, initialContent = "" }: ManualEditorProps) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="today" textValue="Today">
-                  Today — {date}
+                {/* `date` is a *filing* date, so "Today" would name the wrong
+                    thing: the standup being written is usually tomorrow's. The
+                    options name files, which is what the choice actually is. */}
+                <SelectItem value="today" textValue="This standup">
+                  This standup — {date}
                 </SelectItem>
-                <SelectItem value="tomorrow" textValue="Tomorrow">
-                  Tomorrow — {nextDay(date)}
+                <SelectItem value="tomorrow" textValue="Next day">
+                  Next day — {nextDay(date)}
                 </SelectItem>
                 <SelectItem value="custom" textValue="Custom">
                   Custom…

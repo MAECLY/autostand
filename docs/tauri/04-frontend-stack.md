@@ -407,8 +407,21 @@ Tabbed configuration UI. Tabs, in strip order:
 6. **Scheduler** — `SchedulerForm` bound to `set_scheduler_schedule`; shows `get_scheduler_status` (source: launchd/systemd/task-scheduler/in-process; next run; last run).
 7. **Notifications** — `NotificationsTab`: OS permission via `get_notification_status` / `request_notification_permission`, per-event switches on `config.notifications`, and `send_test_notification`.
 8. **Local AI** — `LocalModelsTab`: `list_local_models` plus download / cancel / delete / select of the bundled GGUF model used as the offline fallback provider.
+9. **Advanced** — `AdvancedTab`: one switch each for the Audit and Debug sidebar entries, both off by default. Nothing here changes what the app does; anything that alters pipeline behaviour belongs in its own tab.
 
 Tab ids live in `SETTINGS_TABS` (`lib/store.ts`), which also types the labels record the strip renders from. The open tab is `useUiStore.settingsTab`, not Radix's internal state: TanStack Router unmounts the route on every navigation away, so a `defaultValue` would drop the user back on Providers each time they come back.
+
+### Sidebar gating (`lib/nav.ts`)
+
+`NAV_ITEMS` carries an optional `gate` naming the UI-store flag that reveals an entry; `visibleNavItems` applies it. Audit and Debug are gated, everything else is unconditional. Gating only removes the rail entry — `/audit` and `/debug` stay registered, so a bookmark, a deep link or the browser history still reaches them.
+
+The list lives outside `Sidebar.tsx` so the rule can be tested without standing up a router: `<Link>` needs a full router context, which adds setup without adding signal about which entries show.
+
+### What the UI store persists
+
+`useUiStore` is wrapped in zustand's `persist` under `autostand-ui`, with `partialize` narrowing it to `theme`, `showAuditNav` and `showDebugNav` — the three things the user deliberately chose. The focused date, the history anchor and the terminal panel stay session-only: restoring them would reopen the app pointing at a day that is no longer today.
+
+Storage falls back to an in-memory map when web storage is missing or blocked, so the shell still constructs; the cost is that preferences last only for that session. `onRehydrateStorage` re-applies the restored theme immediately, otherwise the app paints in the default and flips a frame later.
 
 ### History (`routes/history.tsx`)
 

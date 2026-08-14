@@ -34,8 +34,10 @@ Three init scripts run in order (see [`support/fixtures.ts`](support/fixtures.ts
 The fake backend ([`support/mock-backend.ts`](support/mock-backend.ts)) is a real
 little state machine, not a lookup table: `toggle_data_source` mutates the source
 list, `add_manual_item` appends to the MANUAL region, `set_scheduler_schedule`
-rewrites the cron, and the `pipeline-*` events a spec emits are mirrored into
-`get_pipeline_status` so a cache invalidation refetches something consistent.
+rewrites the cron, and the `pipeline-*` events a spec emits — plus the
+`run-started` / `run-finished` bracket, when it carries `pipeline: true` — are
+mirrored into `get_pipeline_status` so a cache invalidation refetches something
+consistent.
 An unlisted command **rejects** rather than resolving `undefined`, so a renamed
 command fails a spec instead of quietly emptying the UI.
 
@@ -45,17 +47,25 @@ contract breaks the fixtures rather than producing payloads the UI cannot read.
 
 Two things are pinned so the suite is reproducible on any machine, on any day:
 the browser clock (frozen to `2026-08-03T12:00:00Z`) and the timezone (`UTC`).
+A spec whose subject *is* the calendar can move the clock with
+`app.start(scenario, path, { now })`.
+
+`2026-08-03` is a Monday, and under the default filing policy its work is
+archived in `2026-08-04.md`. The fixtures keep the two apart —
+`TODAY` / `FILING_DATE` — because a suite that used one value for both could not
+tell the Dashboard reading the right file from it reading the wrong one.
 
 ## What these specs cover
 
 | Spec | Journey |
 |------|---------|
 | `dashboard.spec.ts` | Today's standup loads; one card per AUTO block; the MANUAL region stays visible and labelled "never overwritten" |
-| `compile.spec.ts` | "Compile now" disables, streams `pipeline-*` progress, then shows the result; a failure toasts without wiping the previous standup |
+| `compile.spec.ts` | "Compile now" disables, streams the regeneration run's progress, opens the review dialog and files the chosen candidate; a failed run toasts once without wiping the previous standup |
 | `settings.spec.ts` | A data-source toggle survives a navigation round trip; `local-git` is pinned on with its reason; a provider test reports transport, latency and failure |
 | `audit.spec.ts` | One sidecar per host is listed and the first opens automatically; another host's opens on demand; all six classification badges render, phantom included |
 | `navigation.spec.ts` | All five routes reachable from the sidebar; the status bar tracks idle → running → error, including across a route change; a `scheduler-tick` refreshes the next scheduled run |
 | `empty-state.spec.ts` | A date with no standup file shows the empty state, not a crash — and a genuine read failure is told apart from it |
+| `filing-date.spec.ts` | The Settings policy and the file the Dashboard announces are the same fact: the copy states each policy's consequence, changing it changes the announced target, and "Compile now" plus manual items address that target rather than the calendar day |
 
 ## What these specs do **not** cover
 

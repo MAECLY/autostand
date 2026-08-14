@@ -63,6 +63,7 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `list_audit_sidecars` | `{ date: string }` | `AuditSidecar[]` | List `state/audit/<date>-*.json` files | `autostand-core::audit::list_for_date` |
 | `read_audit_sidecar` | `{ path: string }` | `AuditData` | Parse one sidecar JSON | `autostand-core::audit::read` |
 | `get_pipeline_status` | — | `PipelineStatus` | Current run state (idle/gathering/rendering/done/error) + last run info | `autostand-app::state::status` |
+| `get_filing_target` | `{ date?: string }` | `FilingTarget` | Resolve which standup file a **work day** (default: today) is filed into, under the configured `dates.archive_mode`, plus the window that file claims. Read-only, no lock | `autostand-app::pipeline_runner::filing_target` |
 | `preview_gather` | `{ date: string }` | `GatherPreview` | Show raw gathered FACTS/NOTES/ENRICHMENT without rendering (debug UI) | `autostand-core::pipeline::gather_only` |
 | `get_scheduler_status` | — | `SchedulerStatus` | Next run time, last run time, trigger source, schedule source (system/in-process) | `autostand-scheduler::status` |
 | `set_scheduler_schedule` | `{ cron: string }` | `void` | Persist cron + reinstall system unit | `autostand-scheduler::set_schedule` |
@@ -102,6 +103,25 @@ export interface AppConfig {
   notifications: NotificationConfig;
   sync: { cloud_root: string | null; repo_enabled: boolean };
   regeneration: { replace_immediately: boolean };
+  dates: DatesConfig;
+}
+
+/**
+ * Which day a compile files its standup under.
+ *
+ * `next_business_day` is the App Script's behaviour and the default: work done
+ * on D lands in the next business day's file, so Fri/Sat/Sun all accumulate
+ * into Monday's. `same_day` files work in its own day's file, still rolling a
+ * weekend forward to Monday.
+ *
+ * Both keep the window contract: a file's range starts the day after the
+ * previous file's range ended, so no work is lost or double-reported.
+ *
+ * `#[serde(default)]` on the Rust side — a config written before this block
+ * existed loads as `next_business_day`.
+ */
+export interface DatesConfig {
+  archive_mode: "next_business_day" | "same_day";
 }
 
 export interface LlmConfig {
@@ -380,6 +400,12 @@ export interface AuditData {
   covered_tickets: string[];
   skew: SkewRecord[];
   ticket_days: Record<string, string[]>;
+  /**
+   * Filing policy in force when this standup was rendered. Sidecars written
+   * before the policy existed carry no such key and read as
+   * `"next_business_day"` — the only rule those runs could have used.
+   */
+  archive_mode: "next_business_day" | "same_day";
   render_mode: "auto" | "llm" | "det";
   render_used: "llm" | "det" | "llm_fallback";
   provider: string | null;
@@ -416,6 +442,27 @@ export interface SkewRecord {
   ticket: string;
   note_date: string;
   commit_days: string[];
+}
+
+/**
+ * Answer to `get_filing_target`: which standup file a day of work belongs to.
+ *
+ * The UI must ask for this rather than deriving it from `dates.archive_mode`
+ * itself. The filing rule is what decides which file the pipeline writes, and a
+ * second implementation of it in TypeScript could label the Dashboard with a
+ * file no compile ever touches — which is exactly how a machine ended up with a
+ * `2026-08-13.md` and no `2026-08-14.md`.
+ */
+export interface FilingTarget {
+  /** Calendar day whose work is being filed, `YYYY-MM-DD`. */
+  work_day: string;
+  /** Standup file that work lands in — `<filing_date>.md`. */
+  filing_date: string;
+  archive_mode: "next_business_day" | "same_day";
+  /** Days of work a compile of `filing_date` would claim. */
+  window: { range_start: string; range_end: string };
+  /** True when `filing_date` is further ahead than the calendar has reached. */
+  window_empty: boolean;
 }
 
 export interface PipelineStatus {

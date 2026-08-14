@@ -969,7 +969,11 @@ mod tests {
 
     #[test]
     fn the_core_window_converts_field_for_field() {
-        let core = autostand_core::dates::compute_window(day(3));
+        let core = autostand_core::dates::compute_window(
+            day(3),
+            autostand_core::dates::ArchiveMode::NextBusinessDay,
+            day(3),
+        );
         let adapted = to_date_window(&core);
         assert_eq!(adapted.start, core.range_start);
         assert_eq!(adapted.end, core.range_end);

@@ -50,11 +50,31 @@ pub struct AppConfig {
     pub format: StandupFormatConfig,
     #[serde(default)]
     pub notifications: NotificationConfig,
+    #[serde(default)]
+    pub dates: DatesConfig,             // which file a day's work is archived under
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub enum RenderMode { Auto, Llm, Det }
+
+/// Filing-date policy. `#[serde(default)]` on both the field and the section:
+/// a `config.json` written before this block existed must keep loading, and
+/// must load into the App Script's rule rather than silently moving the user's
+/// standups to a different file.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DatesConfig {
+    #[serde(default)]
+    pub archive_mode: ArchiveMode,      // next_business_day | same_day
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveMode {
+    #[default]
+    NextBusinessDay,                    // work on D → next_business_day(D).md
+    SameDay,                            // work on D → D.md (weekend rolls to Monday)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
@@ -156,6 +176,11 @@ export interface AppConfig {
   scrub: ScrubConfig;
   format: StandupFormatConfig;
   notifications: NotificationConfig;
+  dates: DatesConfig;
+}
+
+export interface DatesConfig {
+  archive_mode: "next_business_day" | "same_day";
 }
 
 export interface LlmConfig {
@@ -321,6 +346,38 @@ This prevents a render CLI from re-invoking `autostand` and recursing.
 | `scrub.alias_scrub` | `false` | Re-attach alias tags instead of dropping |
 | `scrub.alias_scrub_min` | `2` | Min token overlap for alias match |
 | `scrub.meta_extra` | `None` | Pipe-separated regex to extend meta-work filter |
+| `dates.archive_mode` | `next_business_day` | Which file a day's work is archived under. Edited in Settings → Paths → Filing date |
+
+---
+
+## Filing date
+
+`dates.archive_mode` decides the **file name** a compile writes, which is a
+different question from `dailies_dir` (the directory) and from
+`scheduler.cron` (when the run fires).
+
+| Value | Consequence | Weekend |
+| --- | --- | --- |
+| `next_business_day` (default) | Today's work is filed for tomorrow's standup — Thursday's work appears in Friday's file. Reproduces the App Script (`compile.sh:534`). | Friday, Saturday and Sunday all accumulate into Monday's file |
+| `same_day` | Today's work is filed for today's standup — Thursday's work stays in Thursday's file. | Saturday and Sunday accumulate into Monday's file |
+
+Neither value can produce a standup named after a weekend day, so weekend work
+always lands on Monday. Both preserve the window contract in
+`docs/specs/pipeline.md` § (a): a file's range starts the day after the previous
+file's range ended, so no day is dropped or reported twice.
+
+A `config.json` written before this block existed has no `dates` key and loads
+as `next_business_day` — the only policy those installs could have been running.
+
+**Where the UI puts it:** Settings → **Paths**, above the directory fields.
+Paths is the tab that answers "where does my standup end up", and the directory
+and the file name are the two halves of that answer. It is deliberately *not* on
+Standup Format, whose banner says presets "only affect the LLM render path" —
+the filing date applies to the deterministic renderer too.
+
+**Where to check what a run actually used:** the Terminal panel's step-(a) line
+(`filing <date>.md — window <start> → <end>`, detail `archive_mode=…`) and the
+`archive_mode` field of the audit sidecar.
 
 ---
 
@@ -339,7 +396,8 @@ The Settings page (`routes/settings.tsx`) exposes these tabs (see `docs/tauri/04
 - Providers — connection settings, ordered failover, and provider usage.
 - Data Sources — enablement for the eight read-only activity sources.
 - Standup Format — preset and output options.
-- Paths and Sync — Cloud Sync creates `<provider-root>/autostand`; optional Repo Sync versions that same directory in a private GitHub repository when `git`, `gh`, and GitHub authentication are available. A shared requirements checklist reports each of those three and offers the one next step that satisfies it: a command printed in full before it may run, or the official install guide when no package id can be vouched for on this platform.
+- Paths — the filing-date policy (`dates.archive_mode`) first, then the GitHub and dailies directories, commit authors, and the discovered-repo table.
+- Sync — Cloud Sync creates `<provider-root>/autostand`; optional Repo Sync versions that same directory in a private GitHub repository when `git`, `gh`, and GitHub authentication are available. A shared requirements checklist reports each of those three and offers the one next step that satisfies it: a command printed in full before it may run, or the official install guide when no package id can be vouched for on this platform.
 - Scheduler — a human schedule builder (time, days, once/hourly) with cron kept under Advanced, plus self-heal controls.
 - Notifications — OS permission, master opt-in, thresholds, and alert categories.
 - Local AI — curated model downloads, selection, and on-demand/reusable-cache runtime policy. Selecting a model also enables and prefers `builtin-local` in Providers.

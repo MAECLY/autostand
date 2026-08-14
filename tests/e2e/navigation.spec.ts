@@ -2,14 +2,50 @@
  * The shell: five routes behind one sidebar, and a status bar that reports what
  * the pipeline is doing regardless of which route is open.
  *
+ * Audit and Debug are hidden from the rail until Settings -> Advanced turns them
+ * on, so the route sweep seeds that preference first. Their routes stay
+ * registered either way — the gate is about the rail, not the router.
+ *
  * `usePipelineEvents` is mounted once, at the root layout, so the status bar has
  * to keep tracking a run the user navigated away from.
  */
 
+import type { Page } from "@playwright/test";
+
 import { expect, ROUTES, test } from "./support/fixtures";
 import { HOST, makeScenario, TODAY } from "./support/scenario";
 
+test("hides the diagnostic routes from the rail by default", async ({
+  page,
+  app,
+}) => {
+  await app.start();
+
+  await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Audit" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Debug" })).toHaveCount(0);
+});
+
+/**
+ * Reveal Audit and Debug in the rail before the app boots.
+ *
+ * The store reads its persisted slice during hydration, so setting the
+ * preference after `start()` would not reach the render under test.
+ */
+async function seedDiagnosticNav(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "autostand-ui",
+      JSON.stringify({
+        state: { theme: "system", showAuditNav: true, showDebugNav: true },
+        version: 0,
+      }),
+    );
+  });
+}
+
 test("reaches every route from the sidebar", async ({ page, app }) => {
+  await seedDiagnosticNav(page);
   await app.start();
 
   for (const route of ROUTES) {
@@ -96,6 +132,7 @@ test("keeps tracking a run started before the user changed route", async ({
   page,
   app,
 }) => {
+  await seedDiagnosticNav(page);
   await app.start(makeScenario(), "/settings");
 
   const statusBar = page.getByRole("contentinfo");

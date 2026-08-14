@@ -34,11 +34,24 @@ import type {
  */
 export const FIXED_NOW = "2026-08-03T12:00:00.000Z";
 
-/** Filing date the fixed clock resolves to. */
+/** Work day the fixed clock resolves to — a Monday. */
 export const TODAY = "2026-08-03";
 
 /** How `formatIsoDate` renders {@link TODAY}. */
 export const TODAY_LABEL = "Aug 3, 2026";
+
+/**
+ * The file {@link TODAY}'s work is filed in under the default policy.
+ *
+ * Monday's work goes to Tuesday's standup, so the dashboard is looking at
+ * `2026-08-04.md` while the calendar says the 3rd. Keeping the two dates apart
+ * in the fixtures is the point: a suite that used one value for both could not
+ * tell the dashboard reading the right file from it reading the wrong one.
+ */
+export const FILING_DATE = "2026-08-04";
+
+/** How `formatIsoDate` renders {@link FILING_DATE}. */
+export const FILING_DATE_LABEL = "Aug 4, 2026";
 
 /** Slug of the machine under test — its AUTO block is the highlighted one. */
 export const HOST = "mbp-miguel";
@@ -111,6 +124,10 @@ export function makeAppConfig(): AppConfig {
     render_mode: "Auto",
     llm: {
       preferred_provider: "claude",
+      fallback_enabled: true,
+      provider_order: ["claude", "ollama"],
+      fallback_policy: { retry_rate_limits: true, max_retry_after_secs: 30 },
+      local_runtime_policy: "on_demand",
       providers: [
         {
           id: "claude",
@@ -164,9 +181,20 @@ export function makeAppConfig(): AppConfig {
     // `SyncTab` reads `sync.cloud_root` without a fallback, so the Sync tab
     // cannot render at all when the fixture omits it.
     sync: { cloud_root: null, repo_enabled: false },
-    // `CompileButton` reads this without a fallback, so the dashboard cannot
-    // render at all when the fixture omits it.
+    // `CompileButton` reads both of these without a fallback, so the dashboard
+    // cannot render at all when the fixture omits either.
+    notifications: {
+      enabled: true,
+      low_usage: true,
+      low_usage_threshold_percent: 20,
+      provider_exhausted: true,
+      provider_fallback: true,
+      local_model_downloads: true,
+      standup_complete: true,
+      standup_failed: true,
+    },
     regeneration: { replace_immediately: false },
+    dates: { archive_mode: "next_business_day" },
   };
 }
 
@@ -250,13 +278,19 @@ export function makeProviders(): LlmProviderConfig[] {
   ];
 }
 
+/**
+ * The standup filed on {@link TODAY} — that is, Friday's work.
+ *
+ * This is the *previous* file from the dashboard's point of view: History and
+ * Audit browse it, the dashboard does not.
+ */
 export function makeStandupFile(
   overrides: Partial<StandupFileContent> = {},
 ): StandupFileContent {
   return {
     date: TODAY,
     title: "Daily Standup — August 03, 2026",
-    subtitle: "_Work completed August 01–02, 2026._",
+    subtitle: "_Work completed Fri Jul 31 – Sun Aug 02, 2026._",
     auto_blocks: [
       { host: HOST, body: "- FIF-136 wired the compile pipeline end to end" },
       { host: OTHER_HOST, body: "- FIF-141 drafted the discovery KB" },
@@ -266,17 +300,41 @@ export function makeStandupFile(
   };
 }
 
+/**
+ * The standup the dashboard is looking at: {@link FILING_DATE}, holding the work
+ * done on {@link TODAY}.
+ */
+export function makeFilingDateStandupFile(
+  overrides: Partial<StandupFileContent> = {},
+): StandupFileContent {
+  return makeStandupFile({
+    date: FILING_DATE,
+    title: "Daily Standup — August 04, 2026",
+    subtitle: "_Work completed Monday, August 03, 2026._",
+    ...overrides,
+  });
+}
+
+/**
+ * The result of the last compile.
+ *
+ * `date` is a **filing** date — that is what `CompileResult.date` means on the
+ * wire — so it is {@link FILING_DATE}, not the calendar day. Getting this wrong
+ * is not cosmetic: `apply_regeneration` echoes it back and the frontend
+ * invalidates the standup query for exactly that date, so a fixture that
+ * reported the calendar day would leave the dashboard showing a stale body.
+ */
 export function makeCompileResult(
   overrides: Partial<CompileResult> = {},
 ): CompileResult {
   return {
-    date: TODAY,
+    date: FILING_DATE,
     host: HOST,
     status: "ok",
     render_used: "llm",
     fellback: false,
-    audit_path: sidecarPath(TODAY, HOST),
-    file_path: `${DAILIES_DIR}/${TODAY}.md`,
+    audit_path: sidecarPath(FILING_DATE, HOST),
+    file_path: `${DAILIES_DIR}/${FILING_DATE}.md`,
     accumulated_count: 0,
     message: "3 bullets across 2 repos",
     ...overrides,
@@ -337,11 +395,13 @@ export function makeAuditData(overrides: Partial<AuditData> = {}): AuditData {
     covered_tickets: ["FIF-136"],
     skew: [],
     ticket_days: { "FIF-136": ["2026-08-02"] },
+    archive_mode: "next_business_day",
     render_mode: "auto",
     render_used: "llm",
     provider: "claude",
     model: "claude-sonnet-4",
     fellback: false,
+    provider_attempts: [],
     hash: "sha256:deadbeef",
     accumulated_count: 0,
     ...overrides,
@@ -538,7 +598,13 @@ export function makeScenario(): Scenario {
         claude: ["claude-sonnet-4", "claude-opus-4"],
         ollama: ["llama3.1", "llama3.2:latest"],
       },
-      standups: { [TODAY]: makeStandupFile() },
+      // Two files, because the two dates are different things: Monday's file
+      // holds the weekend's work and is what History browses, while the
+      // dashboard is already filling Tuesday's.
+      standups: {
+        [TODAY]: makeStandupFile(),
+        [FILING_DATE]: makeFilingDateStandupFile(),
+      },
       sidecars: { [TODAY]: makeSidecars() },
       auditData: {
         [sidecarPath(TODAY, HOST)]: makeAuditData(),

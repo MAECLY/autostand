@@ -36,8 +36,10 @@ import {
   TabsTrigger,
 } from "@autostand/ui/components/tabs";
 
+import { AdvancedTab } from "@/components/settings/AdvancedTab";
 import { CommitScanCard } from "@/components/settings/CommitScanCard";
 import { DataSourceToggle } from "@/components/settings/DataSourceToggle";
+import { FilingDateCard } from "@/components/settings/FilingDateCard";
 import { FormatTab } from "@/components/settings/FormatTab";
 import { LocalModelsTab } from "@/components/settings/LocalModelsTab";
 import { NotificationsTab } from "@/components/settings/NotificationsTab";
@@ -414,6 +416,11 @@ function PathsTab() {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* First on the tab: the filename question comes before the directory
+          question, because it is the one that decides whether the user can find
+          the standup they just compiled. */}
+      <FilingDateCard />
+
       <Section
         title="Paths"
         description="Where autostand reads repositories from and writes standup files to."
@@ -481,6 +488,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   scheduler: "Scheduler",
   notifications: "Notifications",
   "local-models": "Local AI",
+  advanced: "Advanced",
 };
 
 function SettingsPage() {
@@ -562,6 +570,10 @@ function SettingsPage() {
           >
             <LocalModelsTab />
           </Section>
+        </TabsContent>
+
+        <TabsContent value="advanced">
+          <AdvancedTab />
         </TabsContent>
       </Tabs>
     </div>

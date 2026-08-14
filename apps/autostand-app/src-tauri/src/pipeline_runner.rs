@@ -28,10 +28,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::{Local, NaiveDate};
 use tauri::{AppHandle, Emitter};
 
-use autostand_core::dates::{self, Window};
+use autostand_core::dates::{self, ArchiveMode, Window};
 use autostand_core::pipeline::{CompileInputs, CompileOutputs, RenderMode as CoreRenderMode};
 use autostand_core::provenance::{self, Provenance};
 use autostand_core::{audit, format, hashes, host, redact, scrub};
@@ -41,9 +41,9 @@ use autostand_scheduler::triggers::TriggerSource;
 
 use crate::commands::pipeline::{PipelineError, PipelineStarted};
 use crate::commands::types::{
-    AppConfig, CommitDto, CompileResult, CompileStatus, DateRangeDto, GatherPreview, LastTrigger,
-    NoteRef, PipelineLogLevel, PipelineLogLine, PipelineProgress, RenderMode, RenderUsed,
-    RepoFacts, SkewRecord,
+    AppConfig, CommitDto, CompileResult, CompileStatus, DateRangeDto, FilingTarget, GatherPreview,
+    LastTrigger, NoteRef, PipelineLogLevel, PipelineLogLine, PipelineProgress, RenderMode,
+    RenderUsed, RepoFacts, SkewRecord,
 };
 use crate::error::AppError;
 use crate::gather::{self, Gathered};
@@ -98,7 +98,7 @@ const NO_TICKETS: &str = "(none)";
 /// `pipeline-error` payload reuses, so they are part of the event contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// (a) compute the two-business-day gather window.
+    /// (a) compute the gather window for the configured filing policy.
     Window,
     /// (b, c, e) run every enabled data source.
     Gather,
@@ -329,16 +329,66 @@ pub fn git_root_for(dailies_dir: &Path) -> PathBuf {
 ///
 /// `only_date` is the single-date IPC path (`compile_standup`) and bypasses
 /// business-day arithmetic entirely: the caller already named the file.
-pub fn targets(today: NaiveDate, only_date: Option<NaiveDate>) -> Vec<NaiveDate> {
+///
+/// The two dates collapse into one when there is no distinct previous file to
+/// self-heal — a weekend run in [`ArchiveMode::NextBusinessDay`], where Friday,
+/// Saturday and Sunday all file into the same Monday.
+pub fn targets(
+    today: NaiveDate,
+    only_date: Option<NaiveDate>,
+    mode: ArchiveMode,
+) -> Vec<NaiveDate> {
     if let Some(date) = only_date {
         return vec![date];
     }
-    let (f_today, f_prev) = selfheal::compute_targets(today);
+    let (f_today, f_prev) = selfheal::compute_targets(today, mode);
     if f_prev == f_today {
         vec![f_today]
     } else {
         vec![f_today, f_prev]
     }
+}
+
+/// The gather window for filing date `f` under the configured filing policy.
+///
+/// Single place the mode and the real calendar day reach
+/// [`autostand_core::dates::compute_window`], so no caller can compute a window
+/// that disagrees with the file it is about to write.
+pub fn window_for(config: &AppConfig, f: NaiveDate, today: NaiveDate) -> Window {
+    dates::compute_window(f, config.dates.archive_mode, today)
+}
+
+/// Which file `work_day`'s work is destined for, and what that file will claim.
+///
+/// Pure, and deliberately built out of the same two functions the pipeline uses
+/// ([`ArchiveMode::filing_date`] and [`window_for`]) rather than out of a
+/// parallel rule: what the dashboard announces has to be what the compile does,
+/// or the announcement is worse than none.
+pub fn filing_target(config: &AppConfig, work_day: NaiveDate, today: NaiveDate) -> FilingTarget {
+    let mode = config.dates.archive_mode;
+    let filing_date = mode.filing_date(work_day);
+    let window = window_for(config, filing_date, today);
+    FilingTarget {
+        work_day: work_day.format(DATE_FORMAT).to_string(),
+        filing_date: filing_date.format(DATE_FORMAT).to_string(),
+        archive_mode: mode,
+        window: range_dto(&window),
+        window_empty: window.is_empty(),
+    }
+}
+
+/// The Terminal line step (a) prints once the window is known.
+///
+/// It names the *file* as well as the range, because those are the two things a
+/// user comparing "what I expected" with "what happened" needs, and the filing
+/// date is no longer the same as the day they pressed the button.
+pub fn window_log_line(date: NaiveDate, window: &Window) -> String {
+    format!(
+        "filing {}.md — window {} → {}",
+        date.format(DATE_FORMAT),
+        window.range_start.format(DATE_FORMAT),
+        window.range_end.format(DATE_FORMAT)
+    )
 }
 
 /// Step (d): does the anti-regression guard fire?
@@ -525,32 +575,30 @@ pub fn title_for(date: NaiveDate) -> String {
 /// Standup subtitle for the gather window — `docs/specs/standup-file-format.md`
 /// § Subtitle format.
 ///
-/// The range separator is the en-dash `–` (U+2013), never a hyphen. A
-/// single-day window drops the range entirely; a same-month range repeats only
-/// the day; a cross-year range spells both years out because the trailing
-/// `, <year>` would otherwise be ambiguous.
+/// Byte-for-byte the App Script's two cases (`compile.sh:186-190`):
+/// - one day  → `_Work completed Thursday, August 13, 2026._` (`%A, %B %d, %Y`)
+/// - a range  → `_Work completed Fri Aug 07 – Sun Aug 09, 2026._`
+///   (`%a %b %d` – `%a %b %d, %Y`)
+///
+/// The weekday name is not decoration: a window now runs over natural days, so
+/// the range routinely ends on a Saturday or a Sunday and the reader needs to
+/// see that the weekend is accounted for. The separator is the en-dash `–`
+/// (U+2013) **with a space on each side**, never a hyphen and never tight —
+/// `2026-08-10.md` in the reference repo is the fixture for this.
+///
+/// Only the *end* carries the year, exactly as the original: a range that
+/// crosses New Year still prints one year, which is what the existing standup
+/// corpus contains.
 pub fn subtitle_for(window: &Window) -> String {
     let (start, end) = (window.range_start, window.range_end);
     let range = if start == end {
-        start.format("%B %d, %Y").to_string()
-    } else if start.year() == end.year() {
-        if start.month() == end.month() {
-            format!(
-                "{}–{}, {}",
-                start.format("%B %d"),
-                end.format("%d"),
-                end.format("%Y")
-            )
-        } else {
-            format!(
-                "{}–{}, {}",
-                start.format("%B %d"),
-                end.format("%B %d"),
-                end.format("%Y")
-            )
-        }
+        end.format("%A, %B %d, %Y").to_string()
     } else {
-        format!("{}–{}", start.format("%B %d, %Y"), end.format("%B %d, %Y"))
+        format!(
+            "{} – {}",
+            start.format("%a %b %d"),
+            end.format("%a %b %d, %Y")
+        )
     };
     format!("_Work completed {range}._")
 }
@@ -831,6 +879,31 @@ pub fn ok_result(
 
 // ── audit sidecar enrichment ──────────────────────────────────────────────
 
+/// Everything [`audit_patch`] needs from the run that produced the sidecar.
+///
+/// A struct rather than eight positional parameters: the two `&str`s and the
+/// two optional render fields are trivially transposable at a call site, and a
+/// swapped pair would write a plausible-looking sidecar that lies.
+#[derive(Debug, Clone, Copy)]
+pub struct AuditPatchInputs<'a> {
+    /// The gather window the compile actually used.
+    pub window: &'a Window,
+    /// The filing policy that produced [`Self::window`].
+    pub mode: ArchiveMode,
+    /// FACTS, with the `TICKET_DAYS` marker already split out.
+    pub facts: &'a str,
+    /// Everything the data sources returned.
+    pub gathered: &'a Gathered,
+    /// Steps (m) + (n): which body the compile used, and why.
+    pub decision: &'a RenderDecision,
+    /// The LLM body, when there was one.
+    pub rendered: Option<&'a RenderedBody>,
+    /// Secret-free provider/transport attempts.
+    pub provider_attempts: &'a [ProviderAttempt],
+    /// Step (j)'s digest of the gathered inputs.
+    pub hash: &'a str,
+}
+
 /// The sidecar fields only the async layer knows, as a JSON patch.
 ///
 /// `autostand_core::pipeline::compile_file` writes the sidecar from the pure
@@ -844,15 +917,17 @@ pub fn ok_result(
 /// an empty range. Getting the window right matters beyond cosmetics:
 /// `autostand_core::audit::classify` tests each commit day against it, and
 /// core's placeholder (`F..F`) classifies every real bullet as `unverified`.
-pub fn audit_patch(
-    window: &Window,
-    facts: &str,
-    gathered: &Gathered,
-    decision: &RenderDecision,
-    rendered: Option<&RenderedBody>,
-    provider_attempts: &[ProviderAttempt],
-    hash: &str,
-) -> serde_json::Value {
+pub fn audit_patch(patch: &AuditPatchInputs<'_>) -> serde_json::Value {
+    let AuditPatchInputs {
+        window,
+        mode,
+        facts,
+        gathered,
+        decision,
+        rendered,
+        provider_attempts,
+        hash,
+    } = *patch;
     let render_used = match decision.render_used() {
         RenderUsed::Llm => "llm",
         RenderUsed::Det => "det",
@@ -871,6 +946,10 @@ pub fn audit_patch(
         .collect();
     serde_json::json!({
         "window": { "start": window.range_start, "end": window.range_end },
+        // Which filing policy produced this window. Without it a sidecar whose
+        // range looks "off by a day" is indistinguishable from a bug, and the
+        // only way to tell is to guess what the config said at render time.
+        "archive_mode": mode.wire_label(),
         "facts": parse_repo_facts(facts),
         "notes": parse_note_refs(&gathered.notes),
         "github": gathered.github,
@@ -1209,7 +1288,7 @@ async fn run(
 ) -> Result<Vec<CompileResult>, AppError> {
     let env = RunEnv::load(app)?;
     let today = Local::now().date_naive();
-    let dates = targets(today, only_date);
+    let dates = targets(today, only_date, env.config.dates.archive_mode);
     let primary = dates.first().copied().unwrap_or(today);
     let primary_str = primary.format(DATE_FORMAT).to_string();
 
@@ -1421,19 +1500,41 @@ pub async fn compile_one(
 
     // (a) window
     progress(app, state, &date_str, &env.host, Step::Window);
-    let window = dates::compute_window(date);
+    // Named before the window is even computed: "which file am I writing, under
+    // which policy" is the first question anyone reading this log after a
+    // surprise has, and the answer must not be buried behind a failure path.
+    let mode = env.config.dates.archive_mode;
+    let mode_detail = Some(format!("archive_mode={}", mode.wire_label()));
+    tracing::info!(archive_mode = mode.wire_label(), file = %file_path.display(), "filing target");
+    let window = window_for(&env.config, date, Local::now().date_naive());
+    if window.is_empty() {
+        // `range_end` clamped below `range_start`: the filing date is further
+        // ahead than the calendar has reached, so there is no work to claim yet.
+        // `compile.sh:181` returns early on exactly this condition rather than
+        // writing a standup for a day that has not happened.
+        let message = format!("{date} is beyond the work we have; nothing to compile");
+        tracing::info!(date = %date, "{message}");
+        emit_log(
+            app,
+            &date_str,
+            &env.host,
+            Step::Window,
+            PipelineLogLevel::Warn,
+            &message,
+            mode_detail,
+        );
+        let result = skip_result(date, &env.host, &file_path, message);
+        state.set_done(result.clone());
+        return Ok(result);
+    }
     emit_log(
         app,
         &date_str,
         &env.host,
         Step::Window,
         PipelineLogLevel::Done,
-        format!(
-            "window {} → {}",
-            window.range_start.format(DATE_FORMAT),
-            window.range_end.format(DATE_FORMAT)
-        ),
-        None,
+        window_log_line(date, &window),
+        mode_detail,
     );
 
     // (b, c, e) gather — never fatal; failures are recorded on `Gathered`.
@@ -1767,15 +1868,16 @@ pub async fn compile_one(
     // (q) audit sidecar: patch in what the pure core could not know.
     progress(app, state, &date_str, &env.host, Step::Audit);
     if let Some(path) = outputs.audit_path.as_ref() {
-        let overlay = audit_patch(
-            &window,
-            &facts,
-            &gathered,
-            &decision,
-            rendered.as_ref(),
-            &render_outcome.attempts,
-            &hash,
-        );
+        let overlay = audit_patch(&AuditPatchInputs {
+            window: &window,
+            mode,
+            facts: &facts,
+            gathered: &gathered,
+            decision: &decision,
+            rendered: rendered.as_ref(),
+            provider_attempts: &render_outcome.attempts,
+            hash: &hash,
+        });
         if let Err(err) = enrich_sidecar(path, &overlay) {
             tracing::warn!(error = %err, "could not enrich the audit sidecar");
             emit_log(
@@ -1921,7 +2023,7 @@ pub async fn preview(app: &AppHandle, date: NaiveDate) -> Result<GatherPreview, 
 /// [`preview`]'s body, already inside the run's log scope.
 async fn preview_inner(app: &AppHandle, date: NaiveDate) -> Result<GatherPreview, AppError> {
     let env = RunEnv::load(Some(app))?;
-    let window = dates::compute_window(date);
+    let window = window_for(&env.config, date, Local::now().date_naive());
     let gathered = gather::gather_all(
         &gather::to_date_window(&window),
         &env.config,
@@ -1960,11 +2062,11 @@ async fn preview_inner(app: &AppHandle, date: NaiveDate) -> Result<GatherPreview
 mod tests {
     use super::{
         audit_patch, base_result, config_from_store_bytes, config_store_path, decide_render,
-        error_result, git_root_for, inputs_hash, is_regression, last_trigger,
+        error_result, filing_target, git_root_for, inputs_hash, is_regression, last_trigger,
         load_config_from_disk, ok_result, outcome_message, parse_note_refs, parse_repo_facts,
-        required_llm_failure, should_skip_unchanged, sidecar_repo_count, skip_result,
-        split_ticket_days, subtitle_for, targets, title_for, RenderDecision, Step,
-        RENDER_CONTRACT_VERSION, STEPS,
+        range_dto, required_llm_failure, should_skip_unchanged, sidecar_repo_count, skip_result,
+        split_ticket_days, subtitle_for, targets, title_for, window_for, window_log_line,
+        AuditPatchInputs, RenderDecision, Step, DATE_FORMAT, RENDER_CONTRACT_VERSION, STEPS,
     };
     use crate::commands::types::{
         AppConfig, CompileStatus, LastTrigger, RenderMode, RenderUsed, SchedulerConfig,
@@ -1973,7 +2075,7 @@ mod tests {
     use crate::gather::Gathered;
     use crate::render::RenderedBody;
     use crate::state::PipelineStateKind;
-    use autostand_core::dates::{compute_window, Window};
+    use autostand_core::dates::{compute_window, ArchiveMode, Window};
     use autostand_core::pipeline::{CompileOutputs, CoreRenderModeUsed, RenderMode as CoreMode};
     use autostand_scheduler::triggers::TriggerSource;
     use chrono::NaiveDate;
@@ -2007,48 +2109,189 @@ mod tests {
 
     #[test]
     fn only_date_compiles_exactly_that_date() {
-        assert_eq!(
-            targets(d(2026, 8, 3), Some(d(2026, 1, 2))),
-            vec![d(2026, 1, 2)]
-        );
+        for mode in [ArchiveMode::NextBusinessDay, ArchiveMode::SameDay] {
+            assert_eq!(
+                targets(d(2026, 8, 3), Some(d(2026, 1, 2)), mode),
+                vec![d(2026, 1, 2)]
+            );
+        }
     }
 
     #[test]
     fn only_date_wins_even_for_a_weekend_date() {
         // The IPC caller named the file; business-day arithmetic must not move it.
         let saturday = d(2026, 8, 8);
-        assert_eq!(targets(d(2026, 8, 3), Some(saturday)), vec![saturday]);
+        assert_eq!(
+            targets(d(2026, 8, 3), Some(saturday), ArchiveMode::NextBusinessDay),
+            vec![saturday]
+        );
     }
 
     #[test]
-    fn without_only_date_the_targets_are_f_today_then_f_prev() {
+    fn next_business_day_targets_are_f_today_then_f_prev() {
         // Mon 2026-08-03 → file today's work on Tue, previous target is Mon.
         assert_eq!(
-            targets(d(2026, 8, 3), None),
+            targets(d(2026, 8, 3), None, ArchiveMode::NextBusinessDay),
             vec![d(2026, 8, 4), d(2026, 8, 3)]
         );
     }
 
     #[test]
-    fn weekend_targets_collapse_onto_monday_and_friday() {
+    fn same_day_targets_are_today_then_the_previous_business_day() {
+        assert_eq!(
+            targets(d(2026, 8, 3), None, ArchiveMode::SameDay),
+            vec![d(2026, 8, 3), d(2026, 7, 31)]
+        );
+    }
+
+    #[test]
+    fn a_weekend_run_has_nothing_to_self_heal_in_next_business_day_mode() {
+        // Fri, Sat and Sun all file into the same Monday, so a weekend run is
+        // still *filling* that file — there is no rolled-over day behind it.
         for weekend_day in [d(2026, 8, 8), d(2026, 8, 9)] {
             assert_eq!(
-                targets(weekend_day, None),
-                vec![d(2026, 8, 10), d(2026, 8, 7)],
-                "{weekend_day} must file on Monday with Friday as the previous target"
+                targets(weekend_day, None, ArchiveMode::NextBusinessDay),
+                vec![d(2026, 8, 10)],
+                "{weekend_day} must compile Monday only"
             );
         }
     }
 
     #[test]
-    fn targets_are_always_two_distinct_days() {
-        let mut day = d(2026, 1, 1);
-        while day < d(2027, 1, 1) {
-            let selected = targets(day, None);
-            assert_eq!(selected.len(), 2, "{day}");
-            assert!(selected[1] < selected[0], "{day}: {selected:?}");
-            day = day.succ_opt().expect("next day");
+    fn a_weekend_run_still_self_heals_friday_in_same_day_mode() {
+        for weekend_day in [d(2026, 8, 8), d(2026, 8, 9)] {
+            assert_eq!(
+                targets(weekend_day, None, ArchiveMode::SameDay),
+                vec![d(2026, 8, 10), d(2026, 8, 7)],
+                "{weekend_day}"
+            );
         }
+    }
+
+    #[test]
+    fn targets_are_ordered_and_never_repeat_a_date() {
+        for mode in [ArchiveMode::NextBusinessDay, ArchiveMode::SameDay] {
+            let mut day = d(2026, 1, 1);
+            while day < d(2027, 1, 1) {
+                let selected = targets(day, None, mode);
+                assert!((1..=2).contains(&selected.len()), "{mode:?} {day}");
+                if selected.len() == 2 {
+                    assert!(selected[1] < selected[0], "{mode:?} {day}: {selected:?}");
+                }
+                day = day.succ_opt().expect("next day");
+            }
+        }
+    }
+
+    // ── filing target (what the dashboard announces) ──────────────────────
+
+    /// An `AppConfig` whose only interesting field is the filing policy.
+    fn config_with(mode: ArchiveMode) -> AppConfig {
+        AppConfig {
+            dates: crate::commands::types::DatesConfig { archive_mode: mode },
+            ..AppConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_filing_target_names_tomorrows_file_in_next_business_day_mode() {
+        // Thursday 2026-08-13 — the exact day the reported bug was observed on.
+        // Today's work belongs in Friday's standup, and Friday's standup claims
+        // Thursday. Announcing `2026-08-13.md` here is what produced a machine
+        // with that file and no `2026-08-14.md`.
+        let target = filing_target(
+            &config_with(ArchiveMode::NextBusinessDay),
+            d(2026, 8, 13),
+            d(2026, 8, 13),
+        );
+        assert_eq!(target.work_day, "2026-08-13");
+        assert_eq!(target.filing_date, "2026-08-14");
+        assert_eq!(target.archive_mode, ArchiveMode::NextBusinessDay);
+        assert_eq!(target.window.range_start, "2026-08-13");
+        assert_eq!(target.window.range_end, "2026-08-13");
+        assert!(!target.window_empty);
+    }
+
+    #[test]
+    fn the_filing_target_names_todays_file_in_same_day_mode() {
+        let target = filing_target(
+            &config_with(ArchiveMode::SameDay),
+            d(2026, 8, 13),
+            d(2026, 8, 13),
+        );
+        assert_eq!(target.filing_date, "2026-08-13");
+        assert_eq!(target.archive_mode, ArchiveMode::SameDay);
+        assert_eq!(target.window.range_start, "2026-08-13");
+        assert_eq!(target.window.range_end, "2026-08-13");
+    }
+
+    #[test]
+    fn a_weekend_work_day_targets_mondays_file_in_both_modes() {
+        // Nothing is ever filed under a Saturday, so a run on Sat 2026-08-08 or
+        // Sun 2026-08-09 has to name Monday's file — and that file's window has
+        // to reach back far enough to still contain the weekend.
+        for mode in [ArchiveMode::NextBusinessDay, ArchiveMode::SameDay] {
+            for work_day in [d(2026, 8, 8), d(2026, 8, 9)] {
+                let target = filing_target(&config_with(mode), work_day, work_day);
+                assert_eq!(target.filing_date, "2026-08-10", "{mode:?} {work_day}");
+                assert!(
+                    target.window.range_start.as_str() <= target.work_day.as_str()
+                        && target.work_day.as_str() <= target.window.range_end.as_str(),
+                    "{mode:?} {work_day}: the weekend day must be inside {:?}",
+                    target.window
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_filing_target_beyond_today_reports_an_empty_window() {
+        // Same-day filing for a Tuesday, asked for on the Monday before: the
+        // file exists as a name but there is nothing to put in it yet.
+        let target = filing_target(
+            &config_with(ArchiveMode::SameDay),
+            d(2026, 8, 11),
+            d(2026, 8, 10),
+        );
+        assert_eq!(target.filing_date, "2026-08-11");
+        assert!(target.window_empty);
+    }
+
+    #[test]
+    fn the_filing_target_agrees_with_what_a_compile_would_do() {
+        // The point of the command: what the dashboard announces and what the
+        // pipeline writes are computed from the same two functions, so they
+        // cannot disagree for any day of any year in either mode.
+        for mode in [ArchiveMode::NextBusinessDay, ArchiveMode::SameDay] {
+            let config = config_with(mode);
+            let mut day = d(2026, 1, 1);
+            while day < d(2027, 1, 1) {
+                let target = filing_target(&config, day, d(2030, 1, 1));
+                let compiled = targets(day, None, mode)[0];
+                assert_eq!(
+                    target.filing_date,
+                    compiled.format(DATE_FORMAT).to_string(),
+                    "{mode:?} {day}: dashboard and pipeline disagree"
+                );
+                let window = window_for(&config, compiled, d(2030, 1, 1));
+                assert_eq!(target.window, range_dto(&window), "{mode:?} {day}");
+                day = day.succ_opt().expect("next day");
+            }
+        }
+    }
+
+    #[test]
+    fn the_window_log_line_names_the_file_and_the_range() {
+        // The Terminal is the only place a user can check which file a run
+        // touched after the fact, so the file name has to be in the line.
+        let line = window_log_line(
+            d(2026, 8, 10),
+            &compute_window(d(2026, 8, 10), ArchiveMode::NextBusinessDay, d(2026, 8, 10)),
+        );
+        assert_eq!(
+            line,
+            "filing 2026-08-10.md — window 2026-08-07 → 2026-08-09"
+        );
     }
 
     // ── anti-regression ───────────────────────────────────────────────────
@@ -2355,49 +2598,110 @@ mod tests {
     }
 
     #[test]
-    fn the_subtitle_reads_like_the_spec_example() {
-        // Mon 2026-08-03's window is Thu 07-30 .. Fri 07-31: same month, so the
-        // month is written once and the second day follows the en-dash.
+    fn the_subtitle_matches_the_app_script_range_form() {
+        // Mon 2026-08-10's window is Fri 08-07 .. Sun 08-09. `2026-08-10.md` in
+        // the reference repo carries exactly this line.
         assert_eq!(
-            subtitle_for(&compute_window(d(2026, 8, 3))),
-            "_Work completed July 30–31, 2026._"
+            subtitle_for(&compute_window(
+                d(2026, 8, 10),
+                ArchiveMode::NextBusinessDay,
+                d(2026, 8, 10)
+            )),
+            "_Work completed Fri Aug 07 – Sun Aug 09, 2026._"
         );
     }
 
     #[test]
-    fn the_subtitle_separator_is_an_en_dash() {
-        let subtitle = subtitle_for(&compute_window(d(2026, 8, 3)));
-        assert!(subtitle.contains('\u{2013}'), "{subtitle}");
+    fn the_subtitle_separator_is_a_spaced_en_dash() {
+        let subtitle = subtitle_for(&window(d(2026, 8, 7), d(2026, 8, 9)));
+        assert!(subtitle.contains(" \u{2013} "), "{subtitle}");
         assert!(!subtitle.contains('-'), "hyphen leaked in: {subtitle}");
     }
 
     #[test]
-    fn a_cross_month_window_repeats_the_month() {
+    fn a_cross_month_window_abbreviates_both_ends() {
         assert_eq!(
-            subtitle_for(&window(d(2026, 7, 31), d(2026, 8, 3))),
-            "_Work completed July 31–August 03, 2026._"
+            subtitle_for(&window(d(2026, 7, 31), d(2026, 8, 2))),
+            "_Work completed Fri Jul 31 – Sun Aug 02, 2026._"
         );
     }
 
     #[test]
-    fn a_cross_year_window_spells_both_years() {
+    fn a_cross_year_window_prints_only_the_end_year() {
+        // The App Script stamps `%Y` on the end alone; matching it matters more
+        // than the theoretical ambiguity, because the existing standup corpus
+        // was written this way.
         assert_eq!(
-            subtitle_for(&window(d(2025, 12, 31), d(2026, 1, 2))),
-            "_Work completed December 31, 2025–January 02, 2026._"
+            subtitle_for(&window(d(2026, 12, 31), d(2027, 1, 3))),
+            "_Work completed Thu Dec 31 – Sun Jan 03, 2027._"
         );
     }
 
     #[test]
-    fn a_single_day_window_drops_the_range() {
+    fn a_single_day_window_spells_the_weekday_out() {
         assert_eq!(
-            subtitle_for(&window(d(2026, 8, 3), d(2026, 8, 3))),
-            "_Work completed August 03, 2026._"
+            subtitle_for(&window(d(2026, 8, 13), d(2026, 8, 13))),
+            "_Work completed Thursday, August 13, 2026._"
         );
+    }
+
+    #[test]
+    fn a_same_day_window_reads_as_one_named_day() {
+        // Same-day filing on a midweek day is the single-day case.
+        assert_eq!(
+            subtitle_for(&compute_window(
+                d(2026, 8, 13),
+                ArchiveMode::SameDay,
+                d(2026, 8, 13)
+            )),
+            "_Work completed Thursday, August 13, 2026._"
+        );
+    }
+
+    #[test]
+    fn every_header_matches_the_reference_repo_byte_for_byte() {
+        // Transcribed from `~/Sync/Github_Dailies/<F>.md` line 2, which the App
+        // Script wrote. This is the only test that can catch a window that is
+        // *plausible* but off by a day — the thing that made autostand file a
+        // Thursday's work twice and lose every weekend.
+        let expected = [
+            (d(2026, 8, 4), "_Work completed Monday, August 03, 2026._"),
+            (d(2026, 8, 5), "_Work completed Tuesday, August 04, 2026._"),
+            (
+                d(2026, 8, 6),
+                "_Work completed Wednesday, August 05, 2026._",
+            ),
+            (d(2026, 8, 7), "_Work completed Thursday, August 06, 2026._"),
+            (
+                d(2026, 8, 10),
+                "_Work completed Fri Aug 07 \u{2013} Sun Aug 09, 2026._",
+            ),
+            (d(2026, 8, 11), "_Work completed Monday, August 10, 2026._"),
+            (d(2026, 8, 12), "_Work completed Tuesday, August 11, 2026._"),
+            (
+                d(2026, 8, 13),
+                "_Work completed Wednesday, August 12, 2026._",
+            ),
+            (
+                d(2026, 8, 14),
+                "_Work completed Thursday, August 13, 2026._",
+            ),
+        ];
+        for (f, subtitle) in expected {
+            // `today` is the filing date itself: the App Script wrote each of
+            // these on the morning of `F`, so the clamp never bit.
+            let window = compute_window(f, ArchiveMode::NextBusinessDay, f);
+            assert_eq!(subtitle_for(&window), subtitle, "{f}");
+        }
     }
 
     #[test]
     fn the_subtitle_is_wrapped_in_italics() {
-        let subtitle = subtitle_for(&compute_window(d(2026, 8, 3)));
+        let subtitle = subtitle_for(&compute_window(
+            d(2026, 8, 3),
+            ArchiveMode::NextBusinessDay,
+            d(2026, 8, 3),
+        ));
         assert!(subtitle.starts_with("_Work completed "), "{subtitle}");
         assert!(subtitle.ends_with("._"), "{subtitle}");
     }
@@ -2698,18 +3002,25 @@ mod tests {
         };
         let body = llm(GOOD_BODY);
 
-        let patch = audit_patch(
-            &compute_window(d(2026, 8, 3)),
-            &facts,
-            &gathered,
-            &RenderDecision::Accepted(GOOD_BODY.into()),
-            Some(&body),
-            &[],
-            "deadbeef",
-        );
+        let patch = audit_patch(&AuditPatchInputs {
+            window: &compute_window(d(2026, 8, 3), ArchiveMode::NextBusinessDay, d(2026, 8, 3)),
+            mode: ArchiveMode::NextBusinessDay,
+            facts: &facts,
+            gathered: &gathered,
+            decision: &RenderDecision::Accepted(GOOD_BODY.into()),
+            rendered: Some(&body),
+            provider_attempts: &[],
+            hash: "deadbeef",
+        });
         // `start` / `end` are core's key names — commands::standup reads them.
-        assert_eq!(patch["window"]["start"], serde_json::json!("2026-07-30"));
-        assert_eq!(patch["window"]["end"], serde_json::json!("2026-07-31"));
+        assert_eq!(patch["window"]["start"], serde_json::json!("2026-07-31"));
+        assert_eq!(patch["window"]["end"], serde_json::json!("2026-08-02"));
+        // The policy the window came from, so a later reader can tell an
+        // intentional same-day range from a regression.
+        assert_eq!(
+            patch["archive_mode"],
+            serde_json::json!("next_business_day")
+        );
         assert_eq!(patch["facts"].as_array().expect("facts").len(), 2);
         assert_eq!(patch["notes"].as_array().expect("notes").len(), 1);
         assert_eq!(patch["render_used"], serde_json::json!("llm"));
@@ -2726,21 +3037,23 @@ mod tests {
 
     #[test]
     fn the_audit_patch_records_a_validation_failure() {
-        let patch = audit_patch(
-            &compute_window(d(2026, 8, 3)),
-            "",
-            &Gathered::default(),
-            &RenderDecision::Rejected {
+        let patch = audit_patch(&AuditPatchInputs {
+            window: &compute_window(d(2026, 8, 3), ArchiveMode::SameDay, d(2026, 8, 3)),
+            mode: ArchiveMode::SameDay,
+            facts: "",
+            gathered: &Gathered::default(),
+            decision: &RenderDecision::Rejected {
                 code: "invented_ticket",
                 message: "render invents ticket FIF-999".into(),
             },
-            None,
-            &[],
-            "cafe",
-        );
+            rendered: None,
+            provider_attempts: &[],
+            hash: "cafe",
+        });
         assert_eq!(patch["render_used"], serde_json::json!("llm_fallback"));
         assert_eq!(patch["fellback"], serde_json::json!(true));
         assert_eq!(patch["provider"], serde_json::Value::Null);
+        assert_eq!(patch["archive_mode"], serde_json::json!("same_day"));
         assert_eq!(
             patch["validation_failure"]["code"],
             serde_json::json!("invented_ticket")
@@ -2792,6 +3105,32 @@ mod tests {
         // page may never have saved a config.
         let config = config_from_store_bytes(b"{}").expect("empty store parses");
         assert_eq!(config.dailies_dir, AppConfig::default().dailies_dir);
+    }
+
+    #[test]
+    fn a_store_written_before_the_filing_policy_keeps_the_app_script_rule() {
+        // The headless path (`autostand-app --compile`) reads the store file
+        // directly, so the migration has to hold here as well as in the IPC
+        // DTO. Flipping an existing install to same-day filing would move every
+        // future standup to a different file without anyone asking.
+        let mut stored = serde_json::to_value(AppConfig::default()).expect("serialize");
+        stored
+            .as_object_mut()
+            .expect("config object")
+            .remove("dates");
+        let bytes = serde_json::json!({ "config": stored })
+            .to_string()
+            .into_bytes();
+
+        let config = config_from_store_bytes(&bytes).expect("legacy store parses");
+        assert_eq!(config.dates.archive_mode, ArchiveMode::NextBusinessDay);
+
+        // And the whole chain that depends on it: same-day would file Thursday's
+        // work under Thursday instead of Friday.
+        assert_eq!(
+            filing_target(&config, d(2026, 8, 13), d(2026, 8, 13)).filing_date,
+            "2026-08-14"
+        );
     }
 
     #[test]

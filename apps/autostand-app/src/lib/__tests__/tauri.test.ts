@@ -126,6 +126,11 @@ const COMMANDS: CommandCase[] = [
   },
   { command: "get_pipeline_status", call: () => tauriApi.getPipelineStatus() },
   {
+    command: "get_filing_target",
+    call: () => tauriApi.getFilingTarget("2026-08-13"),
+    args: { date: "2026-08-13" },
+  },
+  {
     command: "preview_gather",
     call: () => tauriApi.previewGather("2026-08-03"),
     args: { date: "2026-08-03" },
@@ -236,10 +241,10 @@ beforeEach(() => {
 });
 
 describe("tauriApi", () => {
-  it("exposes exactly the 50 documented commands", () => {
-    expect(COMMANDS).toHaveLength(50);
-    expect(Object.keys(tauriApi)).toHaveLength(50);
-    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(50);
+  it("exposes exactly the 51 documented commands", () => {
+    expect(COMMANDS).toHaveLength(51);
+    expect(Object.keys(tauriApi)).toHaveLength(51);
+    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(51);
   });
 
   it.each(COMMANDS)(
@@ -270,6 +275,14 @@ describe("tauriApi", () => {
       token: "token",
       resolution: "keep_current",
       mergedAuto: null,
+    });
+  });
+
+  it("passes a null work day so the backend files against today", async () => {
+    await tauriApi.getFilingTarget();
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_filing_target", {
+      date: null,
     });
   });
 

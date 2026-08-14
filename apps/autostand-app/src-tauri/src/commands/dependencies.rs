@@ -125,6 +125,10 @@ pub(crate) fn find_program(name: &str, path_override: Option<&OsStr>) -> Option<
     let path = path_override
         .map(OsString::from)
         .or_else(|| std::env::var_os("PATH"));
+    // Only the macOS branch below mutates this. Everywhere else the vector is
+    // complete as built, and `-D warnings` rejects an unused `mut` — a lint a
+    // macOS developer can never reproduce locally.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut dirs = path
         .as_deref()
         .map(std::env::split_paths)
