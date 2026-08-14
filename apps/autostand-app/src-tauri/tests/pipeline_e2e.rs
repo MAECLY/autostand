@@ -38,6 +38,7 @@ use autostand_app::commands::types::{
 use autostand_app::gather::{self, Gathered};
 use autostand_app::git_ops;
 use autostand_app::pipeline_runner::{self, RenderDecision};
+use autostand_app::render::RenderedBody;
 use autostand_core::dates::{self, Window};
 use autostand_core::pipeline::{self as core_pipeline, CompileInputs};
 use autostand_core::provenance::{self, Provenance};
@@ -861,5 +862,169 @@ async fn the_dailies_repo_gets_a_standup_commit_without_a_coauthor_trailer() {
     assert_eq!(
         listed, "dailies/2026-08-04.md",
         "only the standup file may be staged"
+    );
+}
+
+// ── render provenance stays out of the file ───────────────────────────────
+
+/// Provider id credited with the LLM render below. Deliberately a string that
+/// nothing in the fixture (repos, commits, notes, tickets) can produce.
+const RENDER_PROVIDER: &str = "ollama";
+
+/// Model id credited with the same render, chosen for the same reason.
+const RENDER_MODEL: &str = "llama3.1:8b-instruct";
+
+/// An LLM body that passes validation: only in-window tickets, real bullets.
+fn llm_rendered_body() -> String {
+    format!(
+        "**{WORK_REPO} — checkout and inventory**\n\
+         - Corrected the checkout total rounding ([FIF-201]({JIRA_BASE}/FIF-201))\n\
+         - Made failed inventory syncs retry ([FIF-202]({JIRA_BASE}/FIF-202))\n"
+    )
+}
+
+/// [`compile_headless`] with an accepted LLM body, so the run carries a provider
+/// and a model. Kept separate because every other test asserts the deterministic
+/// path, which never contacts a provider at all.
+async fn compile_with_llm(fx: &Fixture, date: NaiveDate, rendered: &RenderedBody) -> RunOutcome {
+    let file_path = fx.file_path(date);
+    let window = dates::compute_window(date);
+    let gathered = gather::gather_all(
+        &gather::to_date_window(&window),
+        &fx.config,
+        &fx.state_dir(),
+    )
+    .await;
+    let (facts, all_git_tickets) = pipeline_runner::split_ticket_days(&gathered.facts);
+    let provenance = provenance::compute(
+        &facts,
+        &gathered.notes,
+        gathered.github.as_deref(),
+        &all_git_tickets,
+        &window.dates,
+    );
+    let hash = pipeline_runner::inputs_hash(&facts, &gathered);
+    let prev_auto = auto_body(&file_path, &fx.host).unwrap_or_default();
+
+    let decision = pipeline_runner::decide_render(
+        RenderMode::Auto,
+        Some(rendered),
+        &provenance.range_tickets,
+        &provenance.forbidden_tickets,
+    );
+    assert!(
+        matches!(decision, RenderDecision::Accepted(_)),
+        "the fixture body must survive validation: {decision:?}"
+    );
+
+    fs::create_dir_all(fx.dailies_dir()).expect("dailies dir");
+    let outputs = core_pipeline::compile_file(&core_inputs(CoreInput {
+        fx,
+        date,
+        window: &window,
+        facts: &facts,
+        gathered: &gathered,
+        provenance: &provenance,
+        prev_auto,
+        decision: &decision,
+    }))
+    .expect("compile_file writes the standup");
+
+    if let Some(path) = outputs.audit_path.as_ref() {
+        let overlay = pipeline_runner::audit_patch(
+            &window,
+            &facts,
+            &gathered,
+            &decision,
+            Some(rendered),
+            &[],
+            &hash,
+        );
+        merge_json(path, &overlay);
+    }
+
+    let result = pipeline_runner::ok_result(
+        date,
+        &fx.host,
+        &file_path,
+        &decision,
+        &outputs,
+        pipeline_runner::outcome_message(&decision, Some(rendered)),
+    );
+    RunOutcome {
+        result,
+        window,
+        facts,
+        provenance,
+        hash,
+    }
+}
+
+/// Which provider and model rendered a standup is metadata *about* the file, not
+/// content *of* it. The Dashboard reads it from the audit sidecar and shows it
+/// beside the preview; the markdown a teammate reads must never mention it.
+#[tokio::test]
+async fn the_standup_file_never_names_the_render_provider() {
+    let fx = fixture();
+    let date = filing_date();
+    seed_existing_file(&fx, date);
+
+    let rendered = RenderedBody {
+        body: llm_rendered_body(),
+        provider: RENDER_PROVIDER.to_string(),
+        model: RENDER_MODEL.to_string(),
+        used_api: true,
+    };
+    let run = compile_with_llm(&fx, date, &rendered).await;
+
+    assert_eq!(run.result.status, CompileStatus::Ok);
+    assert_eq!(run.result.render_used, RenderUsed::Llm);
+    // The IPC result may name the provider — it never reaches the file.
+    assert_eq!(
+        run.result.message,
+        format!("rendered by {RENDER_PROVIDER} ({RENDER_MODEL})")
+    );
+
+    // The sidecar is where the provenance belongs; without it the guard below
+    // would pass on a render that never had a provider in the first place.
+    let doc: serde_json::Value = serde_json::from_slice(
+        &fs::read(sidecar_path(&fx.state_dir(), date, HOST)).expect("read sidecar"),
+    )
+    .expect("sidecar json");
+    assert_eq!(doc["provider"], RENDER_PROVIDER);
+    assert_eq!(doc["model"], RENDER_MODEL);
+    assert_eq!(doc["render_used"], "llm");
+    assert_eq!(doc["fellback"].as_bool(), Some(false));
+
+    let body = read_file(&fx, date);
+    assert!(
+        body.contains("Corrected the checkout total rounding"),
+        "the LLM body never reached the file, so the guard proves nothing: {body}"
+    );
+
+    let lower = body.to_ascii_lowercase();
+    assert!(
+        !lower.contains(RENDER_PROVIDER),
+        "the render provider leaked into the standup: {body}"
+    );
+    assert!(
+        !lower.contains(RENDER_MODEL),
+        "the render model leaked into the standup: {body}"
+    );
+    assert!(
+        !lower.contains("rendered by"),
+        "a provenance line leaked into the standup: {body}"
+    );
+
+    // The MANUAL region and the other machine's AUTO block are equally off-limits.
+    let parsed = format::parse(&body).expect("the written file parses");
+    assert_eq!(parsed.manual.body.trim(), MANUAL_ITEM);
+    assert_eq!(
+        parsed
+            .auto_for(FOREIGN_HOST)
+            .expect("the other host's block survives")
+            .body
+            .trim(),
+        FOREIGN_AUTO
     );
 }

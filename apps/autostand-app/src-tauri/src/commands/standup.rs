@@ -236,14 +236,16 @@ pub async fn list_audit_sidecars(date: String) -> Result<Vec<AuditSidecar>, AppE
         };
         // An unreadable sidecar still gets listed — the UI needs the path to
         // report it — with empty provenance rather than a hard failure.
-        let (rendered_at, render_used) =
-            parse_sidecar_fields(&path).unwrap_or_else(|_| (String::new(), RenderUsed::Det));
+        let fields = parse_sidecar_fields(&path).unwrap_or_default();
         out.push(AuditSidecar {
             path: path.to_string_lossy().to_string(),
             date: date.clone(),
             host,
-            rendered_at,
-            render_used,
+            rendered_at: fields.rendered_at,
+            render_used: fields.render_used,
+            provider: fields.provider,
+            model: fields.model,
+            fellback: fields.fellback,
         });
     }
     out.sort_by(|a, b| a.host.cmp(&b.host));
@@ -319,26 +321,51 @@ fn audit_data_from_json(value: &Value) -> AuditData {
     }
 }
 
-/// Extract `rendered_at` + `render_used` from a sidecar without a full parse.
-fn parse_sidecar_fields(path: &Path) -> Result<(String, RenderUsed), AppError> {
-    let bytes = std::fs::read(path)?;
-    let value: Value = serde_json::from_slice(&bytes)?;
-    Ok((
-        str_field(&value, "rendered_at"),
-        parse_render_used(
+/// The slice of a sidecar the listing needs, without a full `AuditData` parse.
+///
+/// `provider` / `model` / `fellback` are render provenance: the Dashboard shows
+/// them next to the standup, never inside it.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SidecarFields {
+    rendered_at: String,
+    render_used: RenderUsed,
+    provider: Option<String>,
+    model: Option<String>,
+    fellback: bool,
+}
+
+/// Project the listing fields out of an already-parsed sidecar document.
+fn sidecar_fields_from_json(value: &Value) -> SidecarFields {
+    SidecarFields {
+        rendered_at: str_field(value, "rendered_at"),
+        render_used: parse_render_used(
             value
                 .get("render_used")
                 .and_then(Value::as_str)
                 .unwrap_or("det"),
         ),
-    ))
+        provider: opt_str_field(value, "provider"),
+        model: opt_str_field(value, "model"),
+        fellback: value
+            .get("fellback")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
+/// Extract the listing fields from a sidecar without a full parse.
+fn parse_sidecar_fields(path: &Path) -> Result<SidecarFields, AppError> {
+    let bytes = std::fs::read(path)?;
+    let value: Value = serde_json::from_slice(&bytes)?;
+    Ok(sidecar_fields_from_json(&value))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         audit_data_from_json, collect_standup_dates, date_from_standup_filename, parse_render_mode,
-        parse_render_used, parse_window, resolve_dailies_dir, sidecar_host,
+        parse_render_used, parse_window, resolve_dailies_dir, sidecar_fields_from_json,
+        sidecar_host, SidecarFields,
     };
     use crate::commands::types::{AuditRenderMode, RenderUsed};
     use serde_json::json;
@@ -494,6 +521,49 @@ mod tests {
         // sidecar value into a plausible-looking bullet count.
         let audit = audit_data_from_json(&json!({ "accumulated_count": u64::from(u32::MAX) + 1 }));
         assert_eq!(audit.accumulated_count, 0);
+    }
+
+    #[test]
+    fn sidecar_fields_carry_the_render_provenance() {
+        let fields = sidecar_fields_from_json(&json!({
+            "rendered_at": "2026-08-03T07:00:00Z",
+            "render_used": "llm_fallback",
+            "provider": "ollama",
+            "model": "llama3.1:8b",
+            "fellback": true,
+        }));
+        assert_eq!(
+            fields,
+            SidecarFields {
+                rendered_at: "2026-08-03T07:00:00Z".to_string(),
+                render_used: RenderUsed::LlmFallback,
+                provider: Some("ollama".to_string()),
+                model: Some("llama3.1:8b".to_string()),
+                fellback: true,
+            }
+        );
+    }
+
+    #[test]
+    fn sidecar_fields_of_a_deterministic_render_name_no_provider() {
+        // A deterministic render never contacted a provider, so the listing must
+        // say "nothing" rather than invent one.
+        let fields = sidecar_fields_from_json(&json!({
+            "rendered_at": "2026-08-03T07:00:00Z",
+            "render_used": "det",
+        }));
+        assert!(fields.provider.is_none());
+        assert!(fields.model.is_none());
+        assert!(!fields.fellback);
+    }
+
+    #[test]
+    fn sidecar_fields_default_when_the_document_is_empty() {
+        assert_eq!(
+            sidecar_fields_from_json(&json!({})),
+            SidecarFields::default()
+        );
+        assert_eq!(SidecarFields::default().render_used, RenderUsed::Det);
     }
 
     #[test]

@@ -30,6 +30,7 @@ import {
 import { CompileButton } from "@/components/standup/CompileButton";
 import { ManualEditor } from "@/components/standup/ManualEditor";
 import { PipelineCard } from "@/components/standup/PipelineCard";
+import { RenderProvenanceNote } from "@/components/standup/RenderProvenanceNote";
 import { StandupPreview } from "@/components/standup/StandupPreview";
 import { useHostSlug } from "@/hooks/use-config";
 import { usePipelineStatus } from "@/hooks/use-pipeline-status";
@@ -161,6 +162,9 @@ function TodayStandup({ date, regenerating }: TodayStandupProps) {
       <div className={regenerating ? "opacity-60" : undefined}>
         <StandupPreview content={standup.data} hostSlug={hostSlug} />
       </div>
+      {/* A sibling of the preview, never a child: provenance is metadata about
+          the standup and must stay outside anything that gets copied or filed. */}
+      <RenderProvenanceNote date={date} hostSlug={hostSlug} />
     </div>
   );
 }

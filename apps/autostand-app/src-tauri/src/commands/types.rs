@@ -692,6 +692,12 @@ pub struct AuditSidecar {
     pub rendered_at: String,
     /// Which renderer was used.
     pub render_used: RenderUsed,
+    /// Provider id that rendered the body (`None` for a deterministic render).
+    pub provider: Option<String>,
+    /// Model id the provider reported using.
+    pub model: Option<String>,
+    /// Whether the preferred provider failed and another one took over.
+    pub fellback: bool,
 }
 
 /// Audit data returned by `read_audit_sidecar`.
@@ -1222,9 +1228,15 @@ mod tests {
             host: "host".to_string(),
             rendered_at: "2026-08-03T07:00:00Z".to_string(),
             render_used: RenderUsed::Llm,
+            provider: Some("claude".to_string()),
+            model: Some("claude-sonnet-4-5".to_string()),
+            fellback: true,
         })
         .unwrap();
         assert_eq!(value["render_used"], json!("llm"));
+        assert_eq!(value["provider"], json!("claude"));
+        assert_eq!(value["model"], json!("claude-sonnet-4-5"));
+        assert_eq!(value["fellback"], json!(true));
     }
 
     #[test]

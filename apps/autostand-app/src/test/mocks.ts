@@ -17,6 +17,7 @@ import { vi } from "vitest";
 import type {
   AppConfig,
   AuditData,
+  AuditSidecar,
   CloudFolder,
   CompileResult,
   DataSourceConfig,
@@ -339,6 +340,22 @@ export function makeAuditData(overrides: Partial<AuditData> = {}): AuditData {
     fellback: false,
     hash: "sha256:deadbeef",
     accumulated_count: 0,
+    ...overrides,
+  };
+}
+
+export function makeAuditSidecar(
+  overrides: Partial<AuditSidecar> = {},
+): AuditSidecar {
+  return {
+    path: `/Users/tester/.local/state/autostand/audit/${FIXTURE_DATE}-${FIXTURE_HOST}.json`,
+    date: FIXTURE_DATE,
+    host: FIXTURE_HOST,
+    rendered_at: "2026-08-03T07:15:00Z",
+    render_used: "llm",
+    provider: "claude",
+    model: "claude-sonnet-4",
+    fellback: false,
     ...overrides,
   };
 }
