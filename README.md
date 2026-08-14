@@ -1,11 +1,25 @@
-# autostand
+<div align="center">
 
-Cross-platform daily standup automation. A Tauri v2 desktop app (Rust + React) that gathers your work
-activity from multiple data sources, renders prose through pluggable AI providers, and writes structured
-Markdown standup files.
+<img src="brand/logo/logo-horizontal.svg" alt="autostand" width="420">
 
-🚧 In development (v0.1.0, unreleased). Full architecture and specs live in [`docs/`](docs/README.md);
-implementation status is tracked in [`docs/dev/06-progress.md`](docs/dev/06-progress.md).
+### Your standup, written from what you actually did.
+
+A desktop app that reads your real activity — commits, pull requests, AI coding sessions, notes —
+and files a structured standup every working day. Nothing leaves your machine unless you point it
+at a provider yourself.
+
+[![CI](https://github.com/MAECLY/autostand/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MAECLY/autostand/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/release-v1.0.0-2563eb)](https://github.com/MAECLY/autostand/releases/latest)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-6b7280)](#install)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24c8db)](https://tauri.app)
+[![Rust](https://img.shields.io/badge/rust-stable-b7410e)](https://www.rust-lang.org)
+[![License](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
+
+**[Download](#install)** · **[Documentation](docs/README.md)** · **[Changelog](CHANGELOG.md)** · **[autostand.maecly.com](https://autostand.maecly.com)**
+
+</div>
+
+---
 
 ## Where everything lives
 
@@ -19,8 +33,8 @@ autostand is three repositories. **This one is the product**: the Rust workspace
 
 The design system is a private git dependency (`"@autostand/ui": "github:MAECLY/autostand-ui#main"`), pinned by
 commit in `pnpm-lock.yaml`. Installing it needs read access to that repo — an SSH key locally, and the
-`AUTOSTAND_UI_TOKEN` secret in CI. See [`docs/dev/04-ci-cd.md`](docs/dev/04-ci-cd.md) § Private dependency
-authentication.
+`AUTOSTAND_UI_DEPLOY_KEY` secret in CI, which holds a read-only deploy key rather than a personal token.
+See [`docs/dev/04-ci-cd.md`](docs/dev/04-ci-cd.md) § Private dependency authentication.
 
 ## Features
 
@@ -94,8 +108,8 @@ platform, no build required.
 | Windows | `-setup.exe` | |
 | Linux | `.AppImage` | `chmod +x` it and run — no package manager involved. |
 
-Every bundle carries its own inference sidecar and a pinned `llama-cli`, so
-Built-in Local AI works without Ollama, Homebrew, CUDA or a system llama.cpp.
+Every bundle carries its own inference sidecar and a pinned `llama-completion`,
+so Built-in Local AI works without Ollama, Homebrew, CUDA or a system llama.cpp.
 
 macOS users: read the next section first, or the app will appear to be broken.
 
