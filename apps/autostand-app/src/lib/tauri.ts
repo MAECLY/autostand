@@ -20,6 +20,8 @@ import type {
   CloudSyncSelection,
   CompileResult,
   DataSourceConfig,
+  Dependency,
+  DependencyGroup,
   GatherPreview,
   LlmProviderConfig,
   LocalModelInfo,
@@ -39,11 +41,13 @@ import type {
   RegenerationApplied,
   RegenerationPreview,
   RegenerationResolution,
+  RemediationOutcome,
   RepoSyncStatus,
   SchedulerStatus,
   SchedulerTickEvent,
   SettingsPaths,
   StandupFileContent,
+  StandupReadiness,
   TestProviderResult,
 } from "@/lib/types";
 
@@ -112,6 +116,8 @@ export const tauriApi = {
     invoke<void>("set_scheduler_enabled", { enabled }),
 
   discoverRepos: () => invoke<RepoInfo[]>("discover_repos"),
+  getStandupReadiness: () =>
+    invoke<StandupReadiness>("get_standup_readiness"),
 
   getSettingsPaths: () => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths: () => invoke<PathValidation[]>("validate_paths"),
@@ -127,6 +133,12 @@ export const tauriApi = {
     invoke<RepoSyncStatus>("setup_repo_sync", {
       repoName: repoName?.trim() || null,
     }),
+
+  // Each call spawns child processes on the Rust side; cache aggressively.
+  getDependencyStatus: (group?: DependencyGroup) =>
+    invoke<Dependency[]>("get_dependency_status", { group: group ?? null }),
+  runDependencyRemediation: (dependencyId: string) =>
+    invoke<RemediationOutcome>("run_dependency_remediation", { dependencyId }),
 
   storeApiKey: (provider: string, key: string) =>
     invoke<void>("store_api_key", { provider, key }),

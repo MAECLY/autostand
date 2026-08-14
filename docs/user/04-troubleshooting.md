@@ -13,7 +13,10 @@ Common problems and their fixes. If your issue isn't here, check the [GitHub Iss
 | **Two-machine conflict markers** | Union merge driver not configured | Ensure `.gitattributes` in the dailies repo has `20YY-MM-DD.md merge=union`. The app auto-adds this (self-heal) if missing. |
 | **Host slug is numeric/IP** | DHCP-assigned hostname | Settings → Paths → set host slug override manually (e.g., `desk`, `laptop`). |
 | **TCC permission denied (macOS)** | App can't read `~/Documents/` or `~/.claude/` | System Settings → Privacy & Security → Full Disk Access → add autostand. Restart the app. |
-| **`gh` CLI auth error** | Not logged in or token expired | Open a terminal and run `gh auth login`. Verify with `gh auth status`. |
+| **`gh` CLI auth error** | Not logged in or token expired | Settings → Sync → **Requirements** shows "GitHub sign-in — Action needed" with the exact command; copy it and run it in your own terminal (it opens a browser). |
+| **Repo Sync will not turn on** | Git, the GitHub CLI, or the sign-in is missing | Settings → Sync → **Requirements** names the missing one and offers the install command or the official download page. Press **Recheck** after fixing it. |
+| **"Use model" is disabled in Local AI** | The llama.cpp runtime is not installed | Settings → Local AI → **Requirements** → install `llama-completion`/`llama-cli` (Homebrew: `brew install llama.cpp`; elsewhere follow the linked build guide), or point `AUTOSTAND_LLAMA_CLI` at an existing build. Downloading a model still works without it. |
+| **Local AI never renders** | The `autostand-local-llm` helper is missing | It ships inside the app bundle: reinstall Autostand, or run `cargo build --workspace` for a source checkout. Settings → Local AI → **Requirements** reports it. |
 | **Secrets in standup** | Redaction missed a pattern | Report the pattern (open an issue with the redacted example). Redaction is defense-in-depth — also avoid typing secrets in notes. |
 | **Stale lock** | Previous run crashed mid-compile | App auto-clears locks older than 10 minutes. If it doesn't, delete `<state_dir>/.lock/` manually (see log location below). |
 | **OpenCode SQLite locked** | OpenCode is running | Normal — the cache will retry on the next compile. Or close OpenCode before compiling. |
@@ -62,6 +65,28 @@ For deeper visibility:
 Debug logs are verbose — turn off when not needed to save disk.
 
 ## Common fixes
+
+### Check a feature's requirements
+
+Settings → **Sync** and Settings → **Local AI** each carry a **Requirements**
+checklist for the programs Autostand does not ship. Every entry is one of
+*Ready*, *Missing*, *Action needed* (installed but unusable — signed out, or a
+model downloaded but not selected) or *Unknown* (the check itself needs
+something missing, e.g. sign-in cannot be checked without the GitHub CLI).
+
+Each unmet entry carries exactly one next step:
+
+- **A command.** Always printed in full before anything runs it. Autostand only
+  runs it for you when the step is a Homebrew install, which needs no elevation
+  and no answers; everything else — `sudo`, `winget`, `gh auth login` — is
+  copy-and-paste into your own terminal by design.
+- **A documentation link.** Used whenever no package id can be vouched for on
+  your platform, which is more honest than a command that would fail.
+- **An in-app step**, such as downloading or selecting a local model, which you
+  complete in the same screen.
+
+The checklist probes real programs, so it does not refresh on its own: press
+**Recheck** after installing something.
 
 ### Re-detect providers
 

@@ -6,7 +6,7 @@
 //! exact child as a private GitHub repository, allowing both transports to
 //! coexist without copying, moving, or deleting the user's files.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tokio::process::Command;
 
+use crate::commands::dependencies::find_program;
 use crate::commands::{load_config, save_config};
 use crate::error::AppError;
 
@@ -74,9 +75,9 @@ struct Output {
     stdout: String,
 }
 
-/// Resolved executables rather than shell command strings. The optional PATH is
-/// only used by hermetic tests; production also probes common GUI-app paths on
-/// macOS where Finder does not inherit the user's interactive shell PATH.
+/// Resolved executables rather than shell command strings. Detection itself
+/// lives in [`crate::commands::dependencies`], so the Repo Sync card and the
+/// requirement checklist can never disagree about what is installed.
 #[derive(Debug, Clone)]
 struct RepoTools {
     git: Option<PathBuf>,
@@ -153,42 +154,6 @@ impl RepoTools {
         ];
         self.run(program, &args, Some(dir), SETUP_TIMEOUT).await
     }
-}
-
-fn find_program(name: &str, path_override: Option<&OsStr>) -> Option<PathBuf> {
-    let path = path_override
-        .map(OsString::from)
-        .or_else(|| std::env::var_os("PATH"));
-    let mut dirs = path
-        .as_deref()
-        .map(std::env::split_paths)
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-
-    #[cfg(target_os = "macos")]
-    if path_override.is_none() {
-        dirs.extend([
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-            PathBuf::from("/usr/bin"),
-        ]);
-    }
-
-    for dir in dirs {
-        let direct = dir.join(name);
-        if direct.is_file() {
-            return Some(direct);
-        }
-        #[cfg(target_os = "windows")]
-        for suffix in ["exe", "cmd", "bat"] {
-            let candidate = dir.join(format!("{name}.{suffix}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
 
 fn as_string(path: &Path) -> String {
@@ -377,10 +342,10 @@ fn valid_repo_name(value: &str) -> bool {
 }
 
 async fn gh_authenticated(tools: &RepoTools) -> bool {
-    tools
-        .gh(None, &["auth", "status", "--hostname", "github.com"])
-        .await
-        .is_ok_and(|output| output.success)
+    match tools.gh.as_deref() {
+        Some(gh) => crate::commands::dependencies::gh_authenticated(gh).await,
+        None => false,
+    }
 }
 
 async fn origin_exists(tools: &RepoTools, dir: &Path) -> bool {
@@ -427,12 +392,12 @@ async fn repo_status_for(config: &super::types::AppConfig, tools: &RepoTools) ->
         && is_repo
         && has_origin
         && private == Some(true);
-    let message = if !git_available {
-        Some("Install Git to enable Repo Sync.".into())
-    } else if !gh_available {
-        Some("Install GitHub CLI to enable Repo Sync.".into())
-    } else if !gh_authenticated {
-        Some("Sign in with `gh auth login` to enable Repo Sync.".into())
+    // The requirement checklist (`commands::dependencies`) names the missing
+    // tool and carries the command that installs it, so this message only has
+    // to say what it costs Repo Sync — repeating the fix here would give the
+    // user two half-instructions instead of one whole one.
+    let message = if !git_available || !gh_available || !gh_authenticated {
+        Some("Repo Sync stays off until its requirements are met.".into())
     } else if config.sync.repo_enabled && !is_repo {
         Some("Repo Sync needs to be set up for this dailies folder.".into())
     } else if has_origin && private == Some(false) {
@@ -682,9 +647,9 @@ pub async fn setup_repo_sync(
 #[cfg(test)]
 mod tests {
     use super::{
-        dailies_path, detected_cloud_folders, find_program, macos_cloud_folders,
-        prepare_cloud_root, repo_status_for, should_run_repo_sync, valid_repo_name, CloudFolder,
-        RepoSyncStatus, RepoTools, CLOUD_CHILD,
+        dailies_path, detected_cloud_folders, macos_cloud_folders, prepare_cloud_root,
+        repo_status_for, should_run_repo_sync, valid_repo_name, CloudFolder, RepoSyncStatus,
+        RepoTools, CLOUD_CHILD,
     };
     use crate::commands::types::{AppConfig, SyncConfig};
     use std::ffi::OsStr;
@@ -778,9 +743,11 @@ mod tests {
         assert!(!config.sync.repo_enabled);
     }
 
+    /// `RepoTools` resolves through the shared probe, so a hermetic PATH must
+    /// reach it: the ambient developer PATH would make this pass anywhere.
     #[cfg(unix)]
     #[test]
-    fn executable_detection_is_hermetic_and_does_not_use_the_ambient_path() {
+    fn repo_tools_resolve_through_the_shared_hermetic_probe() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let temp = tempfile::tempdir().expect("tempdir");
@@ -789,12 +756,11 @@ mod tests {
         let mut permissions = std::fs::metadata(&git).expect("metadata").permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&git, permissions).expect("chmod");
-        assert_eq!(
-            find_program("git", Some(temp.path().as_os_str())),
-            Some(git)
-        );
-        assert_eq!(find_program("gh", Some(temp.path().as_os_str())), None);
-        assert_eq!(find_program("gh", Some(OsStr::new(""))), None);
+
+        let tools = RepoTools::detect(Some(temp.path().as_os_str()));
+        assert_eq!(tools.git.as_deref(), Some(git.as_path()));
+        assert!(tools.gh.is_none());
+        assert!(RepoTools::detect(Some(OsStr::new(""))).git.is_none());
     }
 
     #[cfg(unix)]
@@ -843,6 +809,28 @@ mod tests {
         assert_eq!(status.repository.as_deref(), Some("owner/dailies"));
         assert_eq!(status.private, Some(true));
         assert_eq!(status.repo_path, repo.to_string_lossy());
+    }
+
+    /// The requirement checklist names the missing tool and carries the command
+    /// that installs it. Repeating a second, weaker instruction here would give
+    /// the user two half-answers.
+    #[tokio::test]
+    async fn a_missing_tool_defers_the_fix_to_the_requirement_checklist() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = AppConfig {
+            dailies_dir: temp.path().to_string_lossy().to_string(),
+            ..AppConfig::default()
+        };
+        let status = repo_status_for(&config, &RepoTools::detect(Some(OsStr::new("")))).await;
+
+        assert!(!status.can_setup);
+        let message = status.message.expect("a reason Repo Sync is off");
+        assert_eq!(
+            message,
+            "Repo Sync stays off until its requirements are met."
+        );
+        assert!(!message.contains("gh auth login"));
+        assert!(!message.contains("Install"));
     }
 
     #[test]

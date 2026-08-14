@@ -48,6 +48,8 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `select_local_model` | `{ modelId: string }` | `void` | Select an installed, size-valid catalog model | `commands::local_models` |
 | `accept_local_model_terms` | `{ modelId: string }` | `void` | Persist acceptance of the catalog's exact terms version | `commands::local_models` |
 | `unload_local_models` | — | `LocalRuntimeUnload` | Terminate any process still holding a managed GGUF and delete the reusable prompt caches; model files are kept | `commands::local_models` |
+| `get_dependency_status` | `{ group: "repo_sync" \| "local_ai" \| null }` | `Dependency[]` | Probe one feature's external prerequisites (or all) and attach the single next step for each unmet one. Spawns child processes — cache aggressively | `commands::dependencies` |
+| `run_dependency_remediation` | `{ dependencyId: string }` | `RemediationOutcome` | Perform the step the user explicitly asked for: open the documentation link, or run the Homebrew install already shown verbatim. Returns `performed: false` for steps only the user can take | `commands::dependencies` |
 | `get_notification_status` | — | `NotificationStatus` | Read OS permission and saved notification preferences without prompting | `notifications` |
 | `request_notification_permission` | — | `string` | Ask for OS permission after an explicit Settings action | `notifications` |
 | `send_test_notification` | — | `boolean` | Send a content-free test alert; respects master opt-in and dedup policy | `notifications` |
@@ -66,6 +68,7 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `set_scheduler_schedule` | `{ cron: string }` | `void` | Persist cron + reinstall system unit | `autostand-scheduler::set_schedule` |
 | `trigger_run_now` | — | `CompileResult` | Manually trigger a compile outside the cron schedule | `autostand-core::pipeline::trigger(Manual)` |
 | `discover_repos` | — | `RepoInfo[]` | Scan `GITHUB_DIR` for git repos (depth-1) | `autostand-adapters::git::discover` |
+| `get_standup_readiness` | — | `StandupReadiness` | Whether local-git can gather at all: scan root, depth-1 repo count, and the author filter it will apply (configured list → machine git identity → none) | `commands::readiness` |
 | `get_settings_paths` | — | `SettingsPaths` | Return all configured paths (GITHUB_DIR, dailies dir, claude dir, etc.) | `autostand-core::config::paths` |
 | `validate_paths` | — | `PathValidation[]` | Check each path exists + readable; returns per-path ok/missing | `autostand-core::config::validate` |
 | `open_in_file_manager` | `{ path: string }` | `void` | Open a directory in the OS file manager (Finder / Explorer / `xdg-open`). Rejects blank, relative, and non-directory paths before the shell handoff: `invalid`, or `not_found` when the directory is gone | `tauri_plugin_opener::open_path` |
@@ -321,6 +324,9 @@ export interface AuditSidecar {
   host: string;
   rendered_at: string;          // ISO-8601 UTC
   render_used: "llm" | "det" | "llm_fallback";
+  provider: string | null;      // provider id that rendered the body
+  model: string | null;         // model it reported using
+  fellback: boolean;            // an LLM render lost to the deterministic body
 }
 
 export interface AuditData {
@@ -445,6 +451,49 @@ export interface PathValidation {
   readable: boolean;
   message: string | null;
 }
+
+export type DependencyGroup = "repo_sync" | "local_ai";
+export type DependencyState = "ok" | "missing" | "misconfigured" | "unknown";
+export type RemediationKind = "terminal_command" | "in_app_action" | "doc_link";
+
+export interface Remediation {
+  kind: RemediationKind;
+  label: string;
+  command: string | null;   // exact command, shown before it may be run
+  url: string | null;
+  runnable: boolean;        // false for anything needing a real terminal
+  note: string | null;
+}
+
+export interface Dependency {
+  id: string;               // `repo-sync.git`, `local-ai.runtime`, …
+  group: DependencyGroup;
+  label: string;
+  description: string;
+  state: DependencyState;
+  detail: string | null;    // resolved path or short reason; never command output
+  remediation: Remediation | null;  // null exactly when satisfied
+}
+
+export interface RemediationOutcome {
+  dependency_id: string;
+  performed: boolean;       // false when the step is the user's to take
+  message: string;
+  dependency: Dependency;   // re-probed after the step
+}
+
+export type AuthorSource = "configured" | "git-identity" | "none";
+
+export interface StandupReadiness {
+  github_dir: string;             // scan root actually used (config value or fallback)
+  github_dir_exists: boolean;
+  repo_count: number;             // depth-1 repos under the scan root
+  configured_authors: string[];   // standup_authors, trimmed + deduped
+  git_identity: string | null;    // `git config user.email` (else user.name)
+  effective_authors: string[];    // what becomes `git log --author=…`
+  author_source: AuthorSource;
+  ready: boolean;
+}
 ```
 
 ---
@@ -493,6 +542,7 @@ export const tauriApi = {
   previewRegeneration:(date?: string)               => invoke<RegenerationPreview>("preview_regeneration", { date }),
   applyRegeneration:  (token, resolution, mergedAuto?) => invoke<RegenerationApplied>("apply_regeneration", { token, resolution, mergedAuto }),
   discoverRepos:       ()                          => invoke<RepoInfo[]>("discover_repos"),
+  getStandupReadiness: ()                          => invoke<StandupReadiness>("get_standup_readiness"),
   getSettingsPaths:    ()                          => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths:       ()                          => invoke<PathValidation[]>("validate_paths"),
   openInFileManager:  (path: string)                => invoke<void>("open_in_file_manager", { path }),
@@ -500,6 +550,9 @@ export const tauriApi = {
   configureCloudSync: (rootPath: string)            => invoke<CloudSyncSelection>("configure_cloud_sync", { rootPath }),
   getRepoSyncStatus:  ()                           => invoke<RepoSyncStatus>("get_repo_sync_status"),
   setupRepoSync:      (repoName?: string)           => invoke<RepoSyncStatus>("setup_repo_sync", { repoName }),
+  getDependencyStatus:(group?: DependencyGroup)     => invoke<Dependency[]>("get_dependency_status", { group }),
+  runDependencyRemediation: (dependencyId: string) =>
+                          invoke<RemediationOutcome>("run_dependency_remediation", { dependencyId }),
   storeApiKey:         (provider: string, key: string) =>
                           invoke<void>("store_api_key", { provider, key }),
   getApiKeyStatus:     (provider: string) =>

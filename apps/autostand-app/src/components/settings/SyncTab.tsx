@@ -25,6 +25,7 @@ import { Input } from "@autostand/ui/components/input";
 import { Label } from "@autostand/ui/components/label";
 
 import { OpenPathButton } from "@/components/common/OpenPathButton";
+import { DependencyChecklist } from "@/components/settings/DependencyChecklist";
 import { useCloudFolders } from "@/hooks/use-cloud-folders";
 import { useConfig } from "@/hooks/use-config";
 import {
@@ -167,27 +168,19 @@ export function SyncTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
+          {/* Outside the status branch on purpose: when `get_repo_sync_status`
+              itself fails, the missing prerequisite is usually the reason. */}
+          <DependencyChecklist
+            group="repo_sync"
+            description="Repo Sync needs all three before it can create or push a private repository."
+          />
+
           {repo.isPending ? (
             <div className="h-24 animate-pulse rounded-lg bg-muted" />
           ) : repo.isError ? (
             <p className="text-sm text-destructive">{toAppError(repo.error).message}</p>
           ) : (
             <>
-              <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                {[
-                  ["Git", repo.data.git_available],
-                  ["GitHub CLI", repo.data.gh_available],
-                  ["Signed in", repo.data.gh_authenticated],
-                ].map(([label, ready]) => (
-                  <div key={String(label)} className="rounded-md border border-border p-2">
-                    <span className={ready ? "text-success" : "text-muted-foreground"}>
-                      {ready ? "Ready" : "Missing"}
-                    </span>
-                    <p className="mt-1 text-muted-foreground">{label}</p>
-                  </div>
-                ))}
-              </div>
-
               {repo.data.enabled ? (
                 <div className="rounded-lg bg-success-bg p-3 text-sm text-success">
                   <p className="flex items-center gap-2 font-medium">

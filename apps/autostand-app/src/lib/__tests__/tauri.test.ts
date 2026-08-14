@@ -140,6 +140,10 @@ const COMMANDS: CommandCase[] = [
     args: { enabled: true },
   },
   { command: "discover_repos", call: () => tauriApi.discoverRepos() },
+  {
+    command: "get_standup_readiness",
+    call: () => tauriApi.getStandupReadiness(),
+  },
   { command: "get_settings_paths", call: () => tauriApi.getSettingsPaths() },
   { command: "validate_paths", call: () => tauriApi.validatePaths() },
   {
@@ -213,6 +217,16 @@ const COMMANDS: CommandCase[] = [
     args: { modelId: "gemma-3-1b" },
   },
   { command: "unload_local_models", call: () => tauriApi.unloadLocalModels() },
+  {
+    command: "get_dependency_status",
+    call: () => tauriApi.getDependencyStatus("repo_sync"),
+    args: { group: "repo_sync" },
+  },
+  {
+    command: "run_dependency_remediation",
+    call: () => tauriApi.runDependencyRemediation("repo-sync.git"),
+    args: { dependencyId: "repo-sync.git" },
+  },
 ];
 
 beforeEach(() => {
@@ -220,10 +234,10 @@ beforeEach(() => {
 });
 
 describe("tauriApi", () => {
-  it("exposes exactly the 47 documented commands", () => {
-    expect(COMMANDS).toHaveLength(47);
-    expect(Object.keys(tauriApi)).toHaveLength(47);
-    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(47);
+  it("exposes exactly the 50 documented commands", () => {
+    expect(COMMANDS).toHaveLength(50);
+    expect(Object.keys(tauriApi)).toHaveLength(50);
+    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(50);
   });
 
   it.each(COMMANDS)(
@@ -254,6 +268,14 @@ describe("tauriApi", () => {
       token: "token",
       resolution: "keep_current",
       mergedAuto: null,
+    });
+  });
+
+  it("passes a null dependency group so every group is reported", async () => {
+    await tauriApi.getDependencyStatus();
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_dependency_status", {
+      group: null,
     });
   });
 

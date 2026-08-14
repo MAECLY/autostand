@@ -390,6 +390,12 @@ export interface AuditSidecar {
   /** ISO-8601 UTC. */
   rendered_at: string;
   render_used: RenderUsed;
+  /** Provider id that rendered the body; `null` for a deterministic render. */
+  provider: string | null;
+  /** Model id the provider reported using. */
+  model: string | null;
+  /** The preferred provider failed and another one took over. */
+  fellback: boolean;
 }
 
 export interface AuditData {
@@ -530,6 +536,26 @@ export interface PathValidation {
   message: string | null;
 }
 
+/** Which step of local-git's author cascade this machine lands on. */
+export type AuthorSource = "configured" | "git-identity" | "none";
+
+/** Whether local-git can gather facts, and what is missing when it cannot. */
+export interface StandupReadiness {
+  /** Scan root local-git will read — the configured value or its fallback. */
+  github_dir: string;
+  github_dir_exists: boolean;
+  /** Repos directly under the scan root (depth 1). */
+  repo_count: number;
+  /** `standup_authors`, trimmed and deduped. */
+  configured_authors: string[];
+  /** This machine's `git config` identity, offered as the suggestion. */
+  git_identity: string | null;
+  /** The values that become `git log --author=…` flags. */
+  effective_authors: string[];
+  author_source: AuthorSource;
+  ready: boolean;
+}
+
 /** One detected cloud-sync folder the user may point `dailies_dir` at. */
 export interface CloudFolder {
   /** Stable id, e.g. `icloud-drive`, `onedrive`, `syncthing`. */
@@ -564,6 +590,58 @@ export interface RepoSyncStatus {
   repository: string | null;
   private: boolean | null;
   message: string | null;
+}
+
+// ── Feature prerequisites ─────────────────────────────────────────────────
+
+/** Feature whose external prerequisites are reported together. */
+export type DependencyGroup = "repo_sync" | "local_ai";
+
+export type DependencyState =
+  | "ok"
+  | "missing"
+  /** Installed, but not usable as configured: signed out, nothing selected. */
+  | "misconfigured"
+  /** Not answerable yet, because the check itself needs something missing. */
+  | "unknown";
+
+export type RemediationKind =
+  | "terminal_command"
+  | "in_app_action"
+  | "doc_link";
+
+/** The single next step for one unmet dependency. */
+export interface Remediation {
+  kind: RemediationKind;
+  label: string;
+  /** Exact command, shown verbatim before anything may run it. */
+  command: string | null;
+  url: string | null;
+  /** Whether `run_dependency_remediation` may execute it without a terminal. */
+  runnable: boolean;
+  note: string | null;
+}
+
+export interface Dependency {
+  /** Stable id, e.g. `repo-sync.git`, `local-ai.runtime`. */
+  id: string;
+  group: DependencyGroup;
+  label: string;
+  description: string;
+  state: DependencyState;
+  /** Curated detail — a resolved path or a short reason. Never command output. */
+  detail: string | null;
+  /** `null` exactly when the dependency is satisfied. */
+  remediation: Remediation | null;
+}
+
+export interface RemediationOutcome {
+  dependency_id: string;
+  /** False when the step is the user's to take, so the UI claims nothing. */
+  performed: boolean;
+  message: string;
+  /** The same dependency, re-probed after the step. */
+  dependency: Dependency;
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────

@@ -228,6 +228,25 @@ export function installMockBackend(scenario: Scenario): void {
 
       case "discover_repos":
         return state.repos;
+      case "get_standup_readiness": {
+        // Derived from the same state the real backend derives it from, so a
+        // spec that empties `repos` or `standup_authors` gets a coherent report.
+        const configured = state.config.standup_authors
+          .map((author) => author.trim())
+          .filter((author) => author.length > 0);
+        const identity = "tester@example.invalid";
+        const effective = configured.length > 0 ? configured : [identity];
+        return {
+          github_dir: state.settingsPaths.github_dir,
+          github_dir_exists: true,
+          repo_count: state.repos.length,
+          configured_authors: configured,
+          git_identity: identity,
+          effective_authors: effective,
+          author_source: configured.length > 0 ? "configured" : "git-identity",
+          ready: state.repos.length > 0,
+        };
+      }
       case "get_settings_paths":
         return state.settingsPaths;
       case "validate_paths":
@@ -256,6 +275,26 @@ export function installMockBackend(scenario: Scenario): void {
           private: null,
           message: null,
         };
+
+      case "get_dependency_status": {
+        const group = args.group === null ? null : String(args.group);
+        return group === null
+          ? state.dependencies
+          : state.dependencies.filter((entry) => entry.group === group);
+      }
+      case "run_dependency_remediation": {
+        const id = String(args.dependencyId);
+        const dependency = state.dependencies.find((entry) => entry.id === id);
+        if (dependency === undefined) reject("not_found", `unknown dependency: ${id}`);
+        // The backend re-probes after acting; the mock reports the same state
+        // back so a spec has to drive `patchState` to simulate a fix.
+        return {
+          dependency_id: id,
+          performed: dependency.remediation?.kind !== "in_app_action",
+          message: `remediation for ${dependency.label}`,
+          dependency,
+        };
+      }
 
       case "store_api_key": {
         const provider = findProvider(String(args.provider));
