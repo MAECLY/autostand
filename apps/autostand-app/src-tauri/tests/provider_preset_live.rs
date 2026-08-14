@@ -9,7 +9,7 @@
 
 use autostand_adapters::llm::{
     claude::ClaudeAdapter, grok::GrokAdapter, ollama::OllamaAdapter, openai::OpenAiAdapter,
-    LlmAdapter, ProviderConfig, ProviderMode,
+    LlmAdapter, LocalRuntimePolicy, ProviderConfig, ProviderMode,
 };
 use autostand_app::commands::types::StandupFormatConfig;
 use autostand_app::format_presets::{all_presets, preset_section_markers};
@@ -103,6 +103,7 @@ fn provider_ready(provider: &LiveProvider) -> Option<ProviderConfig> {
             api_key: None,
             api_base_url: std::env::var("OLLAMA_HOST").ok(),
             timeout_secs: 60,
+            local_runtime_policy: LocalRuntimePolicy::default(),
         });
     }
     let key = first_env(provider.env_vars)?;
@@ -113,6 +114,7 @@ fn provider_ready(provider: &LiveProvider) -> Option<ProviderConfig> {
         api_key: Some(key),
         api_base_url: None,
         timeout_secs: 60,
+        local_runtime_policy: LocalRuntimePolicy::default(),
     })
 }
 
@@ -127,8 +129,6 @@ fn stub_prompt(format: &StandupFormatConfig) -> String {
         file_date: "2026-08-03",
         range_start: "2026-08-01",
         range_end: "2026-08-02",
-        title: "Daily Standup — August 03, 2026",
-        subtitle: "_Work completed August 01–02, 2026._",
         prev_auto: None,
         format: Some(format),
     })
@@ -269,6 +269,7 @@ async fn cli_provider_preset_matrix() {
             api_key: None,
             api_base_url: None,
             timeout_secs: 180,
+            local_runtime_policy: LocalRuntimePolicy::default(),
         };
 
         for preset in all_presets()
