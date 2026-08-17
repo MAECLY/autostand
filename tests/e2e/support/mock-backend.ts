@@ -398,7 +398,7 @@ export function installMockBackend(scenario: Scenario): void {
       case "send_test_notification":
         return true;
       case "list_local_models":
-        return [];
+        return state.localModels;
       case "download_local_model":
       case "cancel_local_model_download":
       case "delete_local_model":

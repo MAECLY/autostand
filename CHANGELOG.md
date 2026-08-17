@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `MAECLY/autostand-ui` is public, so `@autostand/ui` installs with no
+  credential anywhere: pnpm resolves the specifier to a `codeload.github.com`
+  tarball over anonymous HTTPS. The read-only deploy key and the token gates
+  built around it are on their way out.
+
+### Fixed
+
+- Settings → Local AI showed an empty panel in the published screenshots because
+  the marketing capture fired before the model catalog arrived and before the
+  tab finished switching.
+
 ## [1.0.0] - 2026-08-14
 
 First release. autostand ports the `~/Sync/Github_Dailies` App Script to a desktop app: it reads
@@ -200,6 +213,20 @@ your choice, and files it in the same AUTO/MANUAL Markdown format the script alw
   what clearing the quarantine flag gives up, since that check is what protects you from a tampered
   download. Windows bundles are unsigned for the same reason. Signed, notarized builds ship as soon
   as the secrets are set.
+
+### Distribution
+
+- Three installers, one per platform, attached to the tag: a macOS `.dmg`, a
+  Windows `-setup.exe` and a Linux `.AppImage`. Each carries its own inference
+  sidecar and a pinned `llama-completion`, so built-in local AI works with no
+  Ollama, Homebrew, CUDA or system llama.cpp.
+- The macOS bundle is **Apple Silicon only** — `macos-13` was dropped from the
+  release matrix. Intel Macs run the arm64 build through Rosetta 2.
+- The Linux AppImage is built on `ubuntu-22.04`, so it needs **x86_64 and glibc
+  ≥ 2.35**: Ubuntu 22.04+, Debian 12+, Fedora 36+, Arch and openSUSE Tumbleweed
+  are fine; RHEL 9 and its rebuilds (glibc 2.34) and anything on musl are not.
+  AppImages self-mount through FUSE 2 — on a FUSE-3-only distro, run it with
+  `--appimage-extract-and-run`.
 
 ### Notes
 

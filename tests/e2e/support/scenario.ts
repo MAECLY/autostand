@@ -18,6 +18,7 @@ import type {
   Dependency,
   GatherPreview,
   LlmProviderConfig,
+  LocalModelInfo,
   PathValidation,
   PipelineStatus,
   ProviderHealth,
@@ -100,6 +101,8 @@ export interface BackendState {
   cloudFolders: CloudFolder[];
   /** `get_dependency_status` answers; the command filters them by group. */
   dependencies: Dependency[];
+  /** `list_local_models` answers, in catalog order. */
+  localModels: LocalModelInfo[];
 }
 
 export interface Scenario {
@@ -678,6 +681,77 @@ export function makeProviderHealth(): ProviderHealth[] {
   ];
 }
 
+/**
+ * The shipped GGUF catalog, byte counts and all, with the 2B downloaded and
+ * selected: an empty catalog renders a panel that says nothing about what the
+ * feature does.
+ */
+export function makeLocalModels(): LocalModelInfo[] {
+  const base = {
+    format: "GGUF",
+    context_length: 32_768,
+    downloaded_bytes: 0,
+    runtime_cache_bytes: 0,
+    error: null,
+  } as const;
+  return [
+    {
+      ...base,
+      id: "gemma3:1b",
+      display_name: "Gemma 3 1B (Fast)",
+      tier: "extra_small",
+      quality: "fast",
+      size_bytes: 1_069_306_624,
+      status: "not_downloaded",
+      selected: false,
+      license: "Gemma Terms of Use",
+      license_url: "https://ai.google.dev/gemma/terms",
+      terms_required: true,
+    },
+    {
+      ...base,
+      id: "qwen3.5:2b",
+      display_name: "Qwen 3.5 2B (Balanced)",
+      tier: "small",
+      quality: "balanced",
+      size_bytes: 1_280_835_840,
+      status: "available",
+      selected: true,
+      license: "Apache-2.0",
+      license_url: "https://www.apache.org/licenses/LICENSE-2.0",
+      terms_required: false,
+      downloaded_bytes: 1_280_835_840,
+      runtime_cache_bytes: 268_435_456,
+    },
+    {
+      ...base,
+      id: "gemma3:4b",
+      display_name: "Gemma 3 4B (Balanced)",
+      tier: "medium",
+      quality: "balanced",
+      size_bytes: 2_489_758_112,
+      status: "not_downloaded",
+      selected: false,
+      license: "Gemma Terms of Use",
+      license_url: "https://ai.google.dev/gemma/terms",
+      terms_required: true,
+    },
+    {
+      ...base,
+      id: "qwen3.5:4b",
+      display_name: "Qwen 3.5 4B (High Quality)",
+      tier: "large",
+      quality: "high_quality",
+      size_bytes: 2_740_937_888,
+      status: "not_downloaded",
+      selected: false,
+      license: "Apache-2.0",
+      license_url: "https://www.apache.org/licenses/LICENSE-2.0",
+      terms_required: false,
+    },
+  ];
+}
+
 export function makeScenario(): Scenario {
   return {
     state: {
@@ -755,6 +829,7 @@ export function makeScenario(): Scenario {
       compileResult: makeCompileResult(),
       cloudFolders: makeCloudFolders(),
       dependencies: makeDependencies(),
+      localModels: makeLocalModels(),
     },
     defer: [],
     errors: {},

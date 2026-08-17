@@ -32,10 +32,10 @@ autostand is three repositories. **This one is the product**: the Rust workspace
 | [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) | The design system: tokens, 24 base components, icons, brand fonts, Storybook | the `@autostand/ui` package, consumed here as a git dependency |
 | [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page) | The marketing site (Next.js 15) | a Vercel deployment |
 
-The design system is a private git dependency (`"@autostand/ui": "github:MAECLY/autostand-ui#main"`), pinned by
-commit in `pnpm-lock.yaml`. Installing it needs read access to that repo — an SSH key locally, and the
-`AUTOSTAND_UI_DEPLOY_KEY` secret in CI, which holds a read-only deploy key rather than a personal token.
-See [`docs/dev/04-ci-cd.md`](docs/dev/04-ci-cd.md) § Private dependency authentication.
+The design system is a git dependency (`"@autostand/ui": "github:MAECLY/autostand-ui#main"`), pinned by
+commit in `pnpm-lock.yaml`. That repository is public, so `pnpm install` needs no credential: pnpm resolves
+the specifier to a `codeload.github.com` tarball over anonymous HTTPS, and `#main` moving changes nothing
+until the lockfile is updated. See [`docs/dev/04-ci-cd.md`](docs/dev/04-ci-cd.md).
 
 ## Features
 

@@ -63,9 +63,38 @@ test("audit sidecar", async ({ page, app }) => {
 });
 
 test("local AI", async ({ page, app }) => {
-  await app.start(makeScenario(), "/settings");
+  // The shared fixture ships the prerequisites missing, which is the right
+  // default for the specs that assert on remediation. A released bundle
+  // carries its own runtime, so the picture shows that instead.
+  const scenario = makeScenario();
+  scenario.state.dependencies = scenario.state.dependencies.map((dependency) =>
+    dependency.group === "local_ai"
+      ? {
+          ...dependency,
+          state: "ok",
+          remediation: null,
+          detail:
+            dependency.id === "local-ai.runtime"
+              ? "Bundled with the app."
+              : dependency.id === "local-ai.model"
+                ? "Qwen 3.5 2B (Balanced)"
+                : dependency.detail,
+        }
+      : dependency,
+  );
+  await app.start(scenario, "/settings");
   await page.getByRole("tab", { name: "Local AI" }).click();
-  await expect(page.getByRole("tabpanel", { name: "Local AI" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Local AI" })).toHaveAttribute(
+    "data-state",
+    "active",
+  );
+  // The catalog arrives over IPC; without this the shutter catches the
+  // "Loading model catalog…" placeholder and an empty panel.
+  const catalogEntry = page.getByText("Qwen 3.5 4B (High Quality)");
+  await expect(catalogEntry).toBeVisible();
+  // The catalog is what this screen is for, and it sits below the requirements
+  // block, so the shutter has to follow it down.
+  await catalogEntry.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${OUT}/05-local-ai.png` });
 });
 
