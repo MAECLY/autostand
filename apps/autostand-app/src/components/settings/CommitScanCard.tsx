@@ -236,14 +236,20 @@ export function CommitScanCard() {
         </form>
 
         {canSuggestIdentity && (
+          // The label carries an email address, and a button is nowrap by
+          // default, so this one element set the minimum width of the whole
+          // Settings pane — enough to push its right edge past a 640px window,
+          // where the shell's overflow-hidden clipped it away.
           <Button
             type="button"
             variant="outline"
-            className="self-start"
+            className="h-auto max-w-full self-start whitespace-normal text-left"
             onClick={() => addAuthor(identity)}
           >
-            <Plus className="size-4" aria-hidden="true" />
-            Use this machine&apos;s git identity ({identity})
+            <Plus className="size-4 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 break-all">
+              Use this machine&apos;s git identity ({identity})
+            </span>
           </Button>
         )}
 

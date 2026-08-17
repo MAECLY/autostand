@@ -36,7 +36,10 @@ function RootLayout() {
         style={{ gridTemplateRows: gridRows }}
       >
         <TopBar />
-        <main className="min-h-0 overflow-y-auto">
+        {/* min-w-0: a grid item will not shrink below its own content, so one
+            wide row anywhere in a route widened the whole column and the
+            overflow-hidden above clipped the rest of the window away. */}
+        <main className="min-h-0 min-w-0 overflow-y-auto">
           <Outlet />
         </main>
         <TerminalPanel />

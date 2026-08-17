@@ -130,7 +130,10 @@ export function StatusBar() {
   }
 
   return (
-    <footer className="flex h-8 shrink-0 items-center gap-3 border-t border-border bg-surface px-3 text-xs text-muted-foreground">
+    // min-w-0 + overflow-hidden: this bar is a row of nowrap items in a grid
+    // column shared with every route, so without them its width became the
+    // minimum width of the whole window and narrow layouts were clipped.
+    <footer className="flex h-8 min-w-0 shrink-0 items-center gap-3 overflow-hidden border-t border-border bg-surface px-3 text-xs text-muted-foreground">
       <button
         type="button"
         onClick={toggleTerminal}
@@ -168,16 +171,19 @@ export function StatusBar() {
         </span>
       )}
 
-      <span className="ml-auto flex shrink-0 items-center gap-3">
+      <span className="ml-auto flex min-w-0 shrink items-center gap-3">
         <UsageBadge />
 
-        <span className="font-mono" title="Host slug">
+        <span className="hidden font-mono sm:inline" title="Host slug">
           {hostSlug ?? "—"}
         </span>
 
-        <Separator orientation="vertical" className="h-4" />
+        <Separator orientation="vertical" className="hidden h-4 sm:block" />
 
-        <span title={nextRun ? formatRelative(nextRun) : undefined}>
+        <span
+          className="hidden truncate md:inline"
+          title={nextRun ? formatRelative(nextRun) : undefined}
+        >
           {scheduler?.enabled === false
             ? "Scheduler off"
             : nextRun

@@ -512,18 +512,25 @@ function SettingsPage() {
       <StandupReadinessAlert onFix={() => setSettingsTab("paths")} />
 
       <Tabs
+        className="min-w-0"
         value={settingsTab}
         onValueChange={(value) => {
           if (isSettingsTab(value)) setSettingsTab(value);
         }}
       >
-        <TabsList>
-          {SETTINGS_TABS.map((tab) => (
-            <TabsTrigger key={tab} value={tab}>
-              {TAB_LABELS[tab]}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+        {/* Nine triggers need ~854px laid out in a row. Without a scroller they
+            set the floor for the whole pane, and the window's overflow-hidden
+            then clips whatever does not fit — at 640px that is the right half of
+            every tab's content, unreachable rather than merely tight. */}
+        <div className="min-w-0 overflow-x-auto">
+          <TabsList>
+            {SETTINGS_TABS.map((tab) => (
+              <TabsTrigger key={tab} value={tab}>
+                {TAB_LABELS[tab]}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
 
         <TabsContent value="providers">
           <ProvidersTab />
