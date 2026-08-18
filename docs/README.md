@@ -108,6 +108,15 @@ paths inside them are relative to the `autostand-ui` root unless stated otherwis
 | [specs/audit.md](specs/audit.md) | Audit sidecar JSON schema + phantom detector. |
 | [specs/provider-usage.md](specs/provider-usage.md) | Subscription quota probes, normalized usage model, cache, and health-aware fallback. |
 
+### Research
+
+Feasibility memos, dated. These record what was true when written and are not
+specifications — nothing here is implemented until it moves into `specs/`.
+
+| File | Description |
+| --- | --- |
+| [research/01-meeting-transcripts.md](research/01-meeting-transcripts.md) | Reading Zoom, Google Meet, Teams and Meetily transcripts from a no-backend desktop app: what is reachable by a non-admin individual, which vendor gates are hard walls, and a build order. |
+
 ---
 
 ## Quick links by audience
