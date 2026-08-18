@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A macOS build for Intel.** The release matrix gains an `x86_64-apple-darwin`
+  leg, so macOS ships two bundles: `_aarch64.dmg` for Apple Silicon and `_x64.dmg`
+  for Intel. Both cross-compile on the Apple Silicon runner, including the
+  llama.cpp sidecar, which follows `CMAKE_OSX_ARCHITECTURES` rather than the host
+  — without that the Intel bundle would carry an arm64 `llama-completion` and the
+  local model would fail to launch on the only machines that build exists for.
+  The updater feed gains `darwin-x86_64` with it.
+
+### Fixed
+
+- Documentation in four places claimed Intel Macs ran the arm64 build "through
+  Rosetta 2". Rosetta translates x86_64 for Apple Silicon and never the reverse,
+  so through 1.2.0 there was no macOS build an Intel Mac could start at all.
+
 ## [1.2.0] - 2026-08-17
 
 ### Added

@@ -48,14 +48,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Apple Silicon only, and that genuinely excludes Intel Macs. Earlier
-          # revisions of this file claimed Rosetta 2 covered them; it does not.
-          # Rosetta translates x86_64 for Apple Silicon, never arm64 for Intel,
-          # so an arm64 bundle does not start on an Intel Mac at all. Supporting
-          # them needs an `x86_64-apple-darwin` leg here.
+          # Two macOS legs, because Rosetta 2 only goes one way: it translates
+          # x86_64 for Apple Silicon, never arm64 for Intel. An arm64 bundle does
+          # not start on an Intel Mac at all, so Intel needs its own build.
+          #
+          # Both cross-compile on the Apple Silicon runner rather than using a
+          # macos-13 Intel runner, which is being retired. Rust cross-compiles
+          # from the `--target` alone; llama.cpp needs CMAKE_OSX_ARCHITECTURES,
+          # which the sidecar step derives from the same target triple.
           - platform: macos-14
             target: aarch64-apple-darwin
             args: '--target aarch64-apple-darwin'
+          - platform: macos-14
+            target: x86_64-apple-darwin
+            args: '--target x86_64-apple-darwin'
           - platform: ubuntu-22.04 # oldest glibc we support; do not bump casually
             target: x86_64-unknown-linux-gnu
             args: ''
@@ -165,12 +171,22 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch "$LLAMA_CPP_TAG" \
             https://github.com/ggml-org/llama.cpp.git "$RUNNER_TEMP/llama.cpp"
+          # On macOS the runner is Apple Silicon for both legs, so the target
+          # triple — not the host — decides the architecture. Without this the
+          # Intel bundle would ship an arm64 llama-completion and the local
+          # model would fail to launch on the only machines that build is for.
+          osx_arch=()
+          case "${{ matrix.target }}" in
+            x86_64-apple-darwin)  osx_arch=(-DCMAKE_OSX_ARCHITECTURES=x86_64) ;;
+            aarch64-apple-darwin) osx_arch=(-DCMAKE_OSX_ARCHITECTURES=arm64) ;;
+          esac
           cmake -S "$RUNNER_TEMP/llama.cpp" -B "$RUNNER_TEMP/llama-build" \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_SERVER=OFF \
-            -DLLAMA_CURL=OFF
+            -DLLAMA_CURL=OFF \
+            "${osx_arch[@]}"
           # llama-completion, NOT llama-cli: tools/CMakeLists.txt only adds the
           # cli subdirectory under `if (LLAMA_BUILD_SERVER)`, which is OFF here,
           # so that target does not exist and the build fails with no project.
@@ -255,17 +271,18 @@ jobs:
           releaseBody: |
             See CHANGELOG.md for what changed in this release.
 
-            One installer per platform, attached once every build finishes:
+            Pick the one for your machine:
 
-            | Platform | File | Notes |
-            | --- | --- | --- |
-            | macOS | `.dmg` | **Apple Silicon only** — see the note below. |
-            | Windows | `-setup.exe` | |
-            | Linux | `.AppImage` | `chmod +x` it and run; no package manager involved. |
+            | Platform | File |
+            | --- | --- |
+            | macOS, Apple Silicon (M1–M4) | `_aarch64.dmg` |
+            | macOS, Intel | `_x64.dmg` |
+            | Windows | `-setup.exe` |
+            | Linux | `.AppImage` — `chmod +x` it and run |
 
-            **The macOS build is arm64 only.** It does not run on an Intel Mac —
-            Rosetta 2 translates Intel binaries for Apple Silicon, not the
-            reverse. There is no Intel build yet.
+            The two macOS builds are not interchangeable: Rosetta 2 translates
+            Intel binaries for Apple Silicon and never the reverse, so an Apple
+            Silicon Mac runs either and an Intel Mac only runs `_x64`.
 
             From 1.2.0 onwards you only need to do this once: Settings → Advanced
             → Updates installs later versions in place. The extra `.app.tar.gz`,

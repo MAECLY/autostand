@@ -103,7 +103,8 @@ platform, no build required.
 
 | Platform | File | Notes |
 | --- | --- | --- |
-| macOS | `.dmg` | **Apple Silicon only.** Intel Macs cannot run it — see below. |
+| macOS (Apple Silicon) | `_aarch64.dmg` | M1–M4. |
+| macOS (Intel) | `_x64.dmg` | Not interchangeable with the arm64 build. |
 | Windows | `-setup.exe` | |
 | Linux | `.AppImage` | `chmod +x` it and run — no package manager involved. |
 
@@ -185,9 +186,10 @@ their own repositories in the split, and `pages.yml` is gone. The marketing site
 Desktop bundles are built here: pushing a `v*` tag runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which attaches **one installer per
 platform** — a macOS `.dmg` for Apple Silicon, a Windows `-setup.exe` and a Linux `.AppImage` — to a draft
-release for a human to publish. The macOS bundle is arm64 only, so it does not run on Intel Macs:
-Rosetta 2 translates Intel binaries for Apple Silicon, not the other way round. An Intel Mac needs an
-`x86_64-apple-darwin` build, which the matrix does not produce today.
+release for a human to publish. macOS gets two, because Rosetta 2 translates Intel binaries for Apple
+Silicon and never the reverse: an Apple Silicon Mac runs either, an Intel Mac only runs `_x64`. Both
+cross-compile on the Apple Silicon runner — including llama.cpp, which needs `CMAKE_OSX_ARCHITECTURES`
+rather than following the host.
 
 The Linux AppImage is built on `ubuntu-22.04`, so it needs **glibc ≥ 2.35** and x86_64: Ubuntu 22.04+,
 Debian 12+, Fedora 36+, Arch and openSUSE Tumbleweed are fine, while RHEL 9 and its rebuilds (glibc 2.34)
