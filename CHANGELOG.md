@@ -7,18 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [1.2.0] - 2026-08-17
 
-- `MAECLY/autostand-ui` is public, so `@autostand/ui` installs with no
-  credential anywhere: pnpm resolves the specifier to a `codeload.github.com`
-  tarball over anonymous HTTPS. The read-only deploy key and the token gates
-  built around it are on their way out.
+### Added
+
+- **In-app updates.** Settings → Advanced → Updates checks for a newer release, shows its notes,
+  downloads it with progress and installs it in place. Checking is manual: the app makes no network
+  request until you ask it to. Each bundle is signed with autostand's own updater key and verified
+  before it replaces anything — independent of OS code signing, so this works on the unsigned builds
+  the project ships, and an updated copy needs no `xattr -rd` because the new bundle is written by
+  the app rather than downloaded by a browser. Releases now carry `latest.json`, a `.sig` per bundle
+  and a macOS `.app.tar.gz` alongside the three installers; the updater reads those, nobody
+  downloads them.
+- **Folder permissions, asked for at first launch.** macOS gates Documents, Desktop, Downloads and
+  iCloud Drive, and a denial arrives as an ordinary `PermissionDenied` — which the pipeline reported
+  the same way it reports an empty folder. A dialog now opens when, and only when, something is
+  actually denied, names each refused folder and why it is read, and grants access the one way macOS
+  allows: by touching the location, with a deep link into the right Settings pane for a folder that
+  was already refused once. Settings → Paths keeps the same status as a settled panel. Windows and
+  Linux gate none of this and never see the dialog.
 
 ### Fixed
 
-- Settings → Local AI showed an empty panel in the published screenshots because
-  the marketing capture fired before the model catalog arrived and before the
-  tab finished switching.
+- **Every provider CLI reported "CLI not found" after installing 1.0.0.** Detection walked the
+  inherited `PATH`, and an app launched from Finder, the Dock or a `.desktop` entry does not get the
+  user's: launchd hands it `/usr/bin:/bin:/usr/sbin:/sbin`, which has no Homebrew, no npm prefix, no
+  bun and no cargo — so no claude, codex, grok, gemini or ollama. The bundled local runtime, which
+  needs no `PATH` at all, was found, and that split was the whole diagnosis. Discovery now searches
+  the inherited `PATH` first, then the conventional install locations for the OS, then the per-user
+  ones under `$HOME`, and hands the resolved path to every child process so a CLI can still find its
+  own interpreter.
+- Seven npm advisories, two of them critical, all rooted in `vitest` 2.1.9 pulling a second
+  toolchain: `vite` 5.4.21, `esbuild` 0.21.5 and a `postcss` carrying `nanoid` 3.3.16. Moving to
+  `vitest` 4 drops that toolchain rather than patching it.
+- Settings → Local AI showed an empty panel in the published screenshots, because the marketing
+  capture fired before the model catalog arrived and before the tab finished switching.
+
+### Changed
+
+- `MAECLY/autostand-ui` is public, so `@autostand/ui` installs with no credential anywhere: pnpm
+  resolves the specifier to a `codeload.github.com` tarball over anonymous HTTPS. The read-only
+  deploy key and the token gates built around it are on their way out.
 
 ## [1.0.0] - 2026-08-14
 
@@ -235,5 +264,6 @@ your choice, and files it in the same AUTO/MANUAL Markdown format the script alw
   for updates. Move to a newer version by downloading it. See `docs/dev/04-ci-cd.md` § Tauri updater.
 - Remaining gaps are tracked in `docs/dev/06-progress.md`.
 
-[Unreleased]: https://github.com/MAECLY/autostand/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/MAECLY/autostand/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/MAECLY/autostand/releases/tag/v1.2.0
 [1.0.0]: https://github.com/MAECLY/autostand/releases/tag/v1.0.0

@@ -6,6 +6,7 @@
       "binaries/llama-completion"
     ],
     "targets": [
+      "app",
       "dmg",
       "nsis",
       "appimage"

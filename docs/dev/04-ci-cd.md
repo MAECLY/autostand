@@ -399,7 +399,7 @@ Store these in GitHub repository settings → Secrets and variables → Actions.
 | `APPLE_TEAM_ID` | `release.yml` | Apple Developer Team ID |
 | `WINDOWS_CERTIFICATE` | `release.yml` | Windows codesigning certificate (base64-encoded `.pfx`) |
 | `WINDOWS_CERTIFICATE_PASSWORD` | `release.yml` | Password for the certificate |
-| `TAURI_SIGNING_PRIVATE_KEY` | `release.yml` | Tauri updater signing key (for auto-updates) |
+| `TAURI_SIGNING_PRIVATE_KEY` | `release.yml` | Updater signing key. Required since 1.2.0 — a release built without it produces artifacts no installed app will accept |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | `release.yml` | Password for the updater key |
 
 `AUTOSTAND_UI_TOKEN` is the only one of these that CI cannot run without. The codesigning secrets are optional:
@@ -408,60 +408,38 @@ a SmartScreen warning). See `docs/user/01-install.md`.
 
 ## Tauri updater
 
-**The updater is not enabled.** The app does not check for updates, and `release.yml` produces no
-`latest.json` and no `.sig` files. Users update by downloading the newer bundle from the release page.
+**Enabled since 1.2.0.** Settings → Advanced → Updates checks the release feed, downloads the new
+bundle, verifies its signature and installs it in place. Before that, a fix reached a user only if
+they noticed a release and downloaded an installer again.
 
-Earlier revisions of this document showed a `plugins.updater` block with a `pubkey` as if it were
-configured. It never was: `apps/autostand-app/src-tauri/tauri.conf.json` has no `updater` entry, and
-`apps/autostand-app/src-tauri/Cargo.toml` has no updater plugin dependency. The
-`TAURI_SIGNING_PRIVATE_KEY*` rows in § Secrets are therefore reserved, not used.
+### How it fits together
 
-### What enabling it requires
+| Piece | Where | What it does |
+|---|---|---|
+| Key pair | `TAURI_SIGNING_PRIVATE_KEY` + `…_PASSWORD` secrets; public half in `tauri.conf.json` | Signs each bundle at build time; the installed app verifies against the public half before replacing itself |
+| `plugins.updater.endpoints` | `tauri.conf.json` | `releases/latest/download/latest.json` — always the newest **published** release, so a new version needs no config change |
+| `createUpdaterArtifacts` | `tauri.conf.json` | Makes the bundler emit the `.sig` files; without it the signing key is ignored |
+| `includeUpdaterJson: true` | `release.yml` | Attaches `latest.json`, the feed the endpoint points at |
+| `app` bundle target | `tauri.release.conf.json` | macOS updates from a `.app.tar.gz`, never from the `.dmg`. Without this target macOS is the one platform that cannot update itself |
+| `updater:default`, `process:allow-restart` | `capabilities/default.json` | The two things the frontend is allowed to do |
 
-Five changes, in this order. Steps 2–4 must land together — a `plugins.updater` block without the
-registered plugin is inert, and an `updater:*` permission without the crate fails capability
-resolution at build time.
+### Things that are easy to get wrong
 
-1. **Generate a keypair** — `pnpm -C apps/autostand-app tauri signer generate -w ~/.tauri/autostand.key`.
-   The private key and its password become the `TAURI_SIGNING_PRIVATE_KEY` /
-   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets. The **public** key gets committed —
-   `tauri build` reads it out of `tauri.conf.json`, so it cannot be injected from a GitHub secret at
-   build time, and it does not need to be: a public key is not a credential.
-2. **Crate dependency + registration** — `tauri-plugin-updater = "2"` in
-   `apps/autostand-app/src-tauri/Cargo.toml`, and
-   `.plugin(tauri_plugin_updater::Builder::new().build())` on the builder in
-   `apps/autostand-app/src-tauri/src/lib.rs`.
-3. **Config** — in `tauri.conf.json`:
-   ```json
-   {
-     "bundle": { "createUpdaterArtifacts": true },
-     "plugins": {
-       "updater": {
-         "endpoints": [
-           "https://github.com/MAECLY/autostand/releases/latest/download/latest.json"
-         ],
-         "pubkey": "<paste the generated .pub contents here>"
-       }
-     }
-   }
-   ```
-   `createUpdaterArtifacts` is what makes the bundler emit the `.sig` files and `latest.json`;
-   without it the signing key is ignored.
-4. **Capability** — add `updater:default` to `permissions` in
-   `apps/autostand-app/src-tauri/capabilities/default.json`.
-5. **Frontend** — add `@tauri-apps/plugin-updater` and call `check()` from somewhere (app start, or a
-   "check for updates" action). Nothing updates on its own; the plugin only exposes the API.
-
-Then restore the two env vars in `release.yml`'s `tauri-action` step:
-
-```yaml
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-```
-
-and `tauri-action` will attach a signed `latest.json` plus a `.sig` per bundle to the draft release.
-Note the update flow only works from a **published** release — `endpoints` points at
-`releases/latest`, which skips drafts.
+- **This is not code signing.** The updater key proves a bundle came from this repository. It is
+  independent of Developer ID and Authenticode, which is why in-app updates work on builds macOS and
+  Windows still consider unsigned — and why an updated copy does *not* need `xattr -rd`: the new
+  bundle is written by the app, not downloaded by a browser, so it never gets the quarantine flag.
+- **Drafts are invisible to the updater.** `endpoints` resolves `releases/latest`, which skips
+  drafts. `release.yml` publishes a draft on purpose, so an installed app sees a release only once a
+  human publishes it.
+- **The public key is committed, and that is correct.** `tauri build` reads it from
+  `tauri.conf.json`, so it cannot come from a secret at build time — and a public key is not a
+  credential.
+- **Checking is manual.** The app makes no network request until someone presses the button, which
+  is the same promise the rest of it makes.
+- **Rotating the key strands installed copies.** An app verifies against the public key it shipped
+  with, so a new key means every existing install stops accepting updates and has to be replaced by
+  hand. Treat the private key as unrotatable in practice: keep it, and keep it secret.
 
 ## Release notes
 

@@ -39,6 +39,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
+        // Updates are checked and installed from inside the app, so a fix does
+        // not depend on someone noticing a new release on GitHub. The bundles
+        // are signed with the updater key regardless of code signing, which is
+        // what makes this safe on an otherwise unsigned build.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Relaunching after an update is the updater's last step, and it is the
+        // only thing this plugin is granted (`process:allow-restart`).
+        .plugin(tauri_plugin_process::init())
         .manage(state::AppState::new())
         // The in-process scheduler must start with the app, not on first IPC
         // call: nothing in the UI is required for a cron boundary to come due.

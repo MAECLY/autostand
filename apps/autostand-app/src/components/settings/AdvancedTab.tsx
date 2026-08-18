@@ -5,6 +5,10 @@
  * at. Anything that alters pipeline behaviour belongs in its own tab.
  */
 
+import { useEffect, useState } from "react";
+
+import { UpdatesCard } from "@/components/settings/UpdatesCard";
+import { tauriUpdater } from "@/lib/tauri";
 import { Label } from "@autostand/ui/components/label";
 import { Switch } from "@autostand/ui/components/switch";
 
@@ -37,6 +41,13 @@ function NavToggle({
 }
 
 export function AdvancedTab() {
+  // Read once at module scope by the plugin; a query would be a round trip for
+  // a value that cannot change while the process lives.
+  const [version, setVersion] = useState("…");
+  useEffect(() => {
+    void tauriUpdater.currentVersion().then(setVersion);
+  }, []);
+
   const showAuditNav = useUiStore((state) => state.showAuditNav);
   const showDebugNav = useUiStore((state) => state.showDebugNav);
   const setShowAuditNav = useUiStore((state) => state.setShowAuditNav);
@@ -44,6 +55,16 @@ export function AdvancedTab() {
 
   return (
     <div className="flex flex-col gap-4">
+      <div>
+        <h2 className="text-sm font-semibold">Updates</h2>
+        <p className="text-xs text-muted-foreground">
+          Install a new version from here instead of downloading an installer
+          again.
+        </p>
+      </div>
+
+      <UpdatesCard currentVersion={version} />
+
       <div>
         <h2 className="text-sm font-semibold">Sidebar</h2>
         <p className="text-xs text-muted-foreground">

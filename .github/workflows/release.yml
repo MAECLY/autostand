@@ -235,11 +235,14 @@ jobs:
           # these are reserved rather than active.
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          # NOTE: the updater is NOT enabled (no updater plugin, no
-          # `plugins.updater` block, no `bundle.createUpdaterArtifacts`), so no
-          # latest.json and no .sig files are produced and
-          # TAURI_SIGNING_PRIVATE_KEY* are deliberately not wired here.
-          # See docs/dev/04-ci-cd.md § Tauri updater for what enabling it needs.
+          # The updater's own signing key, which is not code signing: it is what
+          # lets an installed app prove a downloaded bundle came from this
+          # repository before replacing itself with it. Independent of Developer
+          # ID and Authenticode, so in-app updates work on these unsigned builds.
+          # Without both of these the build fails rather than quietly shipping
+          # artifacts no installed app will accept.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/autostand-app
           # Explicit: the pnpm lockfile lives at the repo root, so auto-detection
@@ -258,6 +261,10 @@ jobs:
             | Windows | `-setup.exe` | |
             | Linux | `.AppImage` | `chmod +x` it and run; no package manager involved. |
 
+            From 1.2.0 onwards you only need to do this once: Settings → Advanced
+            → Updates installs later versions in place. The extra `.app.tar.gz`,
+            `.sig` and `latest.json` assets are what that reads — not downloads.
+
             **The bundles are unsigned.** macOS reports that the app *is damaged
             and can't be opened*, which means it has no Developer ID signature,
             not that the download failed. Clear the quarantine flag with:
@@ -271,4 +278,8 @@ jobs:
             macOS?" and docs/user/01-install.md
           releaseDraft: true
           prerelease: false
+          # Publishes latest.json alongside the installers. It is the feed
+          # `plugins.updater.endpoints` points at, so a release without it leaves
+          # every installed copy reporting "no newer version published".
+          includeUpdaterJson: true
           args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json

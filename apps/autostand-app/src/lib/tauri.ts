@@ -7,8 +7,11 @@
  * Contract: `docs/tauri/02-ipc-contracts.md`.
  */
 
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 
 import type {
   ApiKeyStatus,
@@ -177,6 +180,23 @@ export const tauriApi = {
     invoke<void>("accept_local_model_terms", { modelId }),
   unloadLocalModels: () => invoke<LocalRuntimeUnload>("unload_local_models"),
 } as const;
+
+// ── Updater ───────────────────────────────────────────────────────────────
+
+/**
+ * The updater and process plugins, re-exported here for the same reason every
+ * `invoke` is: this module is the only place allowed to import from
+ * `@tauri-apps`, so a change to their API surfaces in one file.
+ */
+export const tauriUpdater = {
+  /** The running version, from the bundle rather than package.json. */
+  currentVersion: () => getVersion(),
+  /** `null` when nothing newer is published. */
+  check: () => check(),
+  relaunch: () => relaunch(),
+} as const;
+
+export type { Update };
 
 // ── Events ────────────────────────────────────────────────────────────────
 

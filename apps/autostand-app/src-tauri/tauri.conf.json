@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "autostand",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "identifier": "com.miguel50flowers.autostand",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -35,6 +35,18 @@
     ],
     "category": "Productivity",
     "shortDescription": "Daily standup automation",
-    "longDescription": "Cross-platform daily standup automation with pluggable AI providers and data sources."
+    "longDescription": "Cross-platform daily standup automation with pluggable AI providers and data sources.",
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk1MEJENEY4ODU4RTgwNEQKUldSTmdJNkYrTlFMbFZEZ0NtS01wUFA2VkNPVlBFeFljTXgyY3Vtc0EwcXAvOG5TMUNuS09VbXMK",
+      "endpoints": [
+        "https://github.com/MAECLY/autostand/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
