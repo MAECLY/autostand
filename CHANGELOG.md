@@ -250,7 +250,8 @@ your choice, and files it in the same AUTO/MANUAL Markdown format the script alw
   sidecar and a pinned `llama-completion`, so built-in local AI works with no
   Ollama, Homebrew, CUDA or system llama.cpp.
 - The macOS bundle is **Apple Silicon only** — `macos-13` was dropped from the
-  release matrix. Intel Macs run the arm64 build through Rosetta 2.
+  release matrix, so the macOS bundle is arm64 only and does not run on Intel
+  Macs at all.
 - The Linux AppImage is built on `ubuntu-22.04`, so it needs **x86_64 and glibc
   ≥ 2.35**: Ubuntu 22.04+, Debian 12+, Fedora 36+, Arch and openSUSE Tumbleweed
   are fine; RHEL 9 and its rebuilds (glibc 2.34) and anything on musl are not.

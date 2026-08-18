@@ -48,9 +48,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Apple Silicon only. Intel Macs are not built: an x86_64 bundle is a
-          # second macOS artifact to test, sign and explain, and Rosetta 2 runs
-          # the arm64 build on the Intel machines that are left.
+          # Apple Silicon only, and that genuinely excludes Intel Macs. Earlier
+          # revisions of this file claimed Rosetta 2 covered them; it does not.
+          # Rosetta translates x86_64 for Apple Silicon, never arm64 for Intel,
+          # so an arm64 bundle does not start on an Intel Mac at all. Supporting
+          # them needs an `x86_64-apple-darwin` leg here.
           - platform: macos-14
             target: aarch64-apple-darwin
             args: '--target aarch64-apple-darwin'
@@ -257,9 +259,13 @@ jobs:
 
             | Platform | File | Notes |
             | --- | --- | --- |
-            | macOS | `.dmg` | Apple Silicon. Intel Macs run it through Rosetta 2. |
+            | macOS | `.dmg` | **Apple Silicon only** — see the note below. |
             | Windows | `-setup.exe` | |
             | Linux | `.AppImage` | `chmod +x` it and run; no package manager involved. |
+
+            **The macOS build is arm64 only.** It does not run on an Intel Mac —
+            Rosetta 2 translates Intel binaries for Apple Silicon, not the
+            reverse. There is no Intel build yet.
 
             From 1.2.0 onwards you only need to do this once: Settings → Advanced
             → Updates installs later versions in place. The extra `.app.tar.gz`,
