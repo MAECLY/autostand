@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="brand/logo/logo-horizontal.svg" alt="autostand" width="420">
-
-### Your standup, written from what you actually did.
+<img src="brand/logo/logo-og.png" alt="autostand — your standup, written from what you actually did. The dashboard beside the wordmark, showing a day's standup composed of AUTO and MANUAL blocks." width="820">
 
 A desktop app that reads your real activity — commits, pull requests, AI coding sessions, notes —
 and files a structured standup every working day. Nothing leaves your machine unless you point it
@@ -174,7 +172,7 @@ no real `git`/`gh`/LLM calls, and independent of your `HOME`.
 | `crates/autostand-adapters` | `LlmAdapter` + 5 providers; `DataSource` + 8 sources |
 | `crates/autostand-scheduler` | Cron parser, self-heal, OS scheduler installation |
 | `apps/autostand-app` | The Tauri app — Rust in `src-tauri/`, React/Vite in `src/` |
-| `brand` | Logo SVGs and the Open Graph card; the generators live in `tests/` |
+| `brand` | Logo SVGs and the social card; the icon generator lives in `tests/` |
 | `tests/e2e` | Playwright specs for the app UI |
 | `docs` | Full project documentation — start at [`docs/README.md`](docs/README.md) |
 

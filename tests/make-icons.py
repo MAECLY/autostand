@@ -10,7 +10,12 @@ Draws the brand mark described in `docs/design-system/02-brand.md` — a rounded
   apps/autostand-app/src-tauri/icons/512x512.png
   apps/autostand-app/src-tauri/icons/icon.png         (512px)
   apps/autostand-app/src-tauri/icons/icon.icns        (macOS, needs `iconutil`)
-  brand/logo/logo-og.png                              (1200x630 Open Graph card)
+
+It no longer draws brand/logo/logo-og.png. That card is now built from the real
+product — the dashboard capture, in the shipped fonts — by `pnpm og:image` in the
+autostand-landing-page repository, and vendored here for the README header and
+the repository's social preview. Two generators writing one file meant whichever
+ran last decided what the project looked like when someone shared a link.
 
 The Windows `icon.ico` is written by `make-ico.py`, which imports `render_mark`
 from this file so every asset is provably the same artwork.
@@ -21,7 +26,7 @@ SUPERSAMPLE x and downsampled with LANCZOS, which is what keeps the diagonals
 clean at 32px.
 
 Usage:
-    python3 tests/make-icons.py [--out DIR] [--og PATH] [--skip-og] [--preview DIR]
+    python3 tests/make-icons.py [--out DIR]
 """
 
 from __future__ import annotations
@@ -33,25 +38,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ICON_DIR = REPO_ROOT / "apps" / "autostand-app" / "src-tauri" / "icons"
-DEFAULT_OG_PATH = REPO_ROOT / "brand" / "logo" / "logo-og.png"
 
 # Palette — docs/design-system/01-tokens.md. Keep these in sync with tokens.css.
 BLUE_600 = (0x25, 0x63, 0xEB)  # --brand-primary
-BLUE_500 = (0x3B, 0x82, 0xF6)  # --color-blue-500
-SLATE_950 = (0x02, 0x06, 0x17)  # --bg-base (dark)
-SLATE_900 = (0x0F, 0x17, 0x2A)  # --bg-surface (dark)
-SLATE_800 = (0x1E, 0x29, 0x3B)  # --bg-elevated (dark)
-SLATE_400 = (0x94, 0xA3, 0xB8)  # --fg-muted (dark)
-SLATE_300 = (0xCB, 0xD5, 0xE1)  # --color-slate-300
-SLATE_50 = (0xF8, 0xFA, 0xFC)  # --fg-base (dark)
 WHITE = (0xFF, 0xFF, 0xFF)
 
 SUPERSAMPLE = 4  # render at 4x, downsample with LANCZOS
@@ -200,70 +196,6 @@ def render_mark(
     return img.resize((size, size), Image.LANCZOS)
 
 
-# --- fonts -------------------------------------------------------------------
-
-_GOOGLE_CSS = "https://fonts.googleapis.com/css2?family=Inter:wght@{weight}"
-_LEGACY_UA = "Mozilla/4.0"  # old UA => Google Fonts serves TTF instead of woff2
-_FONT_CACHE = Path(tempfile.gettempdir()) / "autostand-brand-fonts"
-# Documented fallbacks, in order, if Inter cannot be fetched. Pillow cannot read
-# the woff2 files the app self-hosts, so these are the only local options.
-_FALLBACK_FONTS = (
-    "/System/Library/Fonts/SFNS.ttf",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-)
-
-
-def _inter_ttf(weight: int) -> Path | None:
-    """Path to an Inter TTF for `weight`, downloading (and caching) if needed."""
-    override = os.environ.get("AUTOSTAND_INTER_DIR")
-    if override:
-        for name in (f"Inter-{weight}.ttf", f"Inter_{weight}.ttf", "Inter.ttf"):
-            candidate = Path(override) / name
-            if candidate.is_file():
-                return candidate
-
-    cached = _FONT_CACHE / f"Inter-{weight}.ttf"
-    if cached.is_file():
-        return cached
-
-    try:
-        request = urllib.request.Request(
-            _GOOGLE_CSS.format(weight=weight), headers={"User-Agent": _LEGACY_UA}
-        )
-        with urllib.request.urlopen(request, timeout=20) as response:
-            css = response.read().decode("utf-8")
-        start = css.index("url(") + 4
-        url = css[start : css.index(")", start)]
-        with urllib.request.urlopen(url, timeout=30) as response:
-            data = response.read()
-        _FONT_CACHE.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(data)
-        return cached
-    except Exception as exc:  # offline or Google changed the payload
-        print(f"  ! could not fetch Inter {weight}: {exc}", file=sys.stderr)
-        return None
-
-
-def load_font(weight: int, size: int) -> ImageFont.FreeTypeFont:
-    """Inter at `weight`, or the first documented fallback that loads."""
-    path = _inter_ttf(weight)
-    if path is not None:
-        return ImageFont.truetype(str(path), size)
-
-    for fallback in _FALLBACK_FONTS:
-        if Path(fallback).is_file():
-            print(f"  ! Inter unavailable, falling back to {fallback}", file=sys.stderr)
-            font = ImageFont.truetype(fallback, size)
-            try:  # SFNS is variable; ask for the closest named instance
-                font.set_variation_by_name("Bold" if weight >= 600 else "Regular")
-            except Exception:
-                pass
-            return font
-    raise RuntimeError("no usable TTF found; set AUTOSTAND_INTER_DIR to a folder with Inter TTFs")
-
-
 # --- assets ------------------------------------------------------------------
 
 PNG_SIZES = {
@@ -326,61 +258,6 @@ def write_icns(out_dir: Path) -> Path | None:
     return out_path
 
 
-def render_og_card(width: int = 1200, height: int = 630) -> Image.Image:
-    """The Open Graph card: mark + wordmark + tagline on the dark brand surface."""
-    # Diagonal wash from --bg-base to --bg-surface, echoing .hero-gradient.
-    # Computed on a tiny grid and scaled up: smooth, and Pillow-only.
-    grid = 64
-    ramp = Image.new("RGB", (grid, grid))
-    ramp_px = ramp.load()
-    for gy in range(grid):
-        for gx in range(grid):
-            t = (gx / (grid - 1) + gy / (grid - 1)) / 2
-            ramp_px[gx, gy] = tuple(round(a + (b - a) * t) for a, b in zip(SLATE_950, SLATE_900))
-    card = ramp.resize((width, height), Image.BICUBIC)
-    draw = ImageDraw.Draw(card)
-
-    # Soft brand glow behind the lockup (gradients are allowed on backgrounds,
-    # never inside the mark itself — docs/design-system/02-brand.md).
-    glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow)
-    cx, cy, r0 = 250, 250, 460
-    for step in range(48, 0, -1):
-        r = r0 * step / 48
-        alpha = round(34 * (1 - step / 48) ** 2)
-        glow_draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=(*BLUE_500, alpha))
-    card = Image.alpha_composite(card.convert("RGBA"), glow).convert("RGB")
-    draw = ImageDraw.Draw(card)
-
-    margin = 96
-    mark_size = 152
-    mark_top = 152
-    mark = render_mark(mark_size)
-    card.paste(mark, (margin, mark_top), mark)
-
-    wordmark_font = load_font(700, 104)
-    tagline_font = load_font(400, 46)
-    repo_font = load_font(500, 26)
-
-    # Optically centre the wordmark on the mark using its ink box, not its line box.
-    word_box = draw.textbbox((0, 0), "autostand", font=wordmark_font)
-    word_y = mark_top + (mark_size - (word_box[3] - word_box[1])) / 2 - word_box[1]
-    draw.text((margin + mark_size + 40, word_y), "autostand", font=wordmark_font, fill=SLATE_50)
-
-    draw.text(
-        (margin, 366),
-        "Automate your standup. Know what you did.",
-        font=tagline_font,
-        fill=SLATE_300,
-    )
-
-    rule_y = 478
-    draw.rectangle([(margin, rule_y), (margin + 200, rule_y + 2)], fill=SLATE_800)
-    draw.text((margin, rule_y + 34), "github.com/MAECLY/autostand", font=repo_font, fill=SLATE_400)
-
-    return card
-
-
 # --- verification ------------------------------------------------------------
 
 
@@ -409,16 +286,6 @@ def verify_icon_png(path: Path, expected: int) -> str:
     )
 
 
-def verify_og(path: Path, width: int, height: int) -> str:
-    with Image.open(path) as img:
-        img.load()
-        assert img.size == (width, height), f"{path.name}: {img.size} != {(width, height)}"
-        assert img.mode == "RGB", f"{path.name}: mode {img.mode} != RGB"
-        colours = img.convert("RGB").getcolors(maxcolors=1 << 20)
-    assert colours is not None and len(colours) > 1, f"{path.name}: flat single-colour image"
-    return f"{path.name}: {width}x{height} RGB, {path.stat().st_size:,} B, {len(colours):,} colours"
-
-
 def verify_icns(path: Path) -> str:
     data = path.read_bytes()
     assert data[:4] == b"icns", f"{path.name}: missing icns magic"
@@ -439,32 +306,20 @@ def verify_icns(path: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=DEFAULT_ICON_DIR, help="Tauri icons directory")
-    parser.add_argument("--og", type=Path, default=DEFAULT_OG_PATH, help="Open Graph card path")
-    parser.add_argument("--skip-og", action="store_true", help="only regenerate the app icons")
-    parser.add_argument("--skip-icons", action="store_true", help="only regenerate the OG card")
     args = parser.parse_args()
 
     failures = 0
 
-    if not args.skip_icons:
-        print(f"icons -> {args.out}")
-        for path in write_pngs(args.out):
-            print("  " + verify_icon_png(path, PNG_SIZES[path.name]))
-        icns = write_icns(args.out)
-        if icns is None:
-            failures += 1
-        else:
-            print("  " + verify_icns(icns))
+    print(f"icons -> {args.out}")
+    for path in write_pngs(args.out):
+        print("  " + verify_icon_png(path, PNG_SIZES[path.name]))
+    icns = write_icns(args.out)
+    if icns is None:
+        failures += 1
+    else:
+        print("  " + verify_icns(icns))
 
-    if not args.skip_og:
-        print(f"social card -> {args.og}")
-        args.og.parent.mkdir(parents=True, exist_ok=True)
-        card = render_og_card()
-        card.save(args.og, "PNG", optimize=True)
-        print("  " + verify_og(args.og, card.width, card.height))
-
-    if not args.skip_icons:
-        print("note: run tests/make-ico.py for the Windows icon.ico")
+    print("note: run tests/make-ico.py for the Windows icon.ico")
     return 1 if failures else 0
 
 

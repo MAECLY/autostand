@@ -149,7 +149,7 @@ The marketing landing page hero (see `docs/design-system/06-landing-reuse.md`):
 | `brand/logo/logo-vertical.svg` | Icon over wordmark | SVG | Splash, loading |
 | `brand/logo/logo-mono.svg` | Monochrome | SVG | Footer, print |
 | `brand/logo/logo-favicon.svg` | Small-optimized | SVG | Browser tab |
-| `brand/logo/logo-og.png` | 1200×630 social card | PNG | Open Graph meta tag |
+| `brand/logo/logo-og.png` | 1200×630 social card | PNG | README header, GitHub social preview, Open Graph meta tag. Built by `pnpm og:image` in `autostand-landing-page` from the real dashboard capture, and vendored here — do not redraw it. |
 | `tokens/tokens.css` (in `autostand-ui`) | Design tokens | CSS | App + marketing site + Storybook |
 | `icons/*.tsx` (in `autostand-ui`) | Custom icons as React components | TSX | App + marketing site |
 | `fonts/*.woff2` (in `autostand-ui`) | Self-hosted fonts | woff2 | App + marketing site |
