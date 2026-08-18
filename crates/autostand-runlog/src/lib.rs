@@ -13,6 +13,9 @@
 //! * [`RunSink`] — where lines go. [`NullSink`] is the headless default.
 //! * [`proc`] — the single process spawner. Every child process in the
 //!   workspace goes through it, so the Terminal cannot miss one.
+//! * [`which`] — where a program is found before it can be spawned. A GUI app
+//!   inherits almost no `PATH`, so this is not the same question as "is it on
+//!   `PATH`".
 //!
 //! # The `tokio::spawn` trap
 //!
@@ -37,6 +40,7 @@
 #![forbid(unsafe_code)]
 
 pub mod proc;
+pub mod which;
 
 use std::future::Future;
 use std::sync::{Arc, OnceLock};

@@ -30,14 +30,10 @@ pub async fn detect_cli_at(path: &Path) -> Option<CliInfo> {
 }
 
 fn which(name: &str) -> Option<PathBuf> {
-    let path_env = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_env) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    // Not a plain `PATH` walk: an installed app is launched by Finder, the Dock
+    // or a `.desktop` entry, and inherits none of the directories the provider
+    // CLIs install into. See `autostand_runlog::which`.
+    autostand_runlog::which::find_program(name)
 }
 
 /// Ask a detected binary for its version.

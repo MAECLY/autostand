@@ -15,7 +15,7 @@
 //!    manager on this machine has a package id we know exists, the answer is an
 //!    honest documentation link rather than a command that fails.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -118,47 +118,17 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// Resolve an executable without invoking a shell.
 ///
-/// The optional PATH is what makes the probes hermetic in tests; production also
-/// probes the common GUI-app locations on macOS, where an app launched from
-/// Finder does not inherit the user's interactive shell PATH.
+/// The optional search path is what makes the probes hermetic in tests;
+/// production uses `autostand_runlog::which`, which knows that an installed app
+/// is launched without the user's `PATH`.
 pub(crate) fn find_program(name: &str, path_override: Option<&OsStr>) -> Option<PathBuf> {
-    let path = path_override
-        .map(OsString::from)
-        .or_else(|| std::env::var_os("PATH"));
-    // Only the macOS branch below mutates this. Everywhere else the vector is
-    // complete as built, and `-D warnings` rejects an unused `mut` — a lint a
-    // macOS developer can never reproduce locally.
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut dirs = path
-        .as_deref()
-        .map(std::env::split_paths)
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-
-    #[cfg(target_os = "macos")]
-    if path_override.is_none() {
-        dirs.extend([
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-            PathBuf::from("/usr/bin"),
-        ]);
-    }
-
-    for dir in dirs {
-        let direct = dir.join(name);
-        if direct.is_file() {
-            return Some(direct);
+    match path_override {
+        Some(path) => {
+            let dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
+            autostand_runlog::which::find_program_in(name, &dirs)
         }
-        #[cfg(target_os = "windows")]
-        for suffix in ["exe", "cmd", "bat"] {
-            let candidate = dir.join(format!("{name}.{suffix}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
+        None => autostand_runlog::which::find_program(name),
     }
-    None
 }
 
 /// Executable name of the process-isolated local inference sidecar.

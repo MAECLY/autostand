@@ -293,6 +293,15 @@ fn command_for(spec: &ProcSpec, stdin: Stdio, stderr: Stdio) -> Command {
     if let Some(dir) = &spec.cwd {
         command.current_dir(dir);
     }
+    // Hand every child the search path this process searched, not the one it
+    // inherited. A provider CLI is usually a script that has to find its own
+    // interpreter — `claude` needs `node`, `gh` needs `git` — and an app started
+    // from the Dock inherits a PATH with neither on it. Finding the program and
+    // then starting it in an environment where it cannot find its own runtime
+    // trades "CLI not found" for a stranger failure one level down.
+    //
+    // Set before `spec.env` so an explicit PATH from the caller still wins.
+    command.env("PATH", crate::which::search_path_env());
     for (key, value) in &spec.env {
         command.env(key, value);
     }

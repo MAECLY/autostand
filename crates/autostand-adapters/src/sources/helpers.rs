@@ -137,15 +137,10 @@ async fn run_cmd_with(
 /// binary that exists but refuses to run fails in `gather`, where the failure is
 /// recorded and reported.
 pub fn find_on_path(name: &str) -> Option<PathBuf> {
-    find_in(name, std::env::var_os("PATH")?.as_os_str())
-}
-
-/// [`find_on_path`] against an explicit search path, so it is testable without
-/// mutating the process environment other tests are reading concurrently.
-fn find_in(name: &str, path_env: &std::ffi::OsStr) -> Option<PathBuf> {
-    std::env::split_paths(path_env)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+    // WHY not `PATH` alone: the same reason the provider CLIs went missing in
+    // 1.0.0 — a GUI-launched app does not have the user's PATH. `gh` lives in
+    // exactly the directories launchd omits.
+    autostand_runlog::which::find_program(name)
 }
 
 /// Recursively collect every `*.jsonl` file under `dir` (sorted).
@@ -992,12 +987,19 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let program = dir.path().join("pretend-cli");
         fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
-        let search = dir.path().as_os_str();
+        let search = vec![dir.path().to_path_buf()];
 
         // A file that would exit non-zero is still "available": whether it works
         // is the first real call's answer, not the lookup's.
-        assert_eq!(find_in("pretend-cli", search), Some(program));
-        assert!(find_in("definitely-not-a-real-binary-xyz", search).is_none());
+        assert_eq!(
+            autostand_runlog::which::find_program_in("pretend-cli", &search),
+            Some(program),
+        );
+        assert!(autostand_runlog::which::find_program_in(
+            "definitely-not-a-real-binary-xyz",
+            &search
+        )
+        .is_none(),);
     }
 
     #[test]
