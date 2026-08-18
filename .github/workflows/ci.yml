@@ -80,6 +80,12 @@ jobs:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore on every run, save only from main. Writing a multi-GB
+          # `target/` back to the cache costs minutes at the end of a job, and a
+          # PR's cache is evicted when the PR closes anyway — so PRs pay the
+          # upload for something nothing will read.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo fmt
         run: cargo fmt --all --check
@@ -119,6 +125,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo test
         run: cargo test --workspace

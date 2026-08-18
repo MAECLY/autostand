@@ -1,0 +1,50 @@
+name: Refresh the marketing site
+
+# The landing page reads the current version from this repository's latest
+# release, at build time. That makes a deploy the thing that moves the version
+# on the site — so publishing a release has to trigger one, or the page keeps
+# advertising the previous version and its installer filenames, which by then
+# name files that no longer exist.
+#
+# `published`, not `created`: release.yml produces a *draft* for a human to
+# review, and a draft is invisible to the `releases/latest` endpoint the site
+# reads. Firing on creation would rebuild the site against the release before it.
+on:
+  release:
+    types: [published]
+  # For re-running a refresh by hand, after fixing the hook or a failed deploy.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Trigger the Vercel deploy hook
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger a rebuild of autostand.maecly.com
+        env:
+          # A Vercel deploy hook: an unguessable URL that starts a build of the
+          # landing project. It carries no scope beyond that — it cannot read
+          # anything and cannot deploy any other project — but it is still a
+          # secret, because anyone holding it can spend build minutes.
+          # Create it in Vercel: Project → Settings → Git → Deploy Hooks.
+          DEPLOY_HOOK: ${{ secrets.LANDING_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "::warning::LANDING_DEPLOY_HOOK is not set, so autostand.maecly.com will keep showing the previous version until it is deployed by hand. Create a deploy hook in the Vercel project (Settings → Git → Deploy Hooks) and add it as this repository's LANDING_DEPLOY_HOOK secret."
+            exit 0
+          fi
+
+          # --fail so an HTTP error is a failed job rather than a green tick over
+          # a site that never rebuilt. The response body is the job id, which is
+          # not sensitive; the URL never appears in the log.
+          echo "Requesting a rebuild for ${GITHUB_REF_NAME}"
+          curl --fail --silent --show-error --location \
+            --max-time 30 \
+            --request POST "$DEPLOY_HOOK" \
+            --output response.json
+          echo "Vercel accepted the request:"
+          cat response.json
