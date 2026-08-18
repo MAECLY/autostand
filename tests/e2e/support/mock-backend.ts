@@ -397,6 +397,11 @@ export function installMockBackend(scenario: Scenario): void {
         return "granted";
       case "send_test_notification":
         return true;
+      case "get_system_access":
+      case "request_system_access":
+        return state.systemAccess;
+      case "open_access_settings":
+        return null;
       case "list_local_models":
         return state.localModels;
       case "download_local_model":

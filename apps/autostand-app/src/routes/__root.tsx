@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 import { createRootRoute, Outlet } from "@tanstack/react-router";
 
+import { SystemAccessDialog } from "@/components/access/SystemAccessDialog";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { TopBar } from "@/components/layout/TopBar";
@@ -44,6 +45,10 @@ function RootLayout() {
         </main>
         <TerminalPanel />
         <StatusBar />
+        {/* Mounted at the shell, not on a route: the folders it asks about are
+            what every screen reads, and the answer must not depend on where the
+            app happened to reopen. */}
+        <SystemAccessDialog />
       </div>
     </div>
   );

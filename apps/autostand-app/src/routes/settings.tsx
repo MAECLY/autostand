@@ -36,6 +36,7 @@ import {
   TabsTrigger,
 } from "@autostand/ui/components/tabs";
 
+import { SystemAccessSummary } from "@/components/access/SystemAccessDialog";
 import { AdvancedTab } from "@/components/settings/AdvancedTab";
 import { CommitScanCard } from "@/components/settings/CommitScanCard";
 import { DataSourceToggle } from "@/components/settings/DataSourceToggle";
@@ -462,6 +463,15 @@ function PathsTab() {
       </Section>
 
       <CommitScanCard />
+
+      {/* Beside the paths, because the question it answers — "can autostand
+          actually read this?" — is about these two directories. */}
+      <Section
+        title="Folder access"
+        description="What the operating system currently lets autostand read. Everything here is read-only."
+      >
+        <SystemAccessSummary />
+      </Section>
 
       <Card>
         <CardContent className="pt-6">

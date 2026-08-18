@@ -635,6 +635,30 @@ export interface PathValidation {
 export type AuthorSource = "configured" | "git-identity" | "none";
 
 /** Whether local-git can gather facts, and what is missing when it cannot. */
+/** Whether the OS lets the app read one location. */
+export type AccessState = "granted" | "denied" | "missing" | "not-applicable";
+
+export interface AccessCheck {
+  /** Stable id the UI keys on; never localized. */
+  id: string;
+  label: string;
+  /** Why autostand reads it — shown beside a denial. */
+  reason: string;
+  path: string;
+  state: AccessState;
+}
+
+export interface SystemAccess {
+  platform: string;
+  /** True only where the OS gates filesystem access (macOS today). */
+  gated: boolean;
+  checks: AccessCheck[];
+  /** True when at least one check came back `denied`. */
+  needs_attention: boolean;
+  /** Deep link to the Settings pane that grants access, where one exists. */
+  settings_url: string | null;
+}
+
 export interface StandupReadiness {
   /** Scan root local-git will read — the configured value or its fallback. */
   github_dir: string;

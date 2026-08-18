@@ -70,6 +70,9 @@ Rust structs derive `serde::Serialize` + `serde::Deserialize`. The frontend mirr
 | `trigger_run_now` | — | `CompileResult` | Manually trigger a compile outside the cron schedule | `autostand-core::pipeline::trigger(Manual)` |
 | `discover_repos` | — | `RepoInfo[]` | Scan `GITHUB_DIR` for git repos (depth-1) | `autostand-adapters::git::discover` |
 | `get_standup_readiness` | — | `StandupReadiness` | Whether local-git can gather at all: scan root, depth-1 repo count, and the author filter it will apply (configured list → machine git identity → none) | `commands::readiness` |
+| `get_system_access` | — | `SystemAccess` | What the OS currently lets the app read: the standup folder, the repository folder and the provider credential directories. `not-applicable` everywhere but macOS | `commands::access` |
+| `request_system_access` | — | `SystemAccess` | Touches each location so macOS raises its consent dialog, then reports what the user chose | `commands::access` |
+| `open_access_settings` | — | `()` | Opens the OS privacy pane. Takes no URL on purpose — a command that opens what it is handed is reachable from anything running in the webview | `commands::access` |
 | `get_settings_paths` | — | `SettingsPaths` | Return all configured paths (GITHUB_DIR, dailies dir, claude dir, etc.) | `autostand-core::config::paths` |
 | `validate_paths` | — | `PathValidation[]` | Check each path exists + readable; returns per-path ok/missing | `autostand-core::config::validate` |
 | `open_in_file_manager` | `{ path: string }` | `void` | Open a directory in the OS file manager (Finder / Explorer / `xdg-open`). Rejects blank, relative, and non-directory paths before the shell handoff: `invalid`, or `not_found` when the directory is gone | `tauri_plugin_opener::open_path` |
@@ -622,6 +625,9 @@ export const tauriApi = {
   applyRegeneration:  (token, resolution, mergedAuto?) => invoke<RegenerationApplied>("apply_regeneration", { token, resolution, mergedAuto }),
   discoverRepos:       ()                          => invoke<RepoInfo[]>("discover_repos"),
   getStandupReadiness: ()                          => invoke<StandupReadiness>("get_standup_readiness"),
+  getSystemAccess: ()                              => invoke<SystemAccess>("get_system_access"),
+  requestSystemAccess: ()                          => invoke<SystemAccess>("request_system_access"),
+  openAccessSettings: ()                           => invoke<void>("open_access_settings"),
   getSettingsPaths:    ()                          => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths:       ()                          => invoke<PathValidation[]>("validate_paths"),
   openInFileManager:  (path: string)                => invoke<void>("open_in_file_manager", { path }),

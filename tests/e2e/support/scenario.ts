@@ -19,6 +19,7 @@ import type {
   GatherPreview,
   LlmProviderConfig,
   LocalModelInfo,
+  SystemAccess,
   PathValidation,
   PipelineStatus,
   ProviderHealth,
@@ -103,6 +104,8 @@ export interface BackendState {
   dependencies: Dependency[];
   /** `list_local_models` answers, in catalog order. */
   localModels: LocalModelInfo[];
+  /** `get_system_access` / `request_system_access` answers. */
+  systemAccess: SystemAccess;
 }
 
 export interface Scenario {
@@ -752,6 +755,37 @@ export function makeLocalModels(): LocalModelInfo[] {
   ];
 }
 
+/**
+ * A machine that granted everything. The interesting case — a denial — is a
+ * per-spec override, because a fixture that opens a modal by default would put
+ * one in front of every other test.
+ */
+export function makeSystemAccess(): SystemAccess {
+  return {
+    platform: "macos",
+    gated: true,
+    needs_attention: false,
+    settings_url:
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
+    checks: [
+      {
+        id: "dailies-dir",
+        label: "Standup folder",
+        reason: "Where your dated standup files are written and read back.",
+        path: DAILIES_DIR,
+        state: "granted",
+      },
+      {
+        id: "github-dir",
+        label: "Repository folder",
+        reason: "Scanned for git repositories, to read the commits you authored.",
+        path: "/Users/tester/Github",
+        state: "granted",
+      },
+    ],
+  };
+}
+
 export function makeScenario(): Scenario {
   return {
     state: {
@@ -830,6 +864,7 @@ export function makeScenario(): Scenario {
       cloudFolders: makeCloudFolders(),
       dependencies: makeDependencies(),
       localModels: makeLocalModels(),
+      systemAccess: makeSystemAccess(),
     },
     defer: [],
     errors: {},

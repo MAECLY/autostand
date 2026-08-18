@@ -1,5 +1,5 @@
 /**
- * Typed wrappers over the 28 Tauri IPC commands and the 8 backend events.
+ * Typed wrappers over the 54 Tauri IPC commands and the 8 backend events.
  *
  * This is the only module in the app allowed to import from
  * `@tauri-apps/api` — everything else goes through `tauriApi` and the
@@ -51,6 +51,7 @@ import type {
   SettingsPaths,
   StandupFileContent,
   StandupReadiness,
+  SystemAccess,
   TestProviderResult,
 } from "@/lib/types";
 
@@ -124,6 +125,12 @@ export const tauriApi = {
   discoverRepos: () => invoke<RepoInfo[]>("discover_repos"),
   getStandupReadiness: () =>
     invoke<StandupReadiness>("get_standup_readiness"),
+
+  getSystemAccess: () => invoke<SystemAccess>("get_system_access"),
+  /** Touches each location so the OS raises its own consent dialog. */
+  requestSystemAccess: () => invoke<SystemAccess>("request_system_access"),
+  /** Opens the OS privacy pane. Takes no URL: the backend owns the only one. */
+  openAccessSettings: () => invoke<void>("open_access_settings"),
 
   getSettingsPaths: () => invoke<SettingsPaths>("get_settings_paths"),
   validatePaths: () => invoke<PathValidation[]>("validate_paths"),

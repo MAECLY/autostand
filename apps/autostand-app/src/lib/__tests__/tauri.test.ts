@@ -151,6 +151,15 @@ const COMMANDS: CommandCase[] = [
     command: "get_standup_readiness",
     call: () => tauriApi.getStandupReadiness(),
   },
+  { command: "get_system_access", call: () => tauriApi.getSystemAccess() },
+  {
+    command: "request_system_access",
+    call: () => tauriApi.requestSystemAccess(),
+  },
+  {
+    command: "open_access_settings",
+    call: () => tauriApi.openAccessSettings(),
+  },
   { command: "get_settings_paths", call: () => tauriApi.getSettingsPaths() },
   { command: "validate_paths", call: () => tauriApi.validatePaths() },
   {
@@ -241,10 +250,10 @@ beforeEach(() => {
 });
 
 describe("tauriApi", () => {
-  it("exposes exactly the 51 documented commands", () => {
-    expect(COMMANDS).toHaveLength(51);
-    expect(Object.keys(tauriApi)).toHaveLength(51);
-    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(51);
+  it("exposes exactly the 54 documented commands", () => {
+    expect(COMMANDS).toHaveLength(54);
+    expect(Object.keys(tauriApi)).toHaveLength(54);
+    expect(new Set(COMMANDS.map((entry) => entry.command)).size).toBe(54);
   });
 
   it.each(COMMANDS)(

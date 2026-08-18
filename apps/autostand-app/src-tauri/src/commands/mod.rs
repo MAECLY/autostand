@@ -4,6 +4,7 @@
 //! Shared DTOs live in [`types`]; the actual command fns live in the domain
 //! submodules and are registered with `generate_handler!` in `lib.rs`.
 
+pub mod access;
 pub mod data_sources;
 pub mod dependencies;
 pub mod llm;
