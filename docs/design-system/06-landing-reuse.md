@@ -11,7 +11,7 @@ repository. This is the record of what was actually done and what it costs.
 | --- | --- | --- |
 | [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) | Tokens, 24 base components, the icon set, the brand fonts, Storybook | the `@autostand/ui` package |
 | [`MAECLY/autostand`](https://github.com/MAECLY/autostand) | The Rust workspace and the Tauri desktop app | desktop bundles from `release.yml` |
-| [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page) | The Next.js 15 marketing site | a Vercel deployment |
+| Marketing site repository (private) | The Next.js 15 marketing site, served at [autostand.maecly.com](https://autostand.maecly.com) | a Vercel deployment |
 
 Both consumers depend on the same package, so a token edit lands in the product and the marketing site the same
 way: bump the pinned commit, install, done. That is the whole point of the split — one source of truth for how

@@ -178,7 +178,7 @@ The design system and the marketing site each became their own repository. This 
 source of truth for either.
 
 - [x] `apps/landing/` deleted (Astro site + its 46-spec Playwright suite). It lives on as a Next.js 15 App
-      Router port in [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page),
+      Router port in its own repository (now private),
       deployed by Vercel at `autostand.maecly.com`. The `/autostand` base path is gone with the move — the site
       is served from a domain root now.
 - [x] `design-system/` deleted, extracted **with its history** to

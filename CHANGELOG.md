@@ -158,8 +158,7 @@ your choice, and files it in the same AUTO/MANUAL Markdown format the script alw
 
 - The design system moved to [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) and is
   consumed here as the private dependency `@autostand/ui`; the marketing site moved to
-  [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page) and hosting
-  moved to Vercel.
+  its own repository (now private) and hosting moved to Vercel.
 - Codex usage is read over HTTP against the credential the `codex` CLI already wrote, instead of
   spawning `codex app-server --stdio` and running a JSON-RPC handshake: no child process, no
   eight-second timeout, and it works whether or not the CLI is on `PATH`.
