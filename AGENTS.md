@@ -6,8 +6,8 @@
 
 Three repos: **this one** is the product. The design system is
 [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui), consumed here as the private git dependency
-`@autostand/ui`; the marketing site is
-[`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page). Do not add a design-system
+`@autostand/ui`; the marketing site
+([autostand.maecly.com](https://autostand.maecly.com)) lives in its own private repository. Do not add a design-system
 directory back to this repo.
 
 Ports the `~/Sync/Github_Dailies` Bash/Python "App Script" to a desktop app with pluggable AI providers and data sources. The original App Script must NOT be modified.

@@ -323,7 +323,7 @@ Both surfaces left the repo, so the workflow was deleted. Nothing in this repo d
 
 | Surface | Where it lives now | How it deploys |
 | --- | --- | --- |
-| Marketing site | [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page) (Next.js 15) | Vercel, at `autostand.maecly.com` |
+| Marketing site | Its own private repository (Next.js 15) | Vercel, at `autostand.maecly.com` |
 | Storybook | [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) | that repo's own CI builds it; `vercel.json` is ready, hosting is opt-in |
 
 Two consequences worth recording, because they were the hard parts of the deleted workflow and they are now

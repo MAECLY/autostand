@@ -3,7 +3,7 @@
 > **Where the code lives.** The design system is the `@autostand/ui` package in
 > [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui). Paths in this document are relative to that
 > repository's root; the specs stay here because they are decisions, not code. Consumers — this repo's Tauri app
-> and [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page) — reach the tokens
+> and the marketing site at [autostand.maecly.com](https://autostand.maecly.com) — reach the tokens
 > through `@import "@autostand/ui/styles.css"`, never by path. See `docs/design-system/06-landing-reuse.md`.
 
 Design tokens are the single source of truth for visual style. They're defined once as CSS custom properties, consumed by Tailwind v4 and shadcn/ui, and shared between the Tauri app, the marketing site and Storybook.

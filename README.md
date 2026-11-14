@@ -31,7 +31,7 @@ autostand is three repositories. **This one is the product**: the Rust workspace
 | --- | --- | --- |
 | `MAECLY/autostand` (here) | Rust crates + the Tauri v2 desktop app | desktop bundles, from a `v*` tag |
 | [`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) | The design system: tokens, 24 base components, icons, brand fonts, Storybook | the `@autostand/ui` package, consumed here as a git dependency |
-| [`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page) | The marketing site (Next.js 15) | a Vercel deployment |
+| Marketing site repository (private) | The marketing site (Next.js 15), served at [autostand.maecly.com](https://autostand.maecly.com) | a Vercel deployment |
 
 The design system is a git dependency (`"@autostand/ui": "github:MAECLY/autostand-ui#main"`), pinned by
 commit in `pnpm-lock.yaml`. That repository is public, so `pnpm install` needs no credential: pnpm resolves

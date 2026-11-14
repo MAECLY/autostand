@@ -4,7 +4,7 @@ Comprehensive reference for all commands in the autostand repo. Run these from t
 
 This repo is the Rust workspace plus the Tauri desktop app. The design system
 ([`MAECLY/autostand-ui`](https://github.com/MAECLY/autostand-ui) — Storybook included) and the marketing site
-([`MAECLY/autostand-landing-page`](https://github.com/MAECLY/autostand-landing-page)) each have their own
+(in its own private repository) each have their own
 commands, in their own repos. Nothing here builds or deploys either.
 
 ## Makefile
